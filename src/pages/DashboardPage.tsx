@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { IconKey, IconBot, IconFileText, IconSatellite } from '@/components/ui/icons';
 import { useAuthStore, useConfigStore, useModelsStore } from '@/stores';
 import { apiKeysApi, providersApi, authFilesApi } from '@/services/api';
+import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { VersionCard } from './dashboard/components/VersionCard';
 import { UsageMetricsCard } from './dashboard/components/UsageMetricsCard';
 import { CollectorStatusCard } from './dashboard/components/CollectorStatusCard';
@@ -59,6 +60,7 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [cardRefreshSignal, setCardRefreshSignal] = useState(0);
 
   const apiKeysCache = useRef<string[]>([]);
 
@@ -136,8 +138,8 @@ export function DashboardPage() {
     }
   }, [connectionStatus, apiBase, resolveApiKeysForModels, fetchModelsFromStore]);
 
-  useEffect(() => {
-    const fetchStats = async () => {
+  const refreshStats = useCallback(async () => {
+    if (connectionStatus === 'connected') {
       setLoading(true);
       try {
         const [keysRes, filesRes, geminiRes, codexRes, claudeRes, openaiRes] =
@@ -164,15 +166,22 @@ export function DashboardPage() {
       } finally {
         setLoading(false);
       }
-    };
-
-    if (connectionStatus === 'connected') {
-      fetchStats();
-      fetchModels();
     } else {
       setLoading(false);
     }
-  }, [connectionStatus, fetchModels]);
+  }, [connectionStatus]);
+
+  const refreshDashboard = useCallback(async () => {
+    setCurrentTime(new Date());
+    setCardRefreshSignal((value) => value + 1);
+    await Promise.all([refreshStats(), fetchModels(), usageSummary.refresh()]);
+  }, [fetchModels, refreshStats, usageSummary.refresh]);
+
+  useEffect(() => {
+    void Promise.all([refreshStats(), fetchModels()]);
+  }, [fetchModels, refreshStats]);
+
+  useHeaderRefresh(refreshDashboard);
 
   // Calculate total provider keys only when all provider stats are available.
   const providerStatsReady =
@@ -299,6 +308,7 @@ export function DashboardPage() {
         apiBase={apiBase || ''}
         serverBuildDate={serverBuildDate || undefined}
         connectionStatus={connectionStatus}
+        refreshSignal={cardRefreshSignal}
       />
 
       {usageSummary.enabled && (
@@ -315,11 +325,13 @@ export function DashboardPage() {
               enabled={usageSummary.enabled}
               serviceBase={usageSummary.serviceBase}
               managementKey={managementKey}
+              refreshSignal={cardRefreshSignal}
             />
             <HealthAlertsCard
               enabled={usageSummary.enabled}
               loading={usageSummary.loading}
               recentFailures={usageSummary.recentFailures}
+              refreshSignal={cardRefreshSignal}
             />
           </div>
         </section>

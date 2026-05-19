@@ -10,6 +10,7 @@ interface HealthAlertsCardProps {
   enabled: boolean;
   loading: boolean;
   recentFailures: DashboardRecentFailure[];
+  refreshSignal?: number;
 }
 
 const REFRESH_INTERVAL_MS = 60_000;
@@ -20,7 +21,12 @@ const shortHash = (value: string) => {
   return trimmed.length <= 12 ? trimmed : `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
 };
 
-export function HealthAlertsCard({ enabled, loading, recentFailures }: HealthAlertsCardProps) {
+export function HealthAlertsCard({
+  enabled,
+  loading,
+  recentFailures,
+  refreshSignal,
+}: HealthAlertsCardProps) {
   const { t, i18n } = useTranslation();
   const [errorLogs, setErrorLogs] = useState<ErrorLogFile[]>([]);
 
@@ -40,6 +46,11 @@ export function HealthAlertsCard({ enabled, loading, recentFailures }: HealthAle
   useEffect(() => {
     void refreshLogs();
   }, [refreshLogs]);
+
+  useEffect(() => {
+    if (!refreshSignal) return;
+    void refreshLogs();
+  }, [refreshLogs, refreshSignal]);
 
   useEffect(() => {
     if (!enabled) return;

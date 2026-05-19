@@ -12,6 +12,7 @@ interface VersionCardProps {
   apiBase: string;
   serverBuildDate?: string;
   connectionStatus: ConnectionStatus;
+  refreshSignal?: number;
 }
 
 interface LatestVersions {
@@ -56,6 +57,7 @@ export function VersionCard({
   apiBase,
   serverBuildDate,
   connectionStatus,
+  refreshSignal,
 }: VersionCardProps) {
   const { t, i18n } = useTranslation();
   const [latest, setLatest] = useState<LatestVersions>({ latestApp: '', latestApi: '' });
@@ -94,7 +96,7 @@ export function VersionCard({
     return () => {
       cancelled = true;
     };
-  }, [connectionStatus]);
+  }, [connectionStatus, refreshSignal]);
 
   const appBadge = useMemo(
     () => renderBadge(compareVersions(latest.latestApp, appVersion), latest.latestApp, t),

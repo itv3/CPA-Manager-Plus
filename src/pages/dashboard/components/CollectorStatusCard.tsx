@@ -11,6 +11,7 @@ interface CollectorStatusCardProps {
   enabled: boolean;
   serviceBase: string;
   managementKey?: string;
+  refreshSignal?: number;
 }
 
 const REFRESH_INTERVAL_MS = 60_000;
@@ -27,6 +28,7 @@ export function CollectorStatusCard({
   enabled,
   serviceBase,
   managementKey,
+  refreshSignal,
 }: CollectorStatusCardProps) {
   const { t, i18n } = useTranslation();
   const [status, setStatus] = useState<UsageServiceStatus | null>(null);
@@ -55,6 +57,11 @@ export function CollectorStatusCard({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!refreshSignal) return;
+    void refresh();
+  }, [refresh, refreshSignal]);
 
   useEffect(() => {
     if (!enabled) return;
