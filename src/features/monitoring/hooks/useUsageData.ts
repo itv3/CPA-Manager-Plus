@@ -39,7 +39,13 @@ export interface UseUsageDataReturn {
   loadUsage: () => Promise<void>;
 }
 
-export function useUsageData(): UseUsageDataReturn {
+export interface UseUsageDataOptions {
+  loadUsageEvents?: boolean;
+}
+
+export function useUsageData({
+  loadUsageEvents = true,
+}: UseUsageDataOptions = {}): UseUsageDataReturn {
   const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
   const usageServiceEnabled = useUsageServiceStore((state) => state.enabled);
@@ -176,6 +182,15 @@ export function useUsageData(): UseUsageDataReturn {
   const loadUsage = useCallback(async () => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
+    if (!loadUsageEvents) {
+      setUsageServiceAvailable(false);
+      setUsage(null);
+      setLastRefreshedAt(null);
+      setLoading(false);
+      setError('');
+      return;
+    }
+
     setLoading(true);
     setError('');
 
@@ -200,7 +215,7 @@ export function useUsageData(): UseUsageDataReturn {
         setLoading(false);
       }
     }
-  }, [managementKey, resolveUsageServiceBase]);
+  }, [loadUsageEvents, managementKey, resolveUsageServiceBase]);
 
   useEffect(() => {
     void loadModelPricesFromStorage();

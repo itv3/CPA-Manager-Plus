@@ -1,0 +1,136 @@
+@use '../../../styles/mixins.scss' as *;
+
+.versionCard {
+  position: relative;
+  z-index: 1;
+  padding: $spacing-xl $spacing-xl $spacing-lg;
+  border-radius: var(--app-radius-lg);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--app-blur));
+  -webkit-backdrop-filter: blur(var(--app-blur));
+
+  @media (max-width: $breakpoint-mobile) {
+    padding: $spacing-lg $spacing-md $spacing-md;
+  }
+}
+
+.heading {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+  margin: 0 0 $spacing-md;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: $spacing-md;
+
+  @media (max-width: 900px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (max-width: 500px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 96px;
+  padding: $spacing-md $spacing-md;
+  border-radius: var(--app-radius-md);
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+  text-align: left;
+}
+
+.tileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-sm;
+  min-height: 22px;
+}
+
+.tileLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.tileValue {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.tileSub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: $radius-full;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+
+.badgeUpdate {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+
+.badgeLatest {
+  background: var(--success-badge-bg);
+  border-color: var(--success-badge-border);
+  color: var(--success-badge-text);
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: $gray-400;
+  flex-shrink: 0;
+
+  &.connected {
+    background: $success-color;
+    box-shadow: 0 0 6px rgba($success-color, 0.5);
+  }
+
+  &.connecting {
+    background: $warning-color;
+  }
+
+  &.disconnected {
+    background: $error-color;
+  }
+}
+
+.connectionValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}

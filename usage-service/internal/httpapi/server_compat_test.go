@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -226,6 +227,104 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 	if !strings.Contains(importRR.Body.String(), `"format":"usage_service_jsonl"`) ||
 		!strings.Contains(importRR.Body.String(), `"added":1`) {
 		t.Fatalf("import body = %s", importRR.Body.String())
+	}
+}
+
+func TestServerCompatDashboardSummary(t *testing.T) {
+	cpa := testutil.NewCPAMock(t)
+	setup := &store.Setup{CPAUpstreamURL: cpa.URL(), ManagementKey: "management-key", Queue: "usage", PopSide: "right"}
+	handler, db := newCompatHandler(t, testutil.NewConfig(t), setup)
+	todayStart := int64(1_778_000_000_000)
+	nowMS := todayStart + 60_000
+	latency := int64(88)
+
+	if err := db.SaveModelPrices(context.Background(), map[string]store.ModelPrice{
+		"gpt-test": {Prompt: 1, Completion: 2, Cache: 0.5},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+	success := compatEvent("dashboard-success", 10)
+	success.LatencyMS = &latency
+	failure := compatEvent("dashboard-failure", 20)
+	failure.Failed = true
+	_, err := db.InsertEvents(context.Background(), []usage.Event{success, failure})
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	unauthorizedRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/dashboard/summary?today_start_ms=1778000000000", "", "")
+	testutil.RequireStatus(t, unauthorizedRR, http.StatusUnauthorized)
+
+	badRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/dashboard/summary", "", "management-key")
+	testutil.RequireStatus(t, badRR, http.StatusBadRequest)
+
+	target := "/v0/management/dashboard/summary?today_start_ms=1778000000000&now_ms=" + strconv.FormatInt(nowMS, 10)
+	rr := testutil.Request(t, handler, http.MethodGet, target, "", "management-key")
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var payload struct {
+		Today struct {
+			TotalCalls       int64    `json:"total_calls"`
+			SuccessCalls     int64    `json:"success_calls"`
+			FailureCalls     int64    `json:"failure_calls"`
+			AverageLatencyMS *float64 `json:"average_latency_ms"`
+		} `json:"today"`
+		TopModelsToday []struct {
+			Model string `json:"model"`
+			Calls int64  `json:"calls"`
+		} `json:"top_models_today"`
+		RecentFailures []struct {
+			Model string `json:"model"`
+		} `json:"recent_failures"`
+	}
+	testutil.DecodeJSON(t, rr, &payload)
+	if payload.Today.TotalCalls != 2 || payload.Today.SuccessCalls != 1 || payload.Today.FailureCalls != 1 ||
+		payload.Today.AverageLatencyMS == nil || *payload.Today.AverageLatencyMS != 88 {
+		t.Fatalf("dashboard summary = %#v", payload.Today)
+	}
+	if len(payload.TopModelsToday) != 1 || payload.TopModelsToday[0].Model != "gpt-test" || payload.TopModelsToday[0].Calls != 2 {
+		t.Fatalf("top models = %#v", payload.TopModelsToday)
+	}
+	if len(payload.RecentFailures) != 1 || payload.RecentFailures[0].Model != "gpt-test" {
+		t.Fatalf("recent failures = %#v", payload.RecentFailures)
+	}
+}
+
+func TestServerCompatMonitoringAnalytics(t *testing.T) {
+	cpa := testutil.NewCPAMock(t)
+	setup := &store.Setup{CPAUpstreamURL: cpa.URL(), ManagementKey: "management-key", Queue: "usage", PopSide: "right"}
+	handler, db := newCompatHandler(t, testutil.NewConfig(t), setup)
+	event := compatEvent("monitoring-analytics-event", 10)
+	_, err := db.InsertEvents(context.Background(), []usage.Event{event})
+	if err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	unauthorizedRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":1778000000000,"to_ms":1778000060000}`, "")
+	testutil.RequireStatus(t, unauthorizedRR, http.StatusUnauthorized)
+
+	badRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":2,"to_ms":1}`, "management-key")
+	testutil.RequireStatus(t, badRR, http.StatusBadRequest)
+
+	body := `{"from_ms":1778000000000,"to_ms":1778000060000,"include":{"summary":true,"events_page":{"limit":10},"recent_failures":5}}`
+	rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", body, "management-key")
+	testutil.RequireStatus(t, rr, http.StatusOK)
+
+	var payload struct {
+		Summary *struct {
+			TotalCalls int64 `json:"total_calls"`
+		} `json:"summary"`
+		Events *struct {
+			Items []struct {
+				EventHash string `json:"event_hash"`
+			} `json:"items"`
+		} `json:"events"`
+	}
+	testutil.DecodeJSON(t, rr, &payload)
+	if payload.Summary == nil || payload.Summary.TotalCalls != 1 {
+		t.Fatalf("summary = %#v", payload.Summary)
+	}
+	if payload.Events == nil || len(payload.Events.Items) != 1 || payload.Events.Items[0].EventHash != "monitoring-analytics-event" {
+		t.Fatalf("events = %#v", payload.Events)
 	}
 }
 

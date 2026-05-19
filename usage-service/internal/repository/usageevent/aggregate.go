@@ -1,0 +1,244 @@
+package usageevent
+
+import (
+	"context"
+	"database/sql"
+)
+
+// Aggregate captures roll-up metrics for a usage_events window.
+type Aggregate struct {
+	TotalCalls      int64
+	SuccessCalls    int64
+	FailureCalls    int64
+	InputTokens     int64
+	OutputTokens    int64
+	ReasoningTokens int64
+	CachedTokens    int64
+	TotalTokens     int64
+	AvgLatencyMS    sql.NullFloat64
+	ZeroTokenCalls  int64
+}
+
+// ModelStat aggregates per-model totals.
+type ModelStat struct {
+	Model           string
+	Calls           int64
+	SuccessCalls    int64
+	InputTokens     int64
+	OutputTokens    int64
+	ReasoningTokens int64
+	CachedTokens    int64
+	TotalTokens     int64
+}
+
+// RecentFailure holds the columns required to display a recent failure entry.
+type RecentFailure struct {
+	TimestampMS int64
+	Model       string
+	APIKeyHash  string
+	SourceHash  string
+	AuthIndex   string
+	Endpoint    string
+	LatencyMS   sql.NullInt64
+}
+
+const aggregateSQL = `select
+	count(*),
+	sum(case when failed = 0 then 1 else 0 end),
+	sum(case when failed = 1 then 1 else 0 end),
+	coalesce(sum(input_tokens), 0),
+	coalesce(sum(output_tokens), 0),
+	coalesce(sum(reasoning_tokens), 0),
+	coalesce(sum(case when cached_tokens > cache_tokens then cached_tokens else cache_tokens end), 0),
+	coalesce(sum(total_tokens), 0),
+	avg(nullif(latency_ms, 0)),
+	coalesce(sum(case when total_tokens = 0 and failed = 0 then 1 else 0 end), 0)
+from usage_events
+where timestamp_ms >= ? and timestamp_ms < ?`
+
+// AggregateBetween computes summary metrics over [fromMs, toMs).
+func (r *repository) AggregateBetween(ctx context.Context, fromMs, toMs int64) (Aggregate, error) {
+	row := r.db.QueryRowContext(ctx, aggregateSQL, fromMs, toMs)
+	var agg Aggregate
+	var success, failure sql.NullInt64
+	if err := row.Scan(
+		&agg.TotalCalls,
+		&success,
+		&failure,
+		&agg.InputTokens,
+		&agg.OutputTokens,
+		&agg.ReasoningTokens,
+		&agg.CachedTokens,
+		&agg.TotalTokens,
+		&agg.AvgLatencyMS,
+		&agg.ZeroTokenCalls,
+	); err != nil {
+		return Aggregate{}, err
+	}
+	agg.SuccessCalls = success.Int64
+	agg.FailureCalls = failure.Int64
+	return agg, nil
+}
+
+const topModelsSQL = `select
+	model,
+	count(*) as calls,
+	sum(case when failed = 0 then 1 else 0 end) as success,
+	coalesce(sum(input_tokens), 0),
+	coalesce(sum(output_tokens), 0),
+	coalesce(sum(reasoning_tokens), 0),
+	coalesce(sum(case when cached_tokens > cache_tokens then cached_tokens else cache_tokens end), 0),
+	coalesce(sum(total_tokens), 0)
+from usage_events
+where timestamp_ms >= ? and timestamp_ms < ?
+group by model
+order by calls desc
+limit ?`
+
+// TopModelsBetween returns the most active models ordered by call count.
+func (r *repository) TopModelsBetween(ctx context.Context, fromMs, toMs int64, limit int) ([]ModelStat, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := r.db.QueryContext(ctx, topModelsSQL, fromMs, toMs, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]ModelStat, 0, limit)
+	for rows.Next() {
+		var stat ModelStat
+		if err := rows.Scan(
+			&stat.Model,
+			&stat.Calls,
+			&stat.SuccessCalls,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.ReasoningTokens,
+			&stat.CachedTokens,
+			&stat.TotalTokens,
+		); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+const modelStatsSQL = `select
+	model,
+	count(*) as calls,
+	sum(case when failed = 0 then 1 else 0 end) as success,
+	coalesce(sum(input_tokens), 0),
+	coalesce(sum(output_tokens), 0),
+	coalesce(sum(reasoning_tokens), 0),
+	coalesce(sum(case when cached_tokens > cache_tokens then cached_tokens else cache_tokens end), 0),
+	coalesce(sum(total_tokens), 0)
+from usage_events
+where timestamp_ms >= ? and timestamp_ms < ?
+group by model
+order by calls desc`
+
+// ModelStatsBetween returns per-model totals for all models in a window.
+func (r *repository) ModelStatsBetween(ctx context.Context, fromMs, toMs int64) ([]ModelStat, error) {
+	rows, err := r.db.QueryContext(ctx, modelStatsSQL, fromMs, toMs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]ModelStat, 0)
+	for rows.Next() {
+		var stat ModelStat
+		if err := rows.Scan(
+			&stat.Model,
+			&stat.Calls,
+			&stat.SuccessCalls,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.ReasoningTokens,
+			&stat.CachedTokens,
+			&stat.TotalTokens,
+		); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+const recentFailuresSQL = `select
+	timestamp_ms, model,
+	coalesce(api_key_hash, ''),
+	coalesce(source_hash, ''),
+	coalesce(auth_index, ''),
+	coalesce(endpoint, ''),
+	latency_ms
+from usage_events
+where failed = 1 and timestamp_ms >= ? and timestamp_ms < ?
+order by timestamp_ms desc
+limit ?`
+
+// RecentFailuresBetween returns the most recent failed events.
+func (r *repository) RecentFailuresBetween(ctx context.Context, fromMs, toMs int64, limit int) ([]RecentFailure, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := r.db.QueryContext(ctx, recentFailuresSQL, fromMs, toMs, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]RecentFailure, 0, limit)
+	for rows.Next() {
+		var rf RecentFailure
+		if err := rows.Scan(
+			&rf.TimestampMS,
+			&rf.Model,
+			&rf.APIKeyHash,
+			&rf.SourceHash,
+			&rf.AuthIndex,
+			&rf.Endpoint,
+			&rf.LatencyMS,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, rf)
+	}
+	return results, rows.Err()
+}
+
+// HourlyTimelineBetween returns hourly buckets relative to fromMs over [fromMs, toMs).
+func (r *repository) HourlyTimelineBetween(ctx context.Context, fromMs, toMs int64) ([]TimelinePoint, error) {
+	rows, err := r.db.QueryContext(ctx, `select
+	cast((timestamp_ms - ?) / 3600000 as integer) as hour_index,
+	count(*),
+	coalesce(sum(total_tokens), 0),
+	sum(case when failed = 0 then 1 else 0 end),
+	sum(case when failed = 1 then 1 else 0 end)
+from usage_events
+where timestamp_ms >= ? and timestamp_ms < ?
+group by hour_index
+order by hour_index`, fromMs, fromMs, toMs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	points := make([]TimelinePoint, 0)
+	for rows.Next() {
+		var hourIndex int64
+		var point TimelinePoint
+		if err := rows.Scan(&hourIndex, &point.Calls, &point.Tokens, &point.Success, &point.Failure); err != nil {
+			return nil, err
+		}
+		if hourIndex < 0 {
+			continue
+		}
+		point.BucketMS = fromMs + hourIndex*60*60*1000
+		points = append(points, point)
+	}
+	return points, rows.Err()
+}

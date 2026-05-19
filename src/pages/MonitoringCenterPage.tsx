@@ -44,7 +44,6 @@ import {
 import {
   buildAccountRows,
   buildApiKeyRows,
-  buildMonitoringSummary,
   buildRealtimeMonitorRows,
   getRangeBounds,
   type MonitoringAccountModelSpendRow,
@@ -249,6 +248,17 @@ type PaginationControlsProps = {
 };
 
 const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
+
+const ensureSelectedOption = <T extends { value: string; label: string }>(
+  options: T[],
+  value: string,
+  label = value
+): T[] => {
+  if (!value || value === 'all' || options.some((option) => option.value === value)) {
+    return options;
+  }
+  return [...options, { value, label } as T];
+};
 
 const isUsageImportFile = (file: File) => {
   const normalizedName = file.name.toLowerCase();
@@ -2002,29 +2012,48 @@ export function MonitoringCenterPage() {
   }, [customDraftEndMs, customDraftStartMs, t]);
 
   const {
-    usage,
     loading: usageLoading,
     error: usageError,
-    lastRefreshedAt,
     modelPrices,
     apiKeyAliases,
-    usageServiceAvailable,
     setModelPrices,
     loadApiKeyAliases,
     syncModelPrices,
     exportUsage,
     importUsage,
-    loadUsage,
-  } = useUsageData();
+  } = useUsageData({ loadUsageEvents: false });
+
+  const monitoringScopeFilters = useMemo(
+    () => ({
+      account: selectedAccount,
+      provider: selectedProvider,
+      model: selectedModel,
+      channel: selectedChannel,
+      apiKeyHash: selectedApiKeyHash,
+      status: selectedStatus,
+    }),
+    [
+      selectedAccount,
+      selectedApiKeyHash,
+      selectedChannel,
+      selectedModel,
+      selectedProvider,
+      selectedStatus,
+    ]
+  );
 
   const {
     loading: monitoringLoading,
     error: monitoringError,
     authFiles,
+    summary: monitoringSummary,
     filteredRows,
+    eventsHasMore,
+    eventsLoadingMore,
+    lastRefreshedAt: monitoringLastRefreshedAt,
     refreshMeta,
+    loadMoreEvents,
   } = useMonitoringData({
-    usage,
     config,
     modelPrices,
     apiKeyAliases,
@@ -2032,11 +2061,12 @@ export function MonitoringCenterPage() {
     customTimeRange,
     searchQuery: deferredSearch,
     searchApiKeyHash: deferredSearchApiKeyHash,
+    scopeFilters: monitoringScopeFilters,
   });
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([loadUsage(), loadApiKeyAliases(), refreshMeta(false)]);
-  }, [loadApiKeyAliases, loadUsage, refreshMeta]);
+    await Promise.all([loadApiKeyAliases(), refreshMeta(false)]);
+  }, [loadApiKeyAliases, refreshMeta]);
 
   const setCurrentAccountPage = useCallback(
     (page: number) => {
@@ -2062,6 +2092,7 @@ export function MonitoringCenterPage() {
 
   const monitoringUnavailable =
     !requestMonitoringAvailability.checking && !requestMonitoringAvailability.available;
+  const usageTransferAvailable = requestMonitoringAvailability.available;
   const monitoringUnavailableTitle =
     requestMonitoringAvailability.reason === 'monitoring_disabled'
       ? t('monitoring.request_monitoring_disabled_title')
@@ -2095,52 +2126,68 @@ export function MonitoringCenterPage() {
   }, [accountOverviewMode, accountPageByMode.card, accountPageSizeByMode.card, accountSort]);
 
   const providerOptions = useMemo(
-    () => [
-      { value: 'all', label: t('monitoring.filter_all_providers') },
-      ...Array.from(new Set(filteredRows.map((row) => row.provider)))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right))
-        .map((value) => ({ value, label: value })),
-    ],
-    [filteredRows, t]
+    () =>
+      ensureSelectedOption(
+        [
+          { value: 'all', label: t('monitoring.filter_all_providers') },
+          ...Array.from(new Set(filteredRows.map((row) => row.provider)))
+            .filter(Boolean)
+            .sort((left, right) => left.localeCompare(right))
+            .map((value) => ({ value, label: value })),
+        ],
+        selectedProvider
+      ),
+    [filteredRows, selectedProvider, t]
   );
 
   const accountOptionRows = useMemo(() => buildAccountRows(filteredRows), [filteredRows]);
 
   const accountOptions = useMemo(
-    () => [
-      { value: 'all', label: t('monitoring.filter_all_accounts') },
-      ...Array.from(
-        new Map(
-          accountOptionRows.map((row) => [row.account, buildAccountOptionLabel(row)])
-        ).entries()
-      )
-        .sort((left, right) => left[1].localeCompare(right[1]))
-        .map(([value, label]) => ({ value, label })),
-    ],
-    [accountOptionRows, t]
+    () =>
+      ensureSelectedOption(
+        [
+          { value: 'all', label: t('monitoring.filter_all_accounts') },
+          ...Array.from(
+            new Map(
+              accountOptionRows.map((row) => [row.account, buildAccountOptionLabel(row)])
+            ).entries()
+          )
+            .sort((left, right) => left[1].localeCompare(right[1]))
+            .map(([value, label]) => ({ value, label })),
+        ],
+        selectedAccount
+      ),
+    [accountOptionRows, selectedAccount, t]
   );
 
   const modelOptions = useMemo(
-    () => [
-      { value: 'all', label: t('monitoring.filter_all_models') },
-      ...Array.from(new Set(filteredRows.map((row) => row.model)))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right))
-        .map((value) => ({ value, label: value })),
-    ],
-    [filteredRows, t]
+    () =>
+      ensureSelectedOption(
+        [
+          { value: 'all', label: t('monitoring.filter_all_models') },
+          ...Array.from(new Set(filteredRows.map((row) => row.model)))
+            .filter(Boolean)
+            .sort((left, right) => left.localeCompare(right))
+            .map((value) => ({ value, label: value })),
+        ],
+        selectedModel
+      ),
+    [filteredRows, selectedModel, t]
   );
 
   const channelOptions = useMemo(
-    () => [
-      { value: 'all', label: t('monitoring.filter_all_channels') },
-      ...Array.from(new Set(filteredRows.map((row) => row.channel)))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right))
-        .map((value) => ({ value, label: value })),
-    ],
-    [filteredRows, t]
+    () =>
+      ensureSelectedOption(
+        [
+          { value: 'all', label: t('monitoring.filter_all_channels') },
+          ...Array.from(new Set(filteredRows.map((row) => row.channel)))
+            .filter(Boolean)
+            .sort((left, right) => left.localeCompare(right))
+            .map((value) => ({ value, label: value })),
+        ],
+        selectedChannel
+      ),
+    [filteredRows, selectedChannel, t]
   );
 
   const apiKeyOptions = useMemo(() => {
@@ -2150,13 +2197,17 @@ export function MonitoringCenterPage() {
       optionMap.set(row.apiKeyHash, row.apiKeyLabel || row.apiKeyMasked || row.apiKeyHash);
     });
 
-    return [
-      { value: 'all', label: t('monitoring.filter_all_api_keys') },
-      ...Array.from(optionMap.entries())
-        .sort((left, right) => left[1].localeCompare(right[1]))
-        .map(([value, label]) => ({ value, label })),
-    ];
-  }, [filteredRows, t]);
+    return ensureSelectedOption(
+      [
+        { value: 'all', label: t('monitoring.filter_all_api_keys') },
+        ...Array.from(optionMap.entries())
+          .sort((left, right) => left[1].localeCompare(right[1]))
+          .map(([value, label]) => ({ value, label })),
+      ],
+      selectedApiKeyHash,
+      selectedApiKeyHash
+    );
+  }, [filteredRows, selectedApiKeyHash, t]);
 
   const statusOptions = useMemo(
     () => [
@@ -2193,47 +2244,12 @@ export function MonitoringCenterPage() {
     return map;
   }, [authFiles]);
 
-  const scopedRows = useMemo(
-    () =>
-      filteredRows.filter((row) => {
-        if (selectedAccount !== 'all' && row.account !== selectedAccount) {
-          return false;
-        }
-        if (selectedProvider !== 'all' && row.provider !== selectedProvider) {
-          return false;
-        }
-        if (selectedModel !== 'all' && row.model !== selectedModel) {
-          return false;
-        }
-        if (selectedChannel !== 'all' && row.channel !== selectedChannel) {
-          return false;
-        }
-        if (selectedApiKeyHash !== 'all' && row.apiKeyHash !== selectedApiKeyHash) {
-          return false;
-        }
-        if (selectedStatus === 'success' && row.failed) {
-          return false;
-        }
-        if (selectedStatus === 'failed' && !row.failed) {
-          return false;
-        }
-        return true;
-      }),
-    [
-      filteredRows,
-      selectedAccount,
-      selectedApiKeyHash,
-      selectedChannel,
-      selectedModel,
-      selectedProvider,
-      selectedStatus,
-    ]
-  );
+  const scopedRows = filteredRows;
   const scopedStatsRows = useMemo(
     () => scopedRows.filter((row) => row.statsIncluded),
     [scopedRows]
   );
-  const accountStatusNowMs = lastRefreshedAt?.getTime() ?? Date.now();
+  const accountStatusNowMs = monitoringLastRefreshedAt?.getTime() ?? Date.now();
   const accountStatusBounds = useMemo(
     () => getRangeBounds(timeRange, accountStatusNowMs, customTimeRange),
     [accountStatusNowMs, customTimeRange, timeRange]
@@ -2243,7 +2259,7 @@ export function MonitoringCenterPage() {
     [accountStatusBounds, i18n.language, t]
   );
 
-  const scopedSummary = useMemo(() => buildMonitoringSummary(scopedStatsRows), [scopedStatsRows]);
+  const scopedSummary = monitoringSummary;
   const accountRows = useMemo(() => buildAccountRows(scopedRows), [scopedRows]);
   const apiKeyRows = useMemo(() => buildApiKeyRows(scopedRows), [scopedRows]);
   const accountStatusDataByRowId = useMemo(
@@ -2335,7 +2351,7 @@ export function MonitoringCenterPage() {
     () => buildMonitoringAccountQuotaTargetsByAccount(accountRows, accountAuthStateByRowId),
     [accountAuthStateByRowId, accountRows]
   );
-  const scopedFailureCount = scopedRows.filter((row) => row.failed).length;
+  const scopedFailureCount = scopedSummary.failureCalls;
   const savedPriceEntries = useMemo(
     () => Object.entries(modelPrices).sort((left, right) => left[0].localeCompare(right[0])),
     [modelPrices]
@@ -2975,12 +2991,12 @@ export function MonitoringCenterPage() {
   );
 
   const handleUsageImportClick = useCallback(() => {
-    if (!usageServiceAvailable) {
+    if (!requestMonitoringAvailability.available) {
       showNotification(t('usage_stats.import_export_requires_usage_service'), 'warning');
       return;
     }
     usageImportInputRef.current?.click();
-  }, [showNotification, t, usageServiceAvailable]);
+  }, [requestMonitoringAvailability.available, showNotification, t]);
 
   const handleUsageImportChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -3015,7 +3031,7 @@ export function MonitoringCenterPage() {
 
   return (
     <div className={styles.page}>
-      {overallLoading && !usage ? (
+      {overallLoading && filteredRows.length === 0 ? (
         <div className={styles.loadingOverlay} aria-busy="true">
           <div className={styles.loadingOverlayContent}>
             <LoadingSpinner size={28} />
@@ -3033,7 +3049,9 @@ export function MonitoringCenterPage() {
           <div className={styles.statusMeta}>
             <span>
               {t('monitoring.last_sync')}:{' '}
-              {lastRefreshedAt ? lastRefreshedAt.toLocaleTimeString(i18n.language) : '--'}
+              {monitoringLastRefreshedAt
+                ? monitoringLastRefreshedAt.toLocaleTimeString(i18n.language)
+                : '--'}
             </span>
             <span className={scopedFailureCount > 0 ? styles.statusMetaWarn : undefined}>
               {`${t('monitoring.recent_failures')}: ${scopedFailureCount}`}
@@ -3063,9 +3081,9 @@ export function MonitoringCenterPage() {
             type="button"
             className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
             onClick={() => void handleUsageExport()}
-            disabled={!usageServiceAvailable || usageExporting || usageImporting}
+            disabled={!usageTransferAvailable || usageExporting || usageImporting}
             title={
-              usageServiceAvailable
+              usageTransferAvailable
                 ? t('usage_stats.export')
                 : t('usage_stats.import_export_requires_usage_service')
             }
@@ -3077,9 +3095,9 @@ export function MonitoringCenterPage() {
             type="button"
             className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
             onClick={handleUsageImportClick}
-            disabled={!usageServiceAvailable || usageExporting || usageImporting}
+            disabled={!usageTransferAvailable || usageExporting || usageImporting}
             title={
-              usageServiceAvailable
+              usageTransferAvailable
                 ? t('usage_stats.import')
                 : t('usage_stats.import_export_requires_usage_service')
             }
@@ -3105,10 +3123,7 @@ export function MonitoringCenterPage() {
         </div>
 
         <div className={`${styles.actionGroup} ${styles.actionGroupNav}`}>
-          <Link
-            to="/codex-inspection"
-            className={`${styles.actionButton} ${styles.quickNavLink}`}
-          >
+          <Link to="/codex-inspection" className={`${styles.actionButton} ${styles.quickNavLink}`}>
             <IconChartLine size={16} />
             <span>{t('monitoring.codex_inspection_entry')}</span>
             <IconExternalLink size={14} />
@@ -3805,6 +3820,22 @@ export function MonitoringCenterPage() {
           onPageSizeChange={handleRealtimePageSizeChange}
           t={t}
         />
+        {realtimeLogRows.length > 0 ? (
+          <div className={styles.loadMoreEventsBar}>
+            {eventsHasMore ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={loadMoreEvents}
+                disabled={eventsLoadingMore || overallLoading}
+              >
+                {eventsLoadingMore ? t('common.loading') : t('monitoring.load_more_events')}
+              </Button>
+            ) : (
+              <span>{t('monitoring.no_more_events')}</span>
+            )}
+          </div>
+        ) : null}
       </MonitoringPanel>
 
       <Modal

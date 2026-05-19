@@ -1,0 +1,158 @@
+@use '../../../styles/mixins.scss' as *;
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+  min-height: 320px;
+  padding: $spacing-lg;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--app-blur));
+  -webkit-backdrop-filter: blur(var(--app-blur));
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-sm;
+
+  h2 {
+    margin: 0;
+    font-size: 15px;
+    color: var(--text-primary);
+  }
+}
+
+.badgeOk,
+.badgeError {
+  display: inline-flex;
+  align-items: center;
+  max-width: 50%;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: $radius-full;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badgeOk {
+  color: var(--success-badge-text);
+  background: var(--success-badge-bg);
+  border: 1px solid var(--success-badge-border);
+}
+
+.badgeError {
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+}
+
+.statusGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: $spacing-sm;
+}
+
+.statusTile {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: $spacing-sm;
+  align-items: center;
+  min-height: 64px;
+  padding: $spacing-sm;
+  border: 1px solid var(--border-color);
+  border-radius: var(--app-radius-md);
+  background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 16px;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.tileIcon {
+  grid-row: 1 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--app-radius-md);
+  color: var(--primary-color);
+  background: var(--app-accent-soft);
+}
+
+.detailList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: $spacing-sm;
+    min-height: 24px;
+    font-size: 12px;
+  }
+
+  span {
+    color: var(--text-secondary);
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-weight: 600;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.errorLine {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: auto;
+  padding: $spacing-sm;
+  border: 1px solid var(--error-border);
+  border-radius: var(--app-radius-md);
+  background: var(--error-bg);
+  font-size: 12px;
+
+  span {
+    color: var(--error-text);
+    font-weight: 700;
+  }
+
+  strong {
+    color: var(--error-text);
+    font-weight: 500;
+    word-break: break-word;
+  }
+}

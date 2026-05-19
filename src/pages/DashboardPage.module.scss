@@ -275,6 +275,44 @@
   margin-top: 2px;
 }
 
+// ─── Usage Service Cards ────────────────────────────────
+
+.usageSection {
+  position: relative;
+  z-index: 1;
+  animation: cardEnter 0.4s ease-out 0.45s both;
+}
+
+.usageCardGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: $spacing-md;
+
+  @include narrow-laptop {
+    gap: $spacing-sm;
+  }
+
+  @media (max-width: 1100px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (max-width: 680px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.trafficOverview {
+  grid-column: span 2;
+
+  @media (max-width: 1100px) {
+    grid-column: span 2;
+  }
+
+  @media (max-width: 680px) {
+    grid-column: span 1;
+  }
+}
+
 // ─── Config Pills Section ───────────────────────────────
 
 .configSection {

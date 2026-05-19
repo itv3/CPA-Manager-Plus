@@ -4,6 +4,13 @@ import { useTranslation } from 'react-i18next';
 import { IconKey, IconBot, IconFileText, IconSatellite } from '@/components/ui/icons';
 import { useAuthStore, useConfigStore, useModelsStore } from '@/stores';
 import { apiKeysApi, providersApi, authFilesApi } from '@/services/api';
+import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
+import { VersionCard } from './dashboard/components/VersionCard';
+import { UsageMetricsCard } from './dashboard/components/UsageMetricsCard';
+import { CollectorStatusCard } from './dashboard/components/CollectorStatusCard';
+import { HealthAlertsCard } from './dashboard/components/HealthAlertsCard';
+import { TrafficOverviewCard } from './dashboard/components/TrafficOverviewCard';
+import { useDashboardUsageSummary } from './dashboard/hooks/useDashboardUsageSummary';
 import styles from './DashboardPage.module.scss';
 
 interface QuickStat {
@@ -28,7 +35,10 @@ export function DashboardPage() {
   const serverVersion = useAuthStore((state) => state.serverVersion);
   const serverBuildDate = useAuthStore((state) => state.serverBuildDate);
   const apiBase = useAuthStore((state) => state.apiBase);
+  const managementKey = useAuthStore((state) => state.managementKey);
   const config = useConfigStore((state) => state.config);
+  const usageSummary = useDashboardUsageSummary();
+  const refreshUsageSummary = usageSummary.refresh;
 
   const models = useModelsStore((state) => state.models);
   const modelsLoading = useModelsStore((state) => state.loading);
@@ -52,6 +62,7 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [cardRefreshSignal, setCardRefreshSignal] = useState(0);
 
   const apiKeysCache = useRef<string[]>([]);
 
@@ -129,8 +140,8 @@ export function DashboardPage() {
     }
   }, [connectionStatus, apiBase, resolveApiKeysForModels, fetchModelsFromStore]);
 
-  useEffect(() => {
-    const fetchStats = async () => {
+  const refreshStats = useCallback(async () => {
+    if (connectionStatus === 'connected') {
       setLoading(true);
       try {
         const [keysRes, filesRes, geminiRes, codexRes, claudeRes, openaiRes] =
@@ -157,15 +168,22 @@ export function DashboardPage() {
       } finally {
         setLoading(false);
       }
-    };
-
-    if (connectionStatus === 'connected') {
-      fetchStats();
-      fetchModels();
     } else {
       setLoading(false);
     }
-  }, [connectionStatus, fetchModels]);
+  }, [connectionStatus]);
+
+  const refreshDashboard = useCallback(async () => {
+    setCurrentTime(new Date());
+    setCardRefreshSignal((value) => value + 1);
+    await Promise.all([refreshStats(), fetchModels(), refreshUsageSummary()]);
+  }, [fetchModels, refreshStats, refreshUsageSummary]);
+
+  useEffect(() => {
+    void Promise.all([refreshStats(), fetchModels()]);
+  }, [fetchModels, refreshStats]);
+
+  useHeaderRefresh(refreshDashboard);
 
   // Calculate total provider keys only when all provider stats are available.
   const providerStatsReady =
@@ -274,24 +292,63 @@ export function DashboardPage() {
               }`}
             />
             <span className={styles.pillText}>
-              {serverVersion
-                ? `v${serverVersion.trim().replace(/^[vV]+/, '')}`
-                : t(
-                    connectionStatus === 'connected'
-                      ? 'common.connected'
-                      : connectionStatus === 'connecting'
-                        ? 'common.connecting'
-                        : 'common.disconnected'
-                  )}
+              {t(
+                connectionStatus === 'connected'
+                  ? 'common.connected'
+                  : connectionStatus === 'connecting'
+                    ? 'common.connecting'
+                    : 'common.disconnected'
+              )}
             </span>
           </div>
-          {serverBuildDate && (
-            <span className={styles.buildDate}>
-              {new Date(serverBuildDate).toLocaleDateString(i18n.language)}
-            </span>
-          )}
         </div>
       </section>
+
+      <VersionCard
+        appVersion={__APP_VERSION__ || t('dashboard.version_unknown')}
+        apiVersion={serverVersion || t('dashboard.version_unknown')}
+        apiBase={apiBase || ''}
+        serverBuildDate={serverBuildDate || undefined}
+        connectionStatus={connectionStatus}
+        refreshSignal={cardRefreshSignal}
+      />
+
+      {usageSummary.enabled && (
+        <section className={styles.usageSection}>
+          <div className={styles.usageCardGrid}>
+            <div className={styles.trafficOverview}>
+              <TrafficOverviewCard
+                timeline={usageSummary.trafficTimeline}
+                hourlyActivity={usageSummary.hourlyActivity}
+                tokenMix={usageSummary.tokenMix}
+                loading={usageSummary.loading}
+              />
+            </div>
+            <UsageMetricsCard
+              summary={usageSummary.summary}
+              topModels={usageSummary.topModels}
+              modelCostRank={usageSummary.modelCostRank}
+              loading={usageSummary.loading}
+              error={usageSummary.error}
+              lastRefreshedAt={usageSummary.lastRefreshedAt}
+            />
+            <CollectorStatusCard
+              enabled={usageSummary.enabled}
+              serviceBase={usageSummary.serviceBase}
+              managementKey={managementKey}
+              refreshSignal={cardRefreshSignal}
+            />
+            <HealthAlertsCard
+              enabled={usageSummary.enabled}
+              loading={usageSummary.loading}
+              recentFailures={usageSummary.recentFailures}
+              channelHealth={usageSummary.channelHealth}
+              failureSources={usageSummary.failureSources}
+              refreshSignal={cardRefreshSignal}
+            />
+          </div>
+        </section>
+      )}
 
       {/* Bento stats grid */}
       <section className={styles.statsSection}>

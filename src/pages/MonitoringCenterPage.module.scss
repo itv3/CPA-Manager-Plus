@@ -1619,6 +1619,17 @@
   flex-wrap: wrap;
 }
 
+.loadMoreEventsBar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  margin-top: 10px;
+  color: var(--monitor-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .pageSizeField {
   display: inline-flex;
   align-items: center;

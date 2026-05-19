@@ -1,0 +1,183 @@
+@use '../../../styles/mixins.scss' as *;
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+  min-height: 320px;
+  padding: $spacing-lg;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--app-blur));
+  -webkit-backdrop-filter: blur(var(--app-blur));
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: $spacing-sm;
+
+  h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+  }
+
+  span {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+  }
+}
+
+.timelineChart {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(24, minmax(4px, 1fr));
+  align-items: end;
+  gap: 4px;
+  min-height: 126px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.timelineColumn {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  height: 112px;
+  min-width: 0;
+}
+
+.callsBar,
+.tokensBar {
+  display: block;
+  width: min(10px, 45%);
+  min-height: 3px;
+  border-radius: 999px 999px 2px 2px;
+}
+
+.callsBar {
+  height: max(3px, calc(var(--calls-share) * 100%));
+  background: var(--primary-color);
+}
+
+.tokensBar {
+  height: max(3px, calc(var(--tokens-share) * 100%));
+  background: var(--success-color);
+  opacity: 0.82;
+}
+
+.emptyOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: $spacing-md;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.callsLegend,
+.tokensLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  &::before {
+    content: '';
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    background: currentColor;
+  }
+}
+
+.callsLegend {
+  color: var(--primary-color);
+}
+
+.tokensLegend {
+  color: var(--success-color);
+}
+
+.activityStrip {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(4px, 1fr));
+  gap: 4px;
+  min-height: 20px;
+}
+
+.activityCell {
+  display: block;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--primary-color);
+  opacity: calc(0.16 + var(--intensity) * 0.84);
+}
+
+.tokenMix {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tokenSegments {
+  display: flex;
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+}
+
+.tokenSegment {
+  width: calc(var(--share) * 100%);
+  min-width: 0;
+  background: var(--primary-color);
+}
+
+.token_input {
+  background: var(--primary-color);
+}
+
+.token_output {
+  background: var(--success-color);
+}
+
+.token_reasoning {
+  background: var(--warning-color);
+}
+
+.token_cached {
+  background: var(--info-color);
+}
+
+.tokenLabels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
