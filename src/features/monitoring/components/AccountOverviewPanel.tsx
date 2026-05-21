@@ -52,6 +52,7 @@ type PaginationState<T> = {
 };
 
 type AccountOverviewPanelProps = {
+  embedded?: boolean;
   mode: MonitoringAccountOverviewMode;
   searchInput: string;
   columns: AccountOverviewColumn[];
@@ -87,13 +88,129 @@ type AccountOverviewPanelProps = {
   onPageSizeChange: (pageSize: number) => void;
 };
 
+export type AccountOverviewPanelActionsProps = Pick<
+  AccountOverviewPanelProps,
+  | 'mode'
+  | 'searchInput'
+  | 'accountSort'
+  | 'accountSortOptions'
+  | 'overallLoading'
+  | 't'
+  | 'onSearchChange'
+  | 'onRefreshAll'
+  | 'onAccountSortKeyChange'
+  | 'onModeChange'
+>;
+
 const EMPTY_ACCOUNT_AUTH_STATE: MonitoringAccountAuthState = {
   files: [],
   toggleableFileNames: [],
   enabledState: 'unavailable',
 };
 
+const getAccountColumnInfo = (columnKey: string, t: TFunction) => {
+  if (columnKey === 'status') {
+    return t('monitoring.account_overview_status_hint');
+  }
+  if (columnKey === 'success-rate') {
+    return t('monitoring.account_overview_success_rate_hint');
+  }
+  return '';
+};
+
+function AccountColumnLabel({
+  column,
+  t,
+}: {
+  column: AccountOverviewColumn;
+  t: TFunction;
+}) {
+  const info = getAccountColumnInfo(column.key, t);
+
+  return (
+    <span className={styles.tableHeaderWithInfo}>
+      <span>{column.label}</span>
+      {info ? (
+        <span title={info}>
+          <IconInfo size={13} className={styles.tableHeaderInfoIcon} aria-label={info} />
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+export function AccountOverviewPanelActions({
+  mode,
+  searchInput,
+  accountSort,
+  accountSortOptions,
+  overallLoading,
+  t,
+  onSearchChange,
+  onRefreshAll,
+  onAccountSortKeyChange,
+  onModeChange,
+}: AccountOverviewPanelActionsProps) {
+  return (
+    <div className={styles.accountOverviewHeaderActions}>
+      <div className={styles.accountOverviewToolbarRow}>
+        <div className={styles.accountOverviewSearchWrap}>
+          <Input
+            value={searchInput}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder={t('monitoring.account_overview_search_placeholder')}
+            className={styles.accountOverviewSearchInput}
+            rightElement={<IconSearch size={16} />}
+            aria-label={t('monitoring.account_overview_search_placeholder')}
+          />
+        </div>
+        <button
+          type="button"
+          className={styles.accountOverviewToolButton}
+          onClick={() => void onRefreshAll()}
+          disabled={overallLoading}
+        >
+          <IconRefreshCw
+            size={15}
+            className={overallLoading ? styles.refreshIconSpinning : styles.refreshIcon}
+          />
+          <span>{t('common.refresh')}</span>
+        </button>
+        <div className={styles.accountOverviewSortBar}>
+          <Select
+            className={styles.accountOverviewSortSelect}
+            triggerClassName={styles.accountOverviewSortSelectTrigger}
+            value={accountSort.key}
+            options={accountSortOptions}
+            onChange={(value) => onAccountSortKeyChange(value as AccountSortKey)}
+            ariaLabel={t('monitoring.account_overview_sort_label')}
+            fullWidth={false}
+          />
+        </div>
+
+        <div className={`${styles.segmentedControl} ${styles.accountOverviewModeToggle}`}>
+          <button
+            type="button"
+            className={`${styles.segmentButton} ${mode === 'table' ? styles.segmentButtonActive : ''}`}
+            onClick={() => onModeChange('table')}
+          >
+            {t('monitoring.account_overview_view_mode_table')}
+          </button>
+          <button
+            type="button"
+            className={`${styles.segmentButton} ${mode === 'card' ? styles.segmentButtonActive : ''}`}
+            onClick={() => onModeChange('card')}
+          >
+            {t('monitoring.account_overview_view_mode_card')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AccountOverviewPanel({
+  embedded = false,
   mode,
   searchInput,
   columns,
@@ -128,78 +245,23 @@ export function AccountOverviewPanel({
   onPageChange,
   onPageSizeChange,
 }: AccountOverviewPanelProps) {
-  return (
-    <MonitoringPanel
-      title={
-        <span className={styles.panelTitleWithHint}>
-          {t('monitoring.account_overview_title')}
-          <span title={t('monitoring.account_overview_description')}>
-            <IconInfo
-              size={14}
-              className={styles.panelTitleHintIcon}
-              aria-label={t('monitoring.account_overview_description')}
-            />
-          </span>
-        </span>
-      }
-      className={styles.accountPanel}
-      extra={
-        <div className={styles.accountOverviewHeaderActions}>
-          <div className={styles.accountOverviewToolbarRow}>
-            <div className={styles.accountOverviewSearchWrap}>
-              <Input
-                value={searchInput}
-                onChange={(event) => onSearchChange(event.target.value)}
-                placeholder={t('monitoring.account_overview_search_placeholder')}
-                className={styles.accountOverviewSearchInput}
-                rightElement={<IconSearch size={16} />}
-                aria-label={t('monitoring.account_overview_search_placeholder')}
-              />
-            </div>
-            <button
-              type="button"
-              className={styles.accountOverviewToolButton}
-              onClick={() => void onRefreshAll()}
-              disabled={overallLoading}
-            >
-              <IconRefreshCw
-                size={15}
-                className={overallLoading ? styles.refreshIconSpinning : styles.refreshIcon}
-              />
-              <span>{t('common.refresh')}</span>
-            </button>
-            <div className={styles.accountOverviewSortBar}>
-              <Select
-                className={styles.accountOverviewSortSelect}
-                triggerClassName={styles.accountOverviewSortSelectTrigger}
-                value={accountSort.key}
-                options={accountSortOptions}
-                onChange={(value) => onAccountSortKeyChange(value as AccountSortKey)}
-                ariaLabel={t('monitoring.account_overview_sort_label')}
-                fullWidth={false}
-              />
-            </div>
+  const actions = (
+    <AccountOverviewPanelActions
+      mode={mode}
+      searchInput={searchInput}
+      accountSort={accountSort}
+      accountSortOptions={accountSortOptions}
+      overallLoading={overallLoading}
+      t={t}
+      onSearchChange={onSearchChange}
+      onRefreshAll={onRefreshAll}
+      onAccountSortKeyChange={onAccountSortKeyChange}
+      onModeChange={onModeChange}
+    />
+  );
 
-            <div className={`${styles.segmentedControl} ${styles.accountOverviewModeToggle}`}>
-              <button
-                type="button"
-                className={`${styles.segmentButton} ${mode === 'table' ? styles.segmentButtonActive : ''}`}
-                onClick={() => onModeChange('table')}
-              >
-                {t('monitoring.account_overview_view_mode_table')}
-              </button>
-              <button
-                type="button"
-                className={`${styles.segmentButton} ${mode === 'card' ? styles.segmentButtonActive : ''}`}
-                onClick={() => onModeChange('card')}
-              >
-                {t('monitoring.account_overview_view_mode_card')}
-              </button>
-            </div>
-          </div>
-        </div>
-      }
-    >
+  const content = (
+    <>
       {mode === 'table' ? (
         <div className={`${styles.tableWrapper} ${styles.accountOverviewTableWrapper}`}>
           <table className={`${styles.table} ${styles.accountOverviewTable}`}>
@@ -214,7 +276,11 @@ export function AccountOverviewPanel({
                   const sortKey = column.sortKey;
 
                   if (!sortKey) {
-                    return <th key={column.key}>{column.label}</th>;
+                    return (
+                      <th key={column.key}>
+                        <AccountColumnLabel column={column} t={t} />
+                      </th>
+                    );
                   }
 
                   const isActive = accountSort.key === sortKey;
@@ -245,7 +311,7 @@ export function AccountOverviewPanel({
                           .join(' ')}
                         onClick={() => onAccountSort(sortKey)}
                       >
-                        <span>{column.label}</span>
+                        <AccountColumnLabel column={column} t={t} />
                         <span className={styles.sortIndicator} aria-hidden="true">
                           {SortIcon ? <SortIcon size={14} /> : null}
                         </span>
@@ -429,6 +495,31 @@ export function AccountOverviewPanel({
         onPageSizeChange={onPageSizeChange}
         t={t}
       />
+    </>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <MonitoringPanel
+      title={
+        <span className={styles.panelTitleWithHint}>
+          {t('monitoring.account_overview_title')}
+          <span title={t('monitoring.account_overview_description')}>
+            <IconInfo
+              size={14}
+              className={styles.panelTitleHintIcon}
+              aria-label={t('monitoring.account_overview_description')}
+            />
+          </span>
+        </span>
+      }
+      className={styles.accountPanel}
+      extra={actions}
+    >
+      {content}
     </MonitoringPanel>
   );
 }

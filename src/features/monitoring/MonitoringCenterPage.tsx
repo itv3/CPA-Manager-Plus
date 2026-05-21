@@ -42,18 +42,30 @@ import {
   AccountExpandedDetails,
   AccountOverviewCard,
 } from '@/features/monitoring/components/AccountOverviewCard';
-import { AccountOverviewPanel } from '@/features/monitoring/components/AccountOverviewPanel';
-import { ApiKeySummaryPanel } from '@/features/monitoring/components/ApiKeySummaryPanel';
+import {
+  AccountOverviewPanel,
+  AccountOverviewPanelActions,
+} from '@/features/monitoring/components/AccountOverviewPanel';
+import {
+  ApiKeySummaryPanel,
+  ApiKeySummaryPanelActions,
+} from '@/features/monitoring/components/ApiKeySummaryPanel';
+import { MonitoringDataPanel } from '@/features/monitoring/components/MonitoringDataPanel';
 import { MonitoringActionBar } from '@/features/monitoring/components/MonitoringActionBar';
 import { MonitoringCustomRangeModal } from '@/features/monitoring/components/MonitoringCustomRangeModal';
 import { MonitoringFiltersPanel } from '@/features/monitoring/components/MonitoringFiltersPanel';
+import { IconInbox } from '@/components/ui/icons';
 import { MonitoringPriceModal } from '@/features/monitoring/components/MonitoringPriceModal';
 import {
   MonitoringStatusHeader,
   MonitoringStatusSummary,
 } from '@/features/monitoring/components/MonitoringStatusHeader';
 import { MonitoringSummarySection } from '@/features/monitoring/components/MonitoringSummarySection';
-import { RealtimeEventsPanel } from '@/features/monitoring/components/RealtimeEventsPanel';
+import type { MonitoringTab } from '@/features/monitoring/components/MonitoringTabsBar';
+import {
+  RealtimeEventsPanel,
+  RealtimeEventsPanelActions,
+} from '@/features/monitoring/components/RealtimeEventsPanel';
 import { type AccountQuotaState } from '@/features/monitoring/components/accountOverviewPresentation';
 import {
   buildAccountOptions,
@@ -86,6 +98,11 @@ import {
   type StatusFilter,
 } from '@/features/monitoring/model/monitoringCenterPageModel';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
+import {
+  readMonitoringCenterUiState,
+  writeMonitoringCenterUiState,
+  type MonitoringDataTab,
+} from '@/features/monitoring/monitoringCenterUiState';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
 import { useRequestMonitoringAvailability } from '@/hooks/useRequestMonitoringAvailability';
@@ -95,6 +112,7 @@ import { formatFileSize } from '@/utils/format';
 import type { StatusBarData } from '@/utils/recentRequests';
 import { downloadBlob } from '@/utils/download';
 import { sha256Hex } from '@/utils/apiKeyHash';
+import { formatCompactNumber } from '@/utils/usage';
 import styles from './MonitoringCenterPage.module.scss';
 
 export { AccountExpandedDetails, AccountOverviewCard };
@@ -144,6 +162,10 @@ export function MonitoringCenterPage() {
     {}
   );
   const initialAccountOverviewUiState = useRef(readAccountOverviewUiState());
+  const initialMonitoringCenterUiState = useRef(readMonitoringCenterUiState());
+  const [activeDataTab, setActiveDataTab] = useState<MonitoringDataTab>(
+    initialMonitoringCenterUiState.current.activeDataTab
+  );
   const [accountOverviewMode, setAccountOverviewMode] = useState<MonitoringAccountOverviewMode>(
     initialAccountOverviewUiState.current.mode
   );
@@ -334,6 +356,10 @@ export function MonitoringCenterPage() {
       },
     });
   }, [accountOverviewMode, accountPageByMode.card, accountPageSizeByMode.card, accountSort]);
+
+  useEffect(() => {
+    writeMonitoringCenterUiState({ activeDataTab });
+  }, [activeDataTab]);
 
   const providerOptions = useMemo(
     () => buildProviderOptions(filteredRows, selectedProvider, t),
@@ -543,6 +569,44 @@ export function MonitoringCenterPage() {
     [scopedSummary, t]
   );
 
+  const dataTabs = useMemo<MonitoringTab<MonitoringDataTab>[]>(() => {
+    const totalCalls = scopedSummary.totalCalls;
+    const failureCount = scopedFailureCount;
+    const realtimeHasFailure = failureCount > 0;
+    const realtimeBadge = realtimeHasFailure ? failureCount : formatCompactNumber(totalCalls);
+    return [
+      {
+        id: 'accounts',
+        label: t('monitoring.data_tab_accounts'),
+        icon: 'accounts',
+        badge: accountRows.length,
+        badgeTitle: t('monitoring.data_tab_accounts_badge_title', { count: accountRows.length }),
+      },
+      {
+        id: 'apiKeys',
+        label: t('monitoring.data_tab_api_keys'),
+        icon: 'apiKeys',
+        badge: apiKeyRows.length,
+        badgeTitle: t('monitoring.data_tab_api_keys_badge_title', { count: apiKeyRows.length }),
+      },
+      {
+        id: 'realtime',
+        label: t('monitoring.data_tab_realtime'),
+        icon: 'realtime',
+        badge: realtimeBadge,
+        badgeTone: realtimeHasFailure ? 'failure' : 'default',
+        badgeTitle: t('monitoring.data_tab_realtime_badge_title', {
+          failed: failureCount,
+          total: totalCalls,
+        }),
+      },
+    ];
+  }, [accountRows.length, apiKeyRows.length, scopedFailureCount, scopedSummary.totalCalls, t]);
+
+  const handleDataTabChange = useCallback((tab: MonitoringDataTab) => {
+    setActiveDataTab(tab);
+  }, []);
+
   const restoreFocusSnapshot = useCallback(() => {
     const snapshot = focusSnapshotRef.current;
     focusSnapshotRef.current = null;
@@ -575,11 +639,19 @@ export function MonitoringCenterPage() {
   }, []);
 
   const renderMonitoringEmptyState = () => (
-    <div className={styles.emptyTable}>
-      <strong>
+    <div className={styles.emptyState}>
+      <IconInbox size={48} className={styles.emptyStateIcon} aria-hidden="true" />
+      <strong className={styles.emptyStateTitle}>
         {hasActiveDataFilter ? t('monitoring.no_filtered_data') : t('monitoring.no_data')}
       </strong>
-      {!hasActiveDataFilter ? <span>{t('monitoring.empty_diagnostics_body')}</span> : null}
+      {!hasActiveDataFilter ? (
+        <details className={styles.emptyStateDetails}>
+          <summary className={styles.emptyStateSummary}>
+            {t('monitoring.empty_diagnostics_link')}
+          </summary>
+          <span className={styles.emptyStateBody}>{t('monitoring.empty_diagnostics_body')}</span>
+        </details>
+      ) : null}
     </div>
   );
 
@@ -863,6 +935,54 @@ export function MonitoringCenterPage() {
     [resetCurrentAccountPage]
   );
 
+  const dataPanelActions = useMemo(() => {
+    if (activeDataTab === 'accounts') {
+      return (
+        <AccountOverviewPanelActions
+          mode={accountOverviewMode}
+          searchInput={searchInput}
+          accountSort={accountSort}
+          accountSortOptions={accountSortOptions}
+          overallLoading={overallLoading}
+          t={t}
+          onSearchChange={setSearchInput}
+          onRefreshAll={refreshAll}
+          onAccountSortKeyChange={handleAccountSortKeyChange}
+          onModeChange={setAccountOverviewMode}
+        />
+      );
+    }
+
+    if (activeDataTab === 'apiKeys') {
+      return <ApiKeySummaryPanelActions rowCount={apiKeyRows.length} t={t} />;
+    }
+
+    return (
+      <RealtimeEventsPanelActions
+        rowCount={realtimeLogRows.length}
+        scopedFailureCount={scopedFailureCount}
+        failedOnlyActive={failedOnlyActive}
+        t={t}
+        onToggleFailedOnly={toggleFailedOnly}
+      />
+    );
+  }, [
+    accountOverviewMode,
+    accountSort,
+    accountSortOptions,
+    activeDataTab,
+    apiKeyRows.length,
+    failedOnlyActive,
+    handleAccountSortKeyChange,
+    overallLoading,
+    realtimeLogRows.length,
+    refreshAll,
+    scopedFailureCount,
+    searchInput,
+    t,
+    toggleFailedOnly,
+  ]);
+
   const handleAccountPageChange = useCallback(
     (page: number) => {
       setCurrentAccountPage(page);
@@ -1136,75 +1256,97 @@ export function MonitoringCenterPage() {
         secondaryCards={secondarySummaryCards}
       />
 
-      <AccountOverviewPanel
-        mode={accountOverviewMode}
-        searchInput={searchInput}
-        columns={accountOverviewColumns}
-        rows={sortedAccountRows}
-        pagination={accountPagination}
-        accountSort={accountSort}
-        accountSortOptions={accountSortOptions}
-        expandedAccounts={expandedAccounts}
-        focusedAccount={focusedAccount}
-        accountAuthStateByRowId={accountAuthStateByRowId}
-        accountStatusDataByRowId={accountStatusDataByRowId}
-        emptyAccountStatusData={emptyAccountStatusData}
-        accountQuotaStates={accountQuotaStates}
-        accountStatusUpdating={accountStatusUpdating}
-        accountPageSize={accountPageSize}
-        accountPageSizeOptions={accountPageSizeOptions}
-        accountOverviewScopeText={accountOverviewScopeText}
-        hasPrices={hasPrices}
-        overallLoading={overallLoading}
-        locale={i18n.language}
-        emptyState={renderMonitoringEmptyState()}
-        t={t}
-        onSearchChange={setSearchInput}
-        onRefreshAll={refreshAll}
-        onAccountSortKeyChange={handleAccountSortKeyChange}
-        onModeChange={setAccountOverviewMode}
-        onAccountSort={handleAccountSort}
-        onAccountStatusToggle={handleAccountStatusToggle}
-        onLoadAccountQuota={loadAccountQuota}
-        onToggleExpanded={toggleAccountExpanded}
-        onFocusAccount={focusAccount}
-        onPageChange={handleAccountPageChange}
-        onPageSizeChange={handleAccountPageSizeChange}
-      />
+      <MonitoringDataPanel
+        tabs={dataTabs}
+        activeTab={activeDataTab}
+        onTabChange={handleDataTabChange}
+        ariaLabel={t('monitoring.data_tabs_aria_label')}
+        actions={dataPanelActions}
+        renderContent={(tab) => {
+          if (tab === 'accounts') {
+            return (
+              <AccountOverviewPanel
+                embedded
+                mode={accountOverviewMode}
+                searchInput={searchInput}
+                columns={accountOverviewColumns}
+                rows={sortedAccountRows}
+                pagination={accountPagination}
+                accountSort={accountSort}
+                accountSortOptions={accountSortOptions}
+                expandedAccounts={expandedAccounts}
+                focusedAccount={focusedAccount}
+                accountAuthStateByRowId={accountAuthStateByRowId}
+                accountStatusDataByRowId={accountStatusDataByRowId}
+                emptyAccountStatusData={emptyAccountStatusData}
+                accountQuotaStates={accountQuotaStates}
+                accountStatusUpdating={accountStatusUpdating}
+                accountPageSize={accountPageSize}
+                accountPageSizeOptions={accountPageSizeOptions}
+                accountOverviewScopeText={accountOverviewScopeText}
+                hasPrices={hasPrices}
+                overallLoading={overallLoading}
+                locale={i18n.language}
+                emptyState={renderMonitoringEmptyState()}
+                t={t}
+                onSearchChange={setSearchInput}
+                onRefreshAll={refreshAll}
+                onAccountSortKeyChange={handleAccountSortKeyChange}
+                onModeChange={setAccountOverviewMode}
+                onAccountSort={handleAccountSort}
+                onAccountStatusToggle={handleAccountStatusToggle}
+                onLoadAccountQuota={loadAccountQuota}
+                onToggleExpanded={toggleAccountExpanded}
+                onFocusAccount={focusAccount}
+                onPageChange={handleAccountPageChange}
+                onPageSizeChange={handleAccountPageSizeChange}
+              />
+            );
+          }
 
-      <ApiKeySummaryPanel
-        rows={apiKeyRows}
-        columns={apiKeyOverviewColumns}
-        pagination={apiKeyPagination}
-        expandedApiKeys={expandedApiKeys}
-        hasPrices={hasPrices}
-        locale={i18n.language}
-        pageSize={apiKeyPageSize}
-        pageSizeOptions={ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS}
-        emptyState={renderMonitoringEmptyState()}
-        t={t}
-        onToggleApiKey={toggleApiKeyExpanded}
-        onPageChange={handleApiKeyPageChange}
-        onPageSizeChange={handleApiKeyPageSizeChange}
-      />
+          if (tab === 'apiKeys') {
+            return (
+              <ApiKeySummaryPanel
+                embedded
+                rows={apiKeyRows}
+                columns={apiKeyOverviewColumns}
+                pagination={apiKeyPagination}
+                expandedApiKeys={expandedApiKeys}
+                hasPrices={hasPrices}
+                locale={i18n.language}
+                pageSize={apiKeyPageSize}
+                pageSizeOptions={ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS}
+                emptyState={renderMonitoringEmptyState()}
+                t={t}
+                onToggleApiKey={toggleApiKeyExpanded}
+                onPageChange={handleApiKeyPageChange}
+                onPageSizeChange={handleApiKeyPageSizeChange}
+              />
+            );
+          }
 
-      <RealtimeEventsPanel
-        rows={realtimeLogRows}
-        pagination={realtimePagination}
-        pageSize={realtimePageSize}
-        scopedFailureCount={scopedFailureCount}
-        failedOnlyActive={failedOnlyActive}
-        eventsHasMore={eventsHasMore}
-        eventsLoadingMore={eventsLoadingMore}
-        overallLoading={overallLoading}
-        hasPrices={hasPrices}
-        locale={i18n.language}
-        emptyState={renderMonitoringEmptyState()}
-        t={t}
-        onToggleFailedOnly={toggleFailedOnly}
-        onPageChange={setRealtimePage}
-        onPageSizeChange={handleRealtimePageSizeChange}
-        onLoadMoreEvents={loadMoreEvents}
+          return (
+            <RealtimeEventsPanel
+              embedded
+              rows={realtimeLogRows}
+              pagination={realtimePagination}
+              pageSize={realtimePageSize}
+              scopedFailureCount={scopedFailureCount}
+              failedOnlyActive={failedOnlyActive}
+              eventsHasMore={eventsHasMore}
+              eventsLoadingMore={eventsLoadingMore}
+              overallLoading={overallLoading}
+              hasPrices={hasPrices}
+              locale={i18n.language}
+              emptyState={renderMonitoringEmptyState()}
+              t={t}
+              onToggleFailedOnly={toggleFailedOnly}
+              onPageChange={setRealtimePage}
+              onPageSizeChange={handleRealtimePageSizeChange}
+              onLoadMoreEvents={loadMoreEvents}
+            />
+          );
+        }}
       />
 
       <MonitoringCustomRangeModal

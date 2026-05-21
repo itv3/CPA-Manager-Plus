@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { Button } from '@/components/ui/Button';
+import { IconFilter } from '@/components/ui/icons';
 import {
   PaginationControls,
   RecentPattern,
@@ -11,11 +12,7 @@ import { formatPercent } from '@/features/monitoring/components/accountOverviewP
 import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
 import type { MonitoringEventRow } from '@/features/monitoring/hooks/useMonitoringData';
 import { maskSensitiveText } from '@/utils/format';
-import {
-  formatCompactNumber,
-  formatDurationMs,
-  formatUsd,
-} from '@/utils/usage';
+import { formatCompactNumber, formatDurationMs, formatUsd } from '@/utils/usage';
 import styles from '../MonitoringCenterPage.module.scss';
 
 type RealtimeLogRow = MonitoringEventRow & {
@@ -34,6 +31,7 @@ type PaginationState<T> = {
 };
 
 type RealtimeEventsPanelProps = {
+  embedded?: boolean;
   rows: RealtimeLogRow[];
   pagination: PaginationState<RealtimeLogRow>;
   pageSize: number;
@@ -52,6 +50,14 @@ type RealtimeEventsPanelProps = {
   onLoadMoreEvents: () => void;
 };
 
+export type RealtimeEventsPanelActionsProps = {
+  rowCount: number;
+  scopedFailureCount: number;
+  failedOnlyActive: boolean;
+  t: TFunction;
+  onToggleFailedOnly: () => void;
+};
+
 const REALTIME_PAGE_SIZE_OPTIONS = [10, 50, 100, 150, 300] as const;
 
 const buildRealtimeMetaText = (row: MonitoringEventRow) => {
@@ -59,7 +65,33 @@ const buildRealtimeMetaText = (row: MonitoringEventRow) => {
   return maskSensitiveText(text || '-');
 };
 
+export function RealtimeEventsPanelActions({
+  rowCount,
+  scopedFailureCount,
+  failedOnlyActive,
+  t,
+  onToggleFailedOnly,
+}: RealtimeEventsPanelActionsProps) {
+  return (
+    <div className={`${styles.inlineMetrics} ${styles.realtimeHeaderActions}`}>
+      <span>{`${t('monitoring.log_rows')}: ${rowCount}`}</span>
+      <span>{`${t('monitoring.recent_failures')}: ${scopedFailureCount}`}</span>
+      <button
+        type="button"
+        className={[styles.filterToggleChip, failedOnlyActive ? styles.filterToggleChipActive : '']
+          .filter(Boolean)
+          .join(' ')}
+        onClick={onToggleFailedOnly}
+      >
+        <IconFilter size={14} aria-hidden="true" />
+        {t('monitoring.filter_status_failed')}
+      </button>
+    </div>
+  );
+}
+
 export function RealtimeEventsPanel({
+  embedded = false,
   rows,
   pagination,
   pageSize,
@@ -77,30 +109,17 @@ export function RealtimeEventsPanel({
   onPageSizeChange,
   onLoadMoreEvents,
 }: RealtimeEventsPanelProps) {
-  return (
-    <MonitoringPanel
-      title={t('monitoring.realtime_table_title')}
-      subtitle={t('monitoring.realtime_table_desc')}
-      className={styles.realtimePanel}
-      extra={
-        <div className={`${styles.inlineMetrics} ${styles.realtimeHeaderActions}`}>
-          <span>{`${t('monitoring.log_rows')}: ${rows.length}`}</span>
-          <span>{`${t('monitoring.recent_failures')}: ${scopedFailureCount}`}</span>
-          <button
-            type="button"
-            className={[
-              styles.filterToggleChip,
-              failedOnlyActive ? styles.filterToggleChipActive : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            onClick={onToggleFailedOnly}
-          >
-            {t('monitoring.filter_status_failed')}
-          </button>
-        </div>
-      }
-    >
+  const actions = (
+    <RealtimeEventsPanelActions
+      rowCount={rows.length}
+      scopedFailureCount={scopedFailureCount}
+      failedOnlyActive={failedOnlyActive}
+      t={t}
+      onToggleFailedOnly={onToggleFailedOnly}
+    />
+  );
+  const content = (
+    <>
       <div className={styles.tableWrapper}>
         <table className={`${styles.table} ${styles.realtimeTable}`}>
           <thead>
@@ -128,15 +147,6 @@ export function RealtimeEventsPanel({
                 <tr key={row.id} className={row.failed ? styles.logRowFailed : undefined}>
                   <td>
                     <div className={styles.logTypeCell}>
-                      <span
-                        className={[
-                          styles.logTypeIcon,
-                          row.failed ? styles.logTypeIconFailed : styles.logTypeIconSuccess,
-                        ]
-                          .filter(Boolean)
-                          .join(' ')}
-                        aria-hidden="true"
-                      />
                       <div className={styles.primaryCell}>
                         <span>{sourceDisplay.primary}</span>
                         {sourceDisplay.meta ? <small>{sourceDisplay.meta}</small> : null}
@@ -161,9 +171,7 @@ export function RealtimeEventsPanel({
                   </td>
                   <td>
                     <StatusBadge tone={row.failed ? 'bad' : 'good'}>
-                      {row.failed
-                        ? t('monitoring.result_failed')
-                        : t('monitoring.result_success')}
+                      {row.failed ? t('monitoring.result_failed') : t('monitoring.result_success')}
                     </StatusBadge>
                   </td>
                   <td
@@ -238,6 +246,21 @@ export function RealtimeEventsPanel({
           )}
         </div>
       ) : null}
+    </>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <MonitoringPanel
+      title={t('monitoring.realtime_table_title')}
+      subtitle={t('monitoring.realtime_table_desc')}
+      className={styles.realtimePanel}
+      extra={actions}
+    >
+      {content}
     </MonitoringPanel>
   );
 }

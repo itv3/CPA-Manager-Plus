@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react';
+import { useEffect, useState, type ComponentType, type KeyboardEvent, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
@@ -63,6 +63,9 @@ const parsePageSize = (value: string, fallback: number) => {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
+
+const clampPage = (value: number, totalPages: number) =>
+  Math.min(Math.max(Number.isFinite(value) ? value : 1, 1), Math.max(totalPages, 1));
 
 const summaryIconMap: Record<SummaryCardIcon, ComponentType<IconProps>> = {
   calls: IconInbox,
@@ -146,7 +149,27 @@ export function PaginationControls({
   onPageSizeChange,
   t,
 }: PaginationControlsProps) {
+  const [pageDraft, setPageDraft] = useState(String(currentPage));
+
+  useEffect(() => {
+    setPageDraft(String(currentPage));
+  }, [currentPage]);
+
   if (count === 0) return null;
+
+  const commitPageDraft = () => {
+    const nextPage = clampPage(Number.parseInt(pageDraft, 10), totalPages);
+    setPageDraft(String(nextPage));
+    if (nextPage !== currentPage) {
+      onPageChange(nextPage);
+    }
+  };
+
+  const handlePageJumpKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    commitPageDraft();
+  };
 
   return (
     <div className={styles.paginationBar}>
@@ -191,6 +214,20 @@ export function PaginationControls({
         >
           {t('monitoring.pagination_next')}
         </Button>
+        <label className={styles.pageJumpField}>
+          <span>{t('monitoring.pagination_jump_prefix')}</span>
+          <input
+            type="number"
+            min={1}
+            max={Math.max(totalPages, 1)}
+            value={pageDraft}
+            onChange={(event) => setPageDraft(event.target.value)}
+            onBlur={commitPageDraft}
+            onKeyDown={handlePageJumpKeyDown}
+            aria-label={t('monitoring.pagination_jump_label')}
+          />
+          <span>{t('monitoring.pagination_jump_suffix')}</span>
+        </label>
       </div>
     </div>
   );
@@ -213,7 +250,9 @@ export function RecentPattern({
   pattern: boolean[];
   variant?: 'default' | 'plain';
 }) {
-  const normalized = pattern.length > 0 ? pattern : Array.from({ length: 10 }, () => true);
+  const fallbackLength = variant === 'plain' ? 5 : 10;
+  const normalized = pattern.length > 0 ? pattern : Array.from({ length: fallbackLength }, () => true);
+  const visiblePattern = variant === 'plain' ? normalized.slice(-5) : normalized;
   const containerClassName = [
     styles.patternBars,
     variant === 'plain' ? styles.patternBarsPlain : '',
@@ -226,7 +265,7 @@ export function RecentPattern({
 
   return (
     <div className={containerClassName} aria-hidden="true">
-      {normalized.map((item, index) => (
+      {visiblePattern.map((item, index) => (
         <span
           key={`${index}-${item ? 'success' : 'failed'}`}
           className={`${barClassName} ${item ? styles.patternSuccess : styles.patternFailed}`}

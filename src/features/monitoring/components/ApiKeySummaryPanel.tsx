@@ -1,7 +1,9 @@
 import { Fragment, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
-import { IconChevronDown, IconChevronUp, IconInfo, IconKey } from '@/components/ui/icons';
+import { IconChevronDown, IconChevronUp, IconCopy, IconInfo, IconKey } from '@/components/ui/icons';
 import type { MonitoringApiKeyRow } from '@/features/monitoring/hooks/useMonitoringData';
+import { useNotificationStore } from '@/stores';
+import { copyToClipboard } from '@/utils/clipboard';
 import { formatCompactNumber, formatUsd } from '@/utils/usage';
 import { AccountModelUsageTable, AccountTokenMetricGrid } from './AccountOverviewCard';
 import { MonitoringPanel } from './MonitoringPanel';
@@ -23,6 +25,7 @@ type ApiKeyPaginationState = {
 };
 
 type ApiKeySummaryPanelProps = {
+  embedded?: boolean;
   rows: MonitoringApiKeyRow[];
   columns: ApiKeyOverviewColumn[];
   pagination: ApiKeyPaginationState;
@@ -36,6 +39,11 @@ type ApiKeySummaryPanelProps = {
   onToggleApiKey: (apiKeyId: string) => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
+};
+
+export type ApiKeySummaryPanelActionsProps = {
+  rowCount: number;
+  t: TFunction;
 };
 
 const joinShort = (values: string[], limit = 2) => {
@@ -125,39 +133,60 @@ function ApiKeySummaryPrimary({
   row,
   expanded,
   onToggle,
+  onCopyText,
   t,
 }: {
   row: MonitoringApiKeyRow;
   expanded: boolean;
   onToggle: () => void;
+  onCopyText: (text: string) => void;
   t: TFunction;
 }) {
   const secondaryText = buildApiKeySecondaryText(row);
   const keyLabel = row.isUnknown
     ? t('monitoring.api_key_unknown_label')
     : row.apiKeyLabel || row.apiKeyMasked || t('monitoring.api_key_unknown_label');
+  const copyText = row.apiKeyMasked || row.apiKeyHash || secondaryText || keyLabel;
 
   return (
-    <button
-      type="button"
-      className={[styles.accountButton, expanded ? styles.expandedAccountButton : '']
-        .filter(Boolean)
-        .join(' ')}
-      onClick={onToggle}
-      aria-expanded={expanded}
-      title={keyLabel}
-    >
-      <span className={styles.accountExpandGlyph} aria-hidden="true">
-        {expanded ? <IconChevronUp size={15} /> : <IconChevronDown size={15} />}
-      </span>
-      <span className={styles.accountIdentityLine}>
-        <span className={styles.apiKeyIcon} aria-hidden="true">
-          <IconKey size={13} />
+    <div className={styles.apiKeyPrimaryCell}>
+      <button
+        type="button"
+        className={[styles.accountButton, expanded ? styles.expandedAccountButton : '']
+          .filter(Boolean)
+          .join(' ')}
+        onClick={onToggle}
+        aria-expanded={expanded}
+        title={keyLabel}
+      >
+        <span className={styles.accountExpandGlyph} aria-hidden="true">
+          {expanded ? <IconChevronUp size={15} /> : <IconChevronDown size={15} />}
         </span>
-        <span className={styles.accountButtonLabel}>{keyLabel}</span>
+        <span className={styles.accountIdentityLine}>
+          <span className={styles.apiKeyIcon} aria-hidden="true">
+            <IconKey size={13} />
+          </span>
+          <span className={styles.accountButtonLabel}>{keyLabel}</span>
+        </span>
+        {secondaryText ? <small>{secondaryText}</small> : null}
+      </button>
+      <span className={styles.apiKeyInlineMeta}>
+        {copyText ? (
+          <button
+            type="button"
+            className={styles.apiKeyCopyButton}
+            onClick={() => onCopyText(copyText)}
+            title={t('common.copy')}
+            aria-label={t('common.copy')}
+          >
+            <IconCopy size={13} />
+          </button>
+        ) : null}
+        {!row.isUnknown ? (
+          <span className={styles.apiKeyAvailableChip}>{t('monitoring.api_key_available')}</span>
+        ) : null}
       </span>
-      {secondaryText ? <small>{secondaryText}</small> : null}
-    </button>
+    </div>
   );
 }
 
@@ -184,7 +213,18 @@ function ApiKeyExpandedDetails({
   );
 }
 
+export function ApiKeySummaryPanelActions({ rowCount, t }: ApiKeySummaryPanelActionsProps) {
+  return (
+    <div className={`${styles.inlineMetrics} ${styles.apiKeySummaryActions}`}>
+      <span className={styles.apiKeyCountPill}>
+        {t('monitoring.api_key_summary_keys_count', { count: rowCount })}
+      </span>
+    </div>
+  );
+}
+
 export function ApiKeySummaryPanel({
+  embedded = false,
   rows,
   columns,
   pagination,
@@ -199,28 +239,17 @@ export function ApiKeySummaryPanel({
   onPageChange,
   onPageSizeChange,
 }: ApiKeySummaryPanelProps) {
-  return (
-    <MonitoringPanel
-      title={
-        <span className={styles.panelTitleWithHint}>
-          {t('monitoring.api_key_summary_title')}
-          <span title={t('monitoring.api_key_summary_description')}>
-            <IconInfo
-              size={14}
-              className={styles.panelTitleHintIcon}
-              aria-label={t('monitoring.api_key_summary_description')}
-            />
-          </span>
-        </span>
-      }
-      subtitle={t('monitoring.api_key_summary_desc')}
-      className={styles.apiKeyPanel}
-      extra={
-        <div className={styles.inlineMetrics}>
-          <span>{t('monitoring.api_key_summary_keys_count', { count: rows.length })}</span>
-        </div>
-      }
-    >
+  const showNotification = useNotificationStore((state) => state.showNotification);
+  const handleCopyText = async (text: string) => {
+    const copied = await copyToClipboard(text);
+    showNotification(
+      t(copied ? 'notification.link_copied' : 'notification.copy_failed'),
+      copied ? 'success' : 'error'
+    );
+  };
+  const actions = <ApiKeySummaryPanelActions rowCount={rows.length} t={t} />;
+  const content = (
+    <>
       <div className={`${styles.tableWrapper} ${styles.apiKeySummaryTableWrapper}`}>
         <table className={`${styles.table} ${styles.apiKeySummaryTable}`}>
           <colgroup>
@@ -255,6 +284,7 @@ export function ApiKeySummaryPanel({
                         row={row}
                         expanded={isExpanded}
                         onToggle={() => onToggleApiKey(row.id)}
+                        onCopyText={(text) => void handleCopyText(text)}
                         t={t}
                       />
                     </td>
@@ -272,7 +302,12 @@ export function ApiKeySummaryPanel({
                   {isExpanded ? (
                     <tr className={styles.apiKeyDetailRow}>
                       <td colSpan={columns.length}>
-                        <ApiKeyExpandedDetails row={row} hasPrices={hasPrices} locale={locale} t={t} />
+                        <ApiKeyExpandedDetails
+                          row={row}
+                          hasPrices={hasPrices}
+                          locale={locale}
+                          t={t}
+                        />
                       </td>
                     </tr>
                   ) : null}
@@ -299,6 +334,32 @@ export function ApiKeySummaryPanel({
         onPageSizeChange={onPageSizeChange}
         t={t}
       />
+    </>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <MonitoringPanel
+      title={
+        <span className={styles.panelTitleWithHint}>
+          {t('monitoring.api_key_summary_title')}
+          <span title={t('monitoring.api_key_summary_description')}>
+            <IconInfo
+              size={14}
+              className={styles.panelTitleHintIcon}
+              aria-label={t('monitoring.api_key_summary_description')}
+            />
+          </span>
+        </span>
+      }
+      subtitle={t('monitoring.api_key_summary_desc')}
+      className={styles.apiKeyPanel}
+      extra={actions}
+    >
+      {content}
     </MonitoringPanel>
   );
 }

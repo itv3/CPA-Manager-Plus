@@ -6,7 +6,7 @@
     gap: 14px;
     min-width: 0;
   }
-  
+
   .summaryHero,
   .summarySub,
   .summaryGrid {
@@ -14,23 +14,23 @@
     grid-auto-rows: 1fr;
     gap: 12px;
   }
-  
+
   .summaryHero {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  
+
     @include narrow-laptop {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
-  
+
   .summarySub {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  
+
     @include narrow-laptop {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
-  
+
   .summaryCard {
     --summary-accent: var(--monitor-accent);
 
@@ -51,7 +51,7 @@
       background-color 0.18s ease,
       box-shadow 0.18s ease;
   }
-  
+
   .summaryCardPrimary,
   .summaryCardSecondary {
     height: 136px;
@@ -59,11 +59,11 @@
     padding: 16px;
     box-shadow: var(--shadow);
   }
-  
+
   .summaryCard:hover {
     transform: translateY(-1px);
   }
-  
+
   .summaryCard:hover {
     border-color: var(--monitor-line-strong);
     box-shadow: var(--shadow-lg);
@@ -98,7 +98,7 @@
     min-width: 0;
     margin-top: auto;
   }
-  
+
   .summaryLabel,
   .savedPricesHeader,
   .priceField label {
@@ -115,7 +115,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  
+
   .summaryValue {
     min-width: 0;
     max-width: 100%;
@@ -129,11 +129,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  
+
   .summaryCardSecondary .summaryValue {
     font-size: 28px;
   }
-  
+
   .summaryMeta {
     margin-top: 6px;
     color: var(--monitor-muted);
@@ -203,7 +203,7 @@
   .summaryAccentTeal {
     --summary-accent: #14b8a6;
   }
-  
+
   .statusBadge {
     gap: 6px;
     justify-content: center;
@@ -211,46 +211,46 @@
     font-weight: 700;
     white-space: nowrap;
   }
-  
+
   .tonegood {
     color: var(--monitor-green);
   }
-  
+
   .tonewarn {
     color: var(--monitor-amber);
   }
-  
+
   .tonebad {
     color: var(--monitor-red);
   }
-  
+
   .statusBadge.tonegood {
     border-color: color-mix(in srgb, var(--monitor-green) 26%, var(--monitor-line));
     background: color-mix(in srgb, var(--monitor-green) 10%, var(--monitor-surface));
   }
-  
+
   .statusBadge.tonewarn {
     border-color: color-mix(in srgb, var(--monitor-amber) 24%, var(--monitor-line));
     background: color-mix(in srgb, var(--monitor-amber) 10%, var(--monitor-surface));
   }
-  
+
   .statusBadge.tonebad {
     border-color: color-mix(in srgb, var(--monitor-red) 26%, var(--monitor-line));
     background: color-mix(in srgb, var(--monitor-red) 10%, var(--monitor-surface));
   }
-  
+
   .goodText {
     color: var(--monitor-green);
   }
-  
+
   .warnText {
     color: var(--monitor-amber);
   }
-  
+
   .badText {
     color: var(--monitor-red);
   }
-  
+
   .patternBars {
     display: inline-grid;
     grid-auto-flow: column;
@@ -262,94 +262,96 @@
     border: 1px solid var(--monitor-line);
     background: var(--monitor-surface-muted);
   }
-  
+
   .patternBarsPlain {
-    grid-auto-columns: 4px;
-    gap: 2px;
+    grid-auto-columns: 5px;
+    gap: 5px;
+    align-items: end;
     padding: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
   }
-  
+
   .patternBar {
     width: 6px;
     height: 16px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--monitor-muted) 24%, transparent);
   }
-  
+
   .patternBarPlain {
-    width: 4px;
-    height: 24px;
+    width: 5px;
+    height: 22px;
+    border-radius: 999px;
   }
-  
+
   .patternSuccess {
     background: var(--monitor-green);
   }
-  
+
   .patternFailed {
     background: var(--monitor-red);
   }
-  
+
   .priceEditor {
     margin-top: 14px;
     display: grid;
     gap: 14px;
   }
-  
+
   .priceGrid {
     display: grid;
     grid-template-columns: repeat(12, minmax(0, 1fr));
     align-items: end;
     gap: 12px;
   }
-  
+
   .priceField {
     display: grid;
     gap: 8px;
     min-width: 0;
   }
-  
+
   .priceField :global(.form-group) {
     margin-bottom: 0;
   }
-  
+
   .priceField :global(.input) {
     min-height: 44px;
   }
-  
+
   .priceField input,
   .priceField button {
     min-height: 44px;
   }
-  
+
   .priceFieldModel {
     grid-column: span 5;
   }
-  
+
   .priceFieldPrompt {
     grid-column: span 7;
   }
-  
+
   .priceFieldCompletion,
   .priceFieldCache {
     grid-column: span 6;
   }
-  
+
   .priceActionsBar {
     margin-top: 2px;
     display: flex;
     justify-content: flex-end;
     gap: 10px;
   }
-  
+
   .savedPricesList {
     margin-top: 14px;
     display: grid;
     gap: 10px;
   }
-  
+
   .savedPricesHeader {
     color: var(--monitor-ink);
     font-size: 14px;
@@ -357,7 +359,7 @@
     letter-spacing: 0;
     text-transform: none;
   }
-  
+
   .savedPricesTableWrap {
     overflow-x: auto;
     border: 1px solid color-mix(in srgb, var(--monitor-line-strong) 30%, var(--monitor-line));
@@ -368,13 +370,13 @@
       var(--monitor-surface)
     );
   }
-  
+
   .savedPricesTable {
     width: 100%;
     min-width: 720px;
     border-collapse: collapse;
   }
-  
+
   .savedPricesTable thead th {
     padding: 12px 14px 10px;
     border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 90%, transparent);
@@ -388,7 +390,7 @@
     text-transform: uppercase;
     white-space: nowrap;
   }
-  
+
   .savedPricesTable tbody td {
     padding: 13px 14px;
     border-top: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
@@ -400,59 +402,59 @@
     background: color-mix(in srgb, var(--monitor-surface) 88%, white 12%);
     transition: background 0.18s ease;
   }
-  
+
   .savedPricesTable tbody tr:first-child td {
     border-top: 0;
   }
-  
+
   .savedPricesTable tbody tr:nth-child(odd) td {
     background: color-mix(in srgb, var(--monitor-accent) 4%, var(--monitor-surface-elevated));
   }
-  
+
   .savedPricesTable tbody tr:nth-child(even) td {
     background: color-mix(in srgb, var(--monitor-surface) 92%, var(--monitor-surface-elevated));
   }
-  
+
   .savedPricesTable tbody tr:hover td {
     background: color-mix(in srgb, var(--monitor-accent) 10%, var(--monitor-surface-hover));
   }
-  
+
   .savedPricesTable th:last-child,
   .savedPricesTable td:last-child {
     text-align: left;
   }
-  
+
   .savedPricesModelCell {
     min-width: 200px;
     font-size: 15px;
     font-weight: 700;
     letter-spacing: 0;
   }
-  
+
   .savedPricesActionsCell {
     min-width: 120px;
   }
-  
+
   .savedPricesActions {
     justify-content: flex-start;
     align-items: center;
     gap: 6px;
     flex-wrap: nowrap;
   }
-  
+
   .tableWrapper {
     min-width: 0;
     max-width: 100%;
     overflow-x: auto;
   }
-  
+
   .table {
     width: 100%;
     min-width: 1120px;
     border-collapse: separate;
     border-spacing: 0 10px;
   }
-  
+
   .accountOverviewTable {
     --account-col-account: 21%;
     --account-col-status: 8%;
@@ -465,27 +467,28 @@
     --account-col-latest-request: 13%;
     --account-col-action: 12%;
     --account-overview-columns: var(--account-col-account) var(--account-col-status)
-      var(--account-col-total-calls) var(--account-col-success-calls) var(--account-col-failure-calls)
-      var(--account-col-success-rate) var(--account-col-total-tokens)
-      var(--account-col-estimated-cost) var(--account-col-latest-request) var(--account-col-action);
-  
+      var(--account-col-total-calls) var(--account-col-success-calls)
+      var(--account-col-failure-calls) var(--account-col-success-rate)
+      var(--account-col-total-tokens) var(--account-col-estimated-cost)
+      var(--account-col-latest-request) var(--account-col-action);
+
     min-width: 1180px;
-    overflow: hidden;
+    overflow: visible;
     border: 0;
-    border-collapse: collapse;
-    border-spacing: 0;
+    border-collapse: separate;
+    border-spacing: 0 8px;
     border-radius: 16px;
-    background: var(--monitor-surface-elevated);
+    background: transparent;
     table-layout: fixed;
   }
-  
+
   .accountOverviewTableWrapper {
     overflow-x: auto;
-    border: 1px solid var(--monitor-line-strong);
-    border-radius: 16px;
-    background: var(--monitor-surface-elevated);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
-  
+
   .apiKeySummaryTable {
     --api-key-col-key: 28%;
     --api-key-col-total-calls: 9%;
@@ -494,103 +497,103 @@
     --api-key-col-total-tokens: 13%;
     --api-key-col-estimated-cost: 12%;
     --api-key-col-latest-request: 20%;
-  
+
     min-width: 980px;
-    overflow: hidden;
+    overflow: visible;
     border: 0;
-    border-collapse: collapse;
-    border-spacing: 0;
+    border-collapse: separate;
+    border-spacing: 0 8px;
     border-radius: 16px;
-    background: var(--monitor-surface-elevated);
+    background: transparent;
     table-layout: fixed;
   }
-  
+
   .apiKeySummaryTableWrapper {
     overflow-x: auto;
-    border: 1px solid var(--monitor-line-strong);
-    border-radius: 16px;
-    background: var(--monitor-surface-elevated);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
-  
+
   .apiKeySummaryTable col:nth-child(1) {
     width: var(--api-key-col-key);
   }
-  
+
   .apiKeySummaryTable col:nth-child(2) {
     width: var(--api-key-col-total-calls);
   }
-  
+
   .apiKeySummaryTable col:nth-child(3) {
     width: var(--api-key-col-success-calls);
   }
-  
+
   .apiKeySummaryTable col:nth-child(4) {
     width: var(--api-key-col-failure-calls);
   }
-  
+
   .apiKeySummaryTable col:nth-child(5) {
     width: var(--api-key-col-total-tokens);
   }
-  
+
   .apiKeySummaryTable col:nth-child(6) {
     width: var(--api-key-col-estimated-cost);
   }
-  
+
   .apiKeySummaryTable col:nth-child(7) {
     width: var(--api-key-col-latest-request);
   }
-  
+
   .accountOverviewTable col:nth-child(1) {
     width: var(--account-col-account);
   }
-  
+
   .accountOverviewTable col:nth-child(2) {
     width: var(--account-col-status);
   }
-  
+
   .accountOverviewTable col:nth-child(3) {
     width: var(--account-col-total-calls);
   }
-  
+
   .accountOverviewTable col:nth-child(4) {
     width: var(--account-col-success-calls);
   }
-  
+
   .accountOverviewTable col:nth-child(5) {
     width: var(--account-col-failure-calls);
   }
-  
+
   .accountOverviewTable col:nth-child(6) {
     width: var(--account-col-success-rate);
   }
-  
+
   .accountOverviewTable col:nth-child(7) {
     width: var(--account-col-total-tokens);
   }
-  
+
   .accountOverviewTable col:nth-child(8) {
     width: var(--account-col-estimated-cost);
   }
-  
+
   .accountOverviewTable col:nth-child(9) {
     width: var(--account-col-latest-request);
   }
-  
+
   .accountOverviewTable col:nth-child(10) {
     width: var(--account-col-action);
   }
-  
+
   .accountOverviewTable td:last-child {
     min-width: 0;
   }
-  
+
   .accountOverviewTable td:last-child .inlineActionButton {
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  
+
   .accountActionGroup {
     display: inline-flex;
     align-items: center;
@@ -599,7 +602,7 @@
     min-width: 0;
     width: 100%;
   }
-  
+
   .accountRowMenuButton {
     flex: 0 0 auto;
     min-width: 30px;
@@ -609,16 +612,21 @@
     background: transparent;
     color: var(--monitor-muted);
   }
-  
+
   .realtimeTable {
     min-width: 1210px;
+    border-collapse: separate;
+    border-spacing: 0 8px;
+    background: transparent;
   }
-  
+
   .table thead th {
     position: sticky;
     top: 0;
     z-index: 2;
     padding: 8px 10px;
+    border-top: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
     background: color-mix(in srgb, var(--monitor-surface) 92%, var(--monitor-surface-muted));
     text-align: left;
     color: var(--monitor-muted);
@@ -628,7 +636,17 @@
     text-transform: uppercase;
     white-space: nowrap;
   }
-  
+
+  .table thead th:first-child {
+    border-left: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 12px 0 0 12px;
+  }
+
+  .table thead th:last-child {
+    border-right: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 0 12px 12px 0;
+  }
+
   .sortableHeaderButton {
     width: 100%;
     display: inline-flex;
@@ -645,22 +663,28 @@
     text-transform: inherit;
     cursor: pointer;
   }
-  
+
   .sortableHeaderButton:hover {
     transform: none;
     color: var(--monitor-ink);
   }
-  
+
   .sortableHeaderButton:focus,
   .sortableHeaderButton:focus-visible {
     outline: none;
     box-shadow: none;
   }
-  
-  .sortableHeaderButtonActive {
-    color: var(--monitor-ink);
+
+  .sortableHeaderButton:focus-visible {
+    color: var(--monitor-accent-strong);
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
-  
+
+  .sortableHeaderButtonActive {
+    color: var(--monitor-accent-strong);
+  }
+
   .sortIndicator {
     display: inline-flex;
     align-items: center;
@@ -670,145 +694,265 @@
     height: 14px;
     color: var(--monitor-accent-strong);
   }
-  
+
   .sortIndicator svg {
     display: block;
   }
-  
+
   .table tbody td {
     padding: 12px 10px;
     vertical-align: middle;
     white-space: nowrap;
-    border-top: 1px solid var(--monitor-line);
-    border-bottom: 1px solid var(--monitor-line);
+    border-top: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
     background: var(--monitor-surface-elevated);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     transition:
       border-color 0.18s ease,
       background-color 0.18s ease,
       box-shadow 0.18s ease;
   }
-  
+
   .table tbody td:first-child {
-    border-left: 1px solid var(--monitor-line);
-    border-radius: 18px 0 0 18px;
+    border-left: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 14px 0 0 14px;
   }
-  
+
   .table tbody td:last-child {
-    border-right: 1px solid var(--monitor-line);
-    border-radius: 0 18px 18px 0;
+    border-right: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 0 14px 14px 0;
   }
-  
+
   .table tbody tr:nth-child(even) td {
     background: color-mix(in srgb, var(--monitor-surface-elevated) 86%, var(--monitor-surface));
   }
-  
+
   .table tbody tr:hover td {
     background: var(--monitor-surface-hover);
   }
-  
+
   .accountOverviewTable thead th {
     padding: 10px 12px;
-    border-bottom: 1px solid var(--monitor-line);
     background: color-mix(in srgb, var(--monitor-surface) 88%, var(--monitor-surface-muted));
   }
-  
+
   .table.accountOverviewTable tbody td {
     padding: 12px;
-    border: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 88%, transparent);
-    border-radius: 0;
-    background: var(--monitor-surface-elevated);
-    box-shadow: none;
+    border-top: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    background: var(--monitor-surface);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   }
-  
+
   .table.accountOverviewTable tbody td:first-child,
   .table.accountOverviewTable tbody td:last-child {
-    border-right: 0;
-    border-left: 0;
     border-radius: 0;
   }
-  
+
+  .table.accountOverviewTable tbody td:first-child {
+    border-left: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 14px 0 0 14px;
+  }
+
+  .table.accountOverviewTable tbody td:last-child {
+    border-right: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 0 14px 14px 0;
+  }
+
   .table.accountOverviewTable tbody tr:nth-child(even) td {
     background: var(--monitor-surface-elevated);
   }
-  
+
   .table.accountOverviewTable tbody .accountSummaryRow:hover td {
     background: var(--monitor-surface-hover);
   }
-  
-  .apiKeySummaryTable thead th {
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--monitor-line);
-    background: color-mix(in srgb, var(--monitor-surface) 88%, var(--monitor-surface-muted));
-    box-shadow: inset 0 -1px 0 var(--monitor-line);
-  }
-  
-  .table.apiKeySummaryTable tbody td {
-    padding: 12px;
-    border: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 88%, transparent);
-    border-radius: 0;
+
+  .table.accountOverviewTable tbody .accountOverviewRowExpanded td {
+    border-bottom-color: transparent;
     background: var(--monitor-surface-elevated);
     box-shadow: none;
   }
-  
+
+  .table.accountOverviewTable tbody .accountOverviewRowExpanded:hover td {
+    background: var(--monitor-surface-elevated);
+  }
+
+  .table.accountOverviewTable tbody .accountOverviewRowExpanded td:first-child {
+    border-radius: 14px 0 0 0;
+  }
+
+  .table.accountOverviewTable tbody .accountOverviewRowExpanded td:last-child {
+    border-radius: 0 14px 0 0;
+  }
+
+  .apiKeySummaryTable thead th {
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--monitor-surface) 88%, var(--monitor-surface-muted));
+  }
+
+  .table.apiKeySummaryTable tbody td {
+    padding: 12px;
+    border-top: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    background: var(--monitor-surface);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
   .table.apiKeySummaryTable tbody td:first-child,
   .table.apiKeySummaryTable tbody td:last-child {
-    border-right: 0;
-    border-left: 0;
     border-radius: 0;
   }
-  
+
+  .table.apiKeySummaryTable tbody td:first-child {
+    border-left: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 14px 0 0 14px;
+  }
+
+  .table.apiKeySummaryTable tbody td:last-child {
+    border-right: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 0 14px 14px 0;
+  }
+
   .table.apiKeySummaryTable tbody tr:nth-child(even) td {
     background: var(--monitor-surface-elevated);
   }
-  
+
   .table.apiKeySummaryTable tbody .apiKeySummaryRow:hover td {
     background: var(--monitor-surface-hover);
   }
-  
+
   .table.apiKeySummaryTable tbody .apiKeySummaryRowExpanded td {
+    background: var(--monitor-surface-elevated);
     border-bottom-color: transparent;
+    box-shadow: none;
   }
-  
+
+  .table.apiKeySummaryTable tbody .apiKeySummaryRowExpanded:hover td {
+    background: var(--monitor-surface-elevated);
+  }
+
+  .table.apiKeySummaryTable tbody .apiKeySummaryRowExpanded td:first-child {
+    border-radius: 14px 0 0 0;
+  }
+
+  .table.apiKeySummaryTable tbody .apiKeySummaryRowExpanded td:last-child {
+    border-radius: 0 14px 0 0;
+  }
+
+  .table.accountOverviewTable tbody .accountDetailRow > td,
+  .table.apiKeySummaryTable tbody .apiKeyDetailRow > td {
+    position: relative;
+    padding: 0;
+    border-top: 0;
+    border-right: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-left: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 0 0 14px 14px;
+    background: color-mix(in srgb, var(--monitor-surface-elevated) 78%, var(--monitor-surface));
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    white-space: normal;
+  }
+
+  .table.accountOverviewTable tbody .accountDetailRow > td::before,
+  .table.apiKeySummaryTable tbody .apiKeyDetailRow > td::before {
+    content: '';
+    position: absolute;
+    top: -8px;
+    right: 0;
+    left: 0;
+    height: 8px;
+    background: color-mix(in srgb, var(--monitor-surface-elevated) 78%, var(--monitor-surface));
+    pointer-events: none;
+  }
+
+  .table.accountOverviewTable tbody .accountDetailRow > td:first-child,
+  .table.accountOverviewTable tbody .accountDetailRow > td:last-child,
+  .table.apiKeySummaryTable tbody .apiKeyDetailRow > td:first-child,
+  .table.apiKeySummaryTable tbody .apiKeyDetailRow > td:last-child {
+    border-radius: 0 0 14px 14px;
+  }
+
+  .table.accountOverviewTable tbody .accountDetailRow:hover > td,
+  .table.apiKeySummaryTable tbody .apiKeyDetailRow:hover > td {
+    background: color-mix(in srgb, var(--monitor-surface-elevated) 78%, var(--monitor-surface));
+  }
+
+  .table.realtimeTable tbody td {
+    border-top: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    background: var(--monitor-surface);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
+  .table.realtimeTable tbody td:first-child {
+    border-left: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 14px 0 0 14px;
+  }
+
+  .table.realtimeTable tbody td:last-child {
+    border-right: 1px solid color-mix(in srgb, var(--monitor-line) 86%, transparent);
+    border-radius: 0 14px 14px 0;
+  }
+
+  .table.realtimeTable tbody tr:nth-child(even) td {
+    background: var(--monitor-surface-elevated);
+  }
+
+  .table.realtimeTable tbody tr:hover td {
+    background: var(--monitor-surface-hover);
+  }
+
   .innerTable {
     min-width: 940px;
   }
-  
+
   .primaryCell {
     display: grid;
     gap: 4px;
     min-width: 0;
   }
-  
+
   .primaryCell small,
   .statusCell small {
     color: var(--monitor-muted);
     font-size: 11px;
   }
-  
+
   .monoCell {
     font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   }
-  
+
   .statusCell {
     display: grid;
     gap: 6px;
     min-width: 88px;
   }
-  
+
   .recentStatusCell {
     display: flex;
     align-items: center;
     min-width: 70px;
   }
-  
+
   .realtimeTable .statusBadge {
     min-height: 30px;
     padding: 0 12px;
+    border-radius: 10px;
     font-size: 11px;
   }
-  
+
+  .realtimeTable .statusBadge.tonegood {
+    border-color: color-mix(in srgb, var(--monitor-green) 36%, var(--monitor-line));
+    background: color-mix(in srgb, var(--monitor-green) 14%, var(--monitor-surface));
+    color: var(--monitor-green);
+  }
+
+  .realtimeTable .statusBadge.tonebad {
+    border-color: color-mix(in srgb, var(--monitor-red) 36%, var(--monitor-line));
+    background: color-mix(in srgb, var(--monitor-red) 14%, var(--monitor-surface));
+    color: var(--monitor-red);
+  }
+
   .realtimeTable .statusBadge::before {
     content: '';
     width: 8px;
@@ -817,7 +961,7 @@
     background: currentColor;
     flex-shrink: 0;
   }
-  
+
   .paginationBar {
     display: flex;
     align-items: center;
@@ -828,7 +972,7 @@
     padding-top: 14px;
     border-top: 1px solid var(--monitor-line);
   }
-  
+
   .paginationInfo {
     display: inline-flex;
     align-items: center;
@@ -842,7 +986,7 @@
     font-size: 12px;
     line-height: 1.4;
   }
-  
+
   .paginationControls {
     display: flex;
     align-items: center;
@@ -850,7 +994,7 @@
     gap: 8px;
     flex-wrap: wrap;
   }
-  
+
   .loadMoreEventsBar {
     display: flex;
     align-items: center;
@@ -861,7 +1005,7 @@
     font-size: 12px;
     font-weight: 600;
   }
-  
+
   .pageSizeField {
     display: inline-flex;
     align-items: center;
@@ -876,12 +1020,12 @@
     font-size: 12px;
     font-weight: 600;
   }
-  
+
   .pageSizeSelect {
     width: 104px;
     flex: 0 0 auto;
   }
-  
+
   .pageSizeSelectTrigger {
     min-width: 88px;
     height: 30px !important;
@@ -895,7 +1039,7 @@
     font-weight: 700;
     line-height: 1;
   }
-  
+
   .pageSizeSelectTrigger:hover,
   .pageSizeSelectTrigger:focus,
   .pageSizeSelectTrigger[aria-expanded='true'] {
@@ -903,6 +1047,28 @@
     background: transparent !important;
     box-shadow: none !important;
   }
-  
 
+  .pageJumpField {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    color: var(--monitor-muted);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .pageJumpField input {
+    width: 58px;
+    height: 34px;
+    padding: 0 8px;
+    border: 1px solid var(--monitor-line);
+    border-radius: 10px;
+    background: var(--monitor-surface);
+    color: var(--monitor-ink);
+    font: inherit;
+    font-weight: 700;
+    text-align: center;
+  }
 }
