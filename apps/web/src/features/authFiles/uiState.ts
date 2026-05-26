@@ -10,6 +10,7 @@ export const AUTH_FILES_SORT_MODES = [
 ] as const;
 
 export type AuthFilesSortMode = (typeof AUTH_FILES_SORT_MODES)[number];
+export type AuthFilesViewMode = 'diagram' | 'list';
 
 export type AuthFilesUiState = {
   filter?: string;
@@ -23,6 +24,7 @@ export type AuthFilesUiState = {
   regularPageSize?: number;
   compactPageSize?: number;
   sortMode?: AuthFilesSortMode;
+  viewMode?: AuthFilesViewMode;
 };
 
 const AUTH_FILES_UI_STATE_KEY = 'authFilesPage.uiState';
@@ -41,6 +43,9 @@ export const normalizeAuthFilesSortMode = (value: unknown): AuthFilesSortMode | 
   if (typeof value !== 'string') return null;
   return LEGACY_AUTH_FILES_SORT_MODE_MAP[value] ?? null;
 };
+
+export const normalizeAuthFilesViewMode = (value: unknown): AuthFilesViewMode | null =>
+  value === 'diagram' || value === 'list' ? value : null;
 
 const readAuthFilesUiStateFromStorage = (
   storage: Pick<Storage, 'getItem'> | null | undefined

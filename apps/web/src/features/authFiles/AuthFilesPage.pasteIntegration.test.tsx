@@ -143,6 +143,8 @@ vi.mock('@/features/authFiles/hooks/useAuthFilesStatusBarCache', () => ({
 
 vi.mock('@/features/authFiles/uiState', () => ({
   normalizeAuthFilesSortMode: (value: string) => (value === 'default' ? 'default' : null),
+  normalizeAuthFilesViewMode: (value: string) =>
+    value === 'diagram' || value === 'list' ? value : null,
   readAuthFilesUiState: () => null,
   readPersistedAuthFilesCompactMode: () => null,
   writeAuthFilesUiState: vi.fn(),

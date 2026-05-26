@@ -35,7 +35,7 @@ import {
 import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
-import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER } from '@/utils/constants';
+import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER, STORAGE_KEY_SIDEBAR } from '@/utils/constants';
 import { isSupportedLanguage } from '@/utils/language';
 import type { Theme } from '@/types';
 
@@ -182,7 +182,13 @@ export function MainLayout() {
   const setLanguage = useLanguageStore((state) => state.setLanguage);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_SIDEBAR) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -488,7 +494,15 @@ export function MainLayout() {
                   setSidebarOpen((prev) => !prev);
                   return;
                 }
-                setSidebarCollapsed((prev) => !prev);
+                setSidebarCollapsed((prev) => {
+                  const next = !prev;
+                  try {
+                    localStorage.setItem(STORAGE_KEY_SIDEBAR, String(next));
+                  } catch {
+                    /* ignore storage failures */
+                  }
+                  return next;
+                });
               }}
               title={mobileSidebarToggleLabel}
               aria-label={mobileSidebarToggleLabel}

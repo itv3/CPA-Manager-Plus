@@ -15,6 +15,7 @@ import { QuotaCard } from './QuotaCard';
 import type { QuotaStatusState } from './QuotaCard';
 import { useQuotaLoader } from './useQuotaLoader';
 import type { QuotaConfig, QuotaSortMode } from './quotaConfigs';
+import type { QuotaSectionViewMode } from '@/features/quota/quotaPageUiState';
 import { useGridColumns } from './useGridColumns';
 import { IconRefreshCw } from '@/components/ui/icons';
 import styles from '@/features/quota/QuotaPage.module.scss';
@@ -22,8 +23,6 @@ import styles from '@/features/quota/QuotaPage.module.scss';
 type QuotaUpdater<T> = T | ((prev: T) => T);
 
 type QuotaSetter<T> = (updater: QuotaUpdater<T>) => void;
-
-type ViewMode = 'paged' | 'all';
 
 const MAX_ITEMS_PER_PAGE = 25;
 const MAX_SHOW_ALL_THRESHOLD = 30;
@@ -109,6 +108,8 @@ interface QuotaSectionProps<TState extends QuotaStatusState, TData> {
   disabled: boolean;
   searchQuery?: string;
   sortMode?: QuotaSortMode;
+  viewMode?: QuotaSectionViewMode;
+  onViewModeChange?: (viewMode: QuotaSectionViewMode) => void;
 }
 
 export function QuotaSection<TState extends QuotaStatusState, TData>({
@@ -117,7 +118,9 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
   loading,
   disabled,
   searchQuery = '',
-  sortMode = 'default'
+  sortMode = 'default',
+  viewMode,
+  onViewModeChange
 }: QuotaSectionProps<TState, TData>) {
   const { t } = useTranslation();
   const resolvedTheme: ResolvedTheme = useThemeStore((state) => state.resolvedTheme);
@@ -128,8 +131,19 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
 
   /* Removed useRef */
   const [columns, gridRef] = useGridColumns(380); // Min card width 380px matches SCSS
-  const [viewMode, setViewMode] = useState<ViewMode>('paged');
+  const [internalViewMode, setInternalViewMode] = useState<QuotaSectionViewMode>('paged');
   const [showTooManyWarning, setShowTooManyWarning] = useState(false);
+  const resolvedViewMode = viewMode ?? internalViewMode;
+  const setViewMode = useCallback(
+    (nextViewMode: QuotaSectionViewMode) => {
+      if (onViewModeChange) {
+        onViewModeChange(nextViewMode);
+      } else {
+        setInternalViewMode(nextViewMode);
+      }
+    },
+    [onViewModeChange]
+  );
 
   const filteredFiles = useMemo(() => files.filter((file) => config.filterFn(file)), [
     files,
@@ -193,7 +207,8 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
   }, [config, filteredFiles, normalizedSearchQuery, quota, sortMode, t]);
 
   const showAllAllowed = displayFiles.length <= MAX_SHOW_ALL_THRESHOLD;
-  const effectiveViewMode: ViewMode = viewMode === 'all' && !showAllAllowed ? 'paged' : viewMode;
+  const effectiveViewMode: QuotaSectionViewMode =
+    resolvedViewMode === 'all' && !showAllAllowed ? 'paged' : resolvedViewMode;
 
   const {
     pageSize,
@@ -209,7 +224,7 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
 
   useEffect(() => {
     if (showAllAllowed) return;
-    if (viewMode !== 'all') return;
+    if (resolvedViewMode !== 'all') return;
 
     let cancelled = false;
     queueMicrotask(() => {
@@ -221,7 +236,7 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
     return () => {
       cancelled = true;
     };
-  }, [showAllAllowed, viewMode]);
+  }, [resolvedViewMode, setViewMode, showAllAllowed]);
 
   // Update page size based on view mode and columns
   useEffect(() => {

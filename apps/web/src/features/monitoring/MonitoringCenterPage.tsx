@@ -113,7 +113,6 @@ import styles from './MonitoringCenterPage.module.scss';
 export { AccountExpandedDetails, AccountOverviewCard };
 
 const DEFAULT_ACCOUNT_PAGE_SIZE = ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS[0];
-const DEFAULT_REALTIME_PAGE_SIZE = 10;
 const MAX_USAGE_IMPORT_FILE_SIZE = 64 * 1024 * 1024;
 const EMPTY_STATUS_BAR_DATA: StatusBarData = {
   blocks: [],
@@ -130,19 +129,47 @@ export function MonitoringCenterPage() {
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const requestMonitoringAvailability = useRequestMonitoringAvailability();
-  const [timeRange, setTimeRange] = useState<MonitoringTimeRange>('today');
-  const [customStartInput, setCustomStartInput] = useState(getTodayStartInputValue);
-  const [customEndInput, setCustomEndInput] = useState(getCurrentInputValue);
-  const [customDraftStartInput, setCustomDraftStartInput] = useState(getTodayStartInputValue);
-  const [customDraftEndInput, setCustomDraftEndInput] = useState(getCurrentInputValue);
-  const [searchInput, setSearchInput] = useState('');
-  const [autoRefreshMs, setAutoRefreshMs] = useState('5000');
-  const [selectedAccount, setSelectedAccount] = useState('all');
-  const [selectedProvider, setSelectedProvider] = useState('all');
-  const [selectedModel, setSelectedModel] = useState('all');
-  const [selectedChannel, setSelectedChannel] = useState('all');
-  const [selectedApiKeyHash, setSelectedApiKeyHash] = useState('all');
-  const [selectedStatus, setSelectedStatus] = useState<StatusFilter>('all');
+  const initialAccountOverviewUiState = useRef(readAccountOverviewUiState());
+  const initialMonitoringCenterUiState = useRef(readMonitoringCenterUiState());
+  const [timeRange, setTimeRange] = useState<MonitoringTimeRange>(
+    initialMonitoringCenterUiState.current.timeRange
+  );
+  const [customStartInput, setCustomStartInput] = useState(
+    () => initialMonitoringCenterUiState.current.customStartInput || getTodayStartInputValue()
+  );
+  const [customEndInput, setCustomEndInput] = useState(
+    () => initialMonitoringCenterUiState.current.customEndInput || getCurrentInputValue()
+  );
+  const [customDraftStartInput, setCustomDraftStartInput] = useState(
+    () => initialMonitoringCenterUiState.current.customStartInput || getTodayStartInputValue()
+  );
+  const [customDraftEndInput, setCustomDraftEndInput] = useState(
+    () => initialMonitoringCenterUiState.current.customEndInput || getCurrentInputValue()
+  );
+  const [searchInput, setSearchInput] = useState(
+    () => initialMonitoringCenterUiState.current.searchInput
+  );
+  const [autoRefreshMs, setAutoRefreshMs] = useState(
+    () => initialMonitoringCenterUiState.current.autoRefreshMs
+  );
+  const [selectedAccount, setSelectedAccount] = useState(
+    () => initialMonitoringCenterUiState.current.selectedAccount
+  );
+  const [selectedProvider, setSelectedProvider] = useState(
+    () => initialMonitoringCenterUiState.current.selectedProvider
+  );
+  const [selectedModel, setSelectedModel] = useState(
+    () => initialMonitoringCenterUiState.current.selectedModel
+  );
+  const [selectedChannel, setSelectedChannel] = useState(
+    () => initialMonitoringCenterUiState.current.selectedChannel
+  );
+  const [selectedApiKeyHash, setSelectedApiKeyHash] = useState(
+    () => initialMonitoringCenterUiState.current.selectedApiKeyHash
+  );
+  const [selectedStatus, setSelectedStatus] = useState<StatusFilter>(
+    () => initialMonitoringCenterUiState.current.selectedStatus
+  );
   const [expandedAccounts, setExpandedAccounts] = useState<Record<string, boolean>>({});
   const [expandedApiKeys, setExpandedApiKeys] = useState<Record<string, boolean>>({});
   const [focusedAccount, setFocusedAccount] = useState<string | null>(null);
@@ -152,8 +179,6 @@ export function MonitoringCenterPage() {
   const [accountQuotaStates, setAccountQuotaStates] = useState<Record<string, AccountQuotaState>>(
     {}
   );
-  const initialAccountOverviewUiState = useRef(readAccountOverviewUiState());
-  const initialMonitoringCenterUiState = useRef(readMonitoringCenterUiState());
   const [activeDataTab, setActiveDataTab] = useState<MonitoringDataTab>(
     initialMonitoringCenterUiState.current.activeDataTab
   );
@@ -173,9 +198,13 @@ export function MonitoringCenterPage() {
   }));
   const [accountStatusUpdating, setAccountStatusUpdating] = useState<Record<string, boolean>>({});
   const [apiKeyPage, setApiKeyPage] = useState(1);
-  const [apiKeyPageSize, setApiKeyPageSize] = useState<number>(DEFAULT_ACCOUNT_PAGE_SIZE);
+  const [apiKeyPageSize, setApiKeyPageSize] = useState<number>(
+    initialMonitoringCenterUiState.current.apiKeyPageSize
+  );
   const [realtimePage, setRealtimePage] = useState(1);
-  const [realtimePageSize, setRealtimePageSize] = useState(DEFAULT_REALTIME_PAGE_SIZE);
+  const [realtimePageSize, setRealtimePageSize] = useState(
+    initialMonitoringCenterUiState.current.realtimePageSize
+  );
   const focusSnapshotRef = useRef<FocusSnapshot | null>(null);
   const previousAccountPageResetStateRef = useRef<AccountOverviewPageResetState | null>(null);
   const accountQuotaStatesRef = useRef<Record<string, AccountQuotaState>>({});
@@ -349,8 +378,38 @@ export function MonitoringCenterPage() {
   }, [accountOverviewMode, accountPageByMode.card, accountPageSizeByMode.card, accountSort]);
 
   useEffect(() => {
-    writeMonitoringCenterUiState({ activeDataTab });
-  }, [activeDataTab]);
+    writeMonitoringCenterUiState({
+      activeDataTab,
+      timeRange,
+      customStartInput,
+      customEndInput,
+      searchInput,
+      autoRefreshMs,
+      selectedAccount,
+      selectedProvider,
+      selectedModel,
+      selectedChannel,
+      selectedApiKeyHash,
+      selectedStatus,
+      apiKeyPageSize,
+      realtimePageSize,
+    });
+  }, [
+    activeDataTab,
+    apiKeyPageSize,
+    autoRefreshMs,
+    customEndInput,
+    customStartInput,
+    realtimePageSize,
+    searchInput,
+    selectedAccount,
+    selectedApiKeyHash,
+    selectedChannel,
+    selectedModel,
+    selectedProvider,
+    selectedStatus,
+    timeRange,
+  ]);
 
   const providerOptions = useMemo(
     () => buildProviderOptions(filteredRows, selectedProvider, t),

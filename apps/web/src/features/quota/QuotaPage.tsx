@@ -2,7 +2,7 @@
  * Quota management page - coordinates the three quota sections.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useAuthStore } from '@/stores';
@@ -20,17 +20,27 @@ import {
 } from '@/components/quota';
 import type { QuotaSortMode } from '@/components/quota/quotaConfigs';
 import type { AuthFileItem } from '@/types';
+import {
+  readQuotaPageUiState,
+  writeQuotaPageUiState,
+  type QuotaSectionType,
+  type QuotaSectionViewMode,
+} from './quotaPageUiState';
 import styles from './QuotaPage.module.scss';
 
 export function QuotaPage() {
   const { t } = useTranslation();
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
+  const initialUiState = useRef(readQuotaPageUiState());
 
   const [files, setFiles] = useState<AuthFileItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortMode, setSortMode] = useState<QuotaSortMode>('default');
+  const [searchQuery, setSearchQuery] = useState(() => initialUiState.current.searchQuery);
+  const [sortMode, setSortMode] = useState<QuotaSortMode>(() => initialUiState.current.sortMode);
+  const [sectionViewModes, setSectionViewModes] = useState(() => ({
+    ...initialUiState.current.sectionViewModes,
+  }));
 
   const disableControls = connectionStatus !== 'connected';
   const sortOptions = useMemo(
@@ -77,6 +87,30 @@ export function QuotaPage() {
     loadConfig();
   }, [loadFiles, loadConfig]);
 
+  useEffect(() => {
+    writeQuotaPageUiState({
+      searchQuery,
+      sortMode,
+      sectionViewModes,
+    });
+  }, [searchQuery, sectionViewModes, sortMode]);
+
+  const getSectionViewMode = useCallback(
+    (sectionType: QuotaSectionType): QuotaSectionViewMode =>
+      sectionViewModes[sectionType] ?? 'paged',
+    [sectionViewModes]
+  );
+
+  const setSectionViewMode = useCallback(
+    (sectionType: QuotaSectionType, viewMode: QuotaSectionViewMode) => {
+      setSectionViewModes((current) => ({
+        ...current,
+        [sectionType]: viewMode,
+      }));
+    },
+    []
+  );
+
   return (
     <div className={styles.container}>
       {error && <div className={styles.errorBox}>{error}</div>}
@@ -114,6 +148,8 @@ export function QuotaPage() {
         disabled={disableControls}
         searchQuery={searchQuery}
         sortMode={sortMode}
+        viewMode={getSectionViewMode(CODEX_CONFIG.type)}
+        onViewModeChange={(viewMode) => setSectionViewMode(CODEX_CONFIG.type, viewMode)}
       />
       <QuotaSection
         config={CLAUDE_CONFIG}
@@ -122,6 +158,8 @@ export function QuotaPage() {
         disabled={disableControls}
         searchQuery={searchQuery}
         sortMode={sortMode}
+        viewMode={getSectionViewMode(CLAUDE_CONFIG.type)}
+        onViewModeChange={(viewMode) => setSectionViewMode(CLAUDE_CONFIG.type, viewMode)}
       />
       <QuotaSection
         config={ANTIGRAVITY_CONFIG}
@@ -130,6 +168,8 @@ export function QuotaPage() {
         disabled={disableControls}
         searchQuery={searchQuery}
         sortMode={sortMode}
+        viewMode={getSectionViewMode(ANTIGRAVITY_CONFIG.type)}
+        onViewModeChange={(viewMode) => setSectionViewMode(ANTIGRAVITY_CONFIG.type, viewMode)}
       />
       <QuotaSection
         config={GEMINI_CLI_CONFIG}
@@ -138,6 +178,8 @@ export function QuotaPage() {
         disabled={disableControls}
         searchQuery={searchQuery}
         sortMode={sortMode}
+        viewMode={getSectionViewMode(GEMINI_CLI_CONFIG.type)}
+        onViewModeChange={(viewMode) => setSectionViewMode(GEMINI_CLI_CONFIG.type, viewMode)}
       />
       <QuotaSection
         config={KIMI_CONFIG}
@@ -146,6 +188,8 @@ export function QuotaPage() {
         disabled={disableControls}
         searchQuery={searchQuery}
         sortMode={sortMode}
+        viewMode={getSectionViewMode(KIMI_CONFIG.type)}
+        onViewModeChange={(viewMode) => setSectionViewMode(KIMI_CONFIG.type, viewMode)}
       />
     </div>
   );

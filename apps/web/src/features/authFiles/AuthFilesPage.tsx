@@ -67,6 +67,7 @@ import {
 } from '@/features/authFiles/model/authFilesPageModel';
 import {
   normalizeAuthFilesSortMode,
+  normalizeAuthFilesViewMode,
   readAuthFilesUiState,
   readPersistedAuthFilesCompactMode,
   writeAuthFilesUiState,
@@ -245,6 +246,10 @@ export function AuthFilesPage() {
       if (persistedSortMode) {
         setSortMode(persistedSortMode);
       }
+      const persistedViewMode = normalizeAuthFilesViewMode(persisted.viewMode);
+      if (persistedViewMode) {
+        setViewMode(persistedViewMode);
+      }
     }
 
     setUiStateHydrated(true);
@@ -265,6 +270,7 @@ export function AuthFilesPage() {
       regularPageSize: pageSizeByMode.regular,
       compactPageSize: pageSizeByMode.compact,
       sortMode,
+      viewMode,
     });
     writePersistedAuthFilesCompactMode(compactMode);
   }, [
@@ -279,6 +285,7 @@ export function AuthFilesPage() {
     search,
     sortMode,
     uiStateHydrated,
+    viewMode,
   ]);
 
   useEffect(() => {

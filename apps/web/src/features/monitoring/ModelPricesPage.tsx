@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -21,6 +21,10 @@ import {
   type ModelPriceFilter,
   type PriceDraft,
 } from '@/features/monitoring/model/modelPricesPageModel';
+import {
+  readModelPricesPageUiState,
+  writeModelPricesPageUiState,
+} from './modelPricesPageUiState';
 import styles from './ModelPricesPage.module.scss';
 
 const FILTERS: ModelPriceFilter[] = ['all', 'missing', 'candidates', 'saved'];
@@ -38,8 +42,9 @@ export function ModelPricesPage() {
   const featureAvailability = usePanelFeatureAvailability();
   const { usage, loading, modelPrices, setModelPrices, syncModelPrices, usageServiceAvailable } =
     useUsageData();
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<ModelPriceFilter>('all');
+  const initialUiState = useRef(readModelPricesPageUiState());
+  const [search, setSearch] = useState(() => initialUiState.current.search);
+  const [filter, setFilter] = useState<ModelPriceFilter>(() => initialUiState.current.filter);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<ModelPriceSyncResponse | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<Record<string, string>>({});
@@ -71,6 +76,10 @@ export function ModelPricesPage() {
     }),
     [summary]
   );
+
+  useEffect(() => {
+    writeModelPricesPageUiState({ search, filter });
+  }, [filter, search]);
 
   const handleSync = async () => {
     if (syncModels.length === 0) {
