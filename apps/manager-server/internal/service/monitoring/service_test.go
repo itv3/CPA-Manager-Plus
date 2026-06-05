@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"path/filepath"
 	"testing"
@@ -698,6 +699,175 @@ func TestAnalyticsFilterOptionsIgnoreActiveScopeFilters(t *testing.T) {
 	}
 	if len(resp.FilterOptions.ChannelShare) != 2 {
 		t.Fatalf("channel/provider filter options should ignore active account/model filters: %#v", resp.FilterOptions.ChannelShare)
+	}
+}
+
+func TestAnalyticsEventsPageReportsTotalCountWhilePaging(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_400_000_000)
+	toMS := fromMS + 60*60*1000
+
+	const total = 25
+	events := make([]usage.Event, 0, total)
+	for i := range total {
+		events = append(events, monitoringEvent(
+			fmt.Sprintf("total-%02d", i),
+			fromMS+int64(i+1)*1_000,
+			"gpt-a", "auth-1", "source-a", false, 1, 1, 0, 0, 2, nil,
+		))
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	// First page with summary enabled: total_count must reflect the full match
+	// count, not the page size.
+	resp, err := New(db).Analytics(ctx, Request{
+		FromMS:  fromMS,
+		ToMS:    toMS,
+		Include: Include{Summary: true, EventsPage: &EventsPage{Limit: 10}},
+	})
+	if err != nil {
+		t.Fatalf("analytics page 1: %v", err)
+	}
+	if resp.Events == nil || len(resp.Events.Items) != 10 || !resp.Events.HasMore {
+		t.Fatalf("page 1 = %#v", resp.Events)
+	}
+	if resp.Events.TotalCount != total {
+		t.Fatalf("page 1 total_count = %d, want %d", resp.Events.TotalCount, total)
+	}
+	if resp.Events.NextBeforeMS == 0 || resp.Events.NextBeforeID == 0 {
+		t.Fatalf("page 1 cursor = ms %d id %d", resp.Events.NextBeforeMS, resp.Events.NextBeforeID)
+	}
+
+	// Second page without summary exercises the standalone count(*) branch and
+	// must still report the full total, not the remaining count.
+	beforeMS := resp.Events.NextBeforeMS
+	beforeID := resp.Events.NextBeforeID
+	resp2, err := New(db).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			EventsPage: &EventsPage{Limit: 10, BeforeMS: &beforeMS, BeforeID: &beforeID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics page 2: %v", err)
+	}
+	if resp2.Events == nil || len(resp2.Events.Items) != 10 || !resp2.Events.HasMore {
+		t.Fatalf("page 2 = %#v", resp2.Events)
+	}
+	if resp2.Events.TotalCount != total {
+		t.Fatalf("page 2 total_count = %d, want %d", resp2.Events.TotalCount, total)
+	}
+	if resp2.Events.Items[0].EventHash == resp.Events.Items[len(resp.Events.Items)-1].EventHash {
+		t.Fatalf("page 2 overlaps page 1 boundary item")
+	}
+}
+
+func TestAnalyticsEventsPageTotalCountRespectsFilters(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_500_000_000)
+	toMS := fromMS + 60*60*1000
+
+	events := make([]usage.Event, 0, 11)
+	for i := range 8 {
+		events = append(events, monitoringEvent(fmt.Sprintf("ok-%d", i), fromMS+int64(i+1)*1_000, "gpt-a", "auth-1", "source-a", false, 1, 1, 0, 0, 2, nil))
+	}
+	for i := range 3 {
+		events = append(events, monitoringEvent(fmt.Sprintf("fail-%d", i), fromMS+int64(100+i)*1_000, "gpt-b", "auth-2", "source-b", true, 1, 1, 0, 0, 2, nil))
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	all, err := New(db).Analytics(ctx, Request{FromMS: fromMS, ToMS: toMS, Include: Include{EventsPage: &EventsPage{Limit: 50}}})
+	if err != nil {
+		t.Fatalf("analytics all: %v", err)
+	}
+	if all.Events == nil || all.Events.TotalCount != 11 {
+		t.Fatalf("all total_count = %#v", all.Events)
+	}
+
+	failed, err := New(db).Analytics(ctx, Request{FromMS: fromMS, ToMS: toMS, Filters: Filters{FailedOnly: true}, Include: Include{EventsPage: &EventsPage{Limit: 50}}})
+	if err != nil {
+		t.Fatalf("analytics failed only: %v", err)
+	}
+	if failed.Events == nil || failed.Events.TotalCount != 3 || len(failed.Events.Items) != 3 {
+		t.Fatalf("failed total_count = %#v", failed.Events)
+	}
+
+	byModel, err := New(db).Analytics(ctx, Request{FromMS: fromMS, ToMS: toMS, Filters: Filters{Models: []string{"gpt-a"}}, Include: Include{EventsPage: &EventsPage{Limit: 50}}})
+	if err != nil {
+		t.Fatalf("analytics model filter: %v", err)
+	}
+	if byModel.Events == nil || byModel.Events.TotalCount != 8 {
+		t.Fatalf("model total_count = %#v", byModel.Events)
+	}
+}
+
+func TestAnalyticsEventsPageStableCursorAvoidsSkippingSameTimestamp(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_600_000_000)
+	toMS := fromMS + 60*60*1000
+
+	// Every event shares one timestamp_ms so the page boundary lands inside a
+	// single millisecond. A timestamp-only cursor would skip the remaining
+	// rows; the compound (timestamp_ms, id) cursor must page through all of
+	// them without dropping or duplicating any.
+	const total = 12
+	sharedTS := fromMS + 5_000
+	events := make([]usage.Event, 0, total)
+	for i := range total {
+		events = append(events, monitoringEvent(fmt.Sprintf("same-ts-%02d", i), sharedTS, "gpt-a", "auth-1", "source-a", false, 1, 1, 0, 0, 2, nil))
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	svc := New(db)
+	seen := make(map[string]bool, total)
+	var beforeMS, beforeID int64
+	pages := 0
+	for {
+		page := &EventsPage{Limit: 5}
+		if beforeMS > 0 {
+			ms := beforeMS
+			id := beforeID
+			page.BeforeMS = &ms
+			page.BeforeID = &id
+		}
+		resp, err := svc.Analytics(ctx, Request{FromMS: fromMS, ToMS: toMS, Include: Include{EventsPage: page}})
+		if err != nil {
+			t.Fatalf("analytics page %d: %v", pages, err)
+		}
+		if resp.Events == nil {
+			t.Fatalf("analytics page %d returned no events", pages)
+		}
+		if resp.Events.TotalCount != total {
+			t.Fatalf("page %d total_count = %d, want %d", pages, resp.Events.TotalCount, total)
+		}
+		for _, item := range resp.Events.Items {
+			if seen[item.EventHash] {
+				t.Fatalf("duplicate event %s across pages", item.EventHash)
+			}
+			seen[item.EventHash] = true
+		}
+		pages++
+		if !resp.Events.HasMore {
+			break
+		}
+		beforeMS = resp.Events.NextBeforeMS
+		beforeID = resp.Events.NextBeforeID
+		if pages > total+2 {
+			t.Fatal("pagination did not terminate")
+		}
+	}
+	if len(seen) != total {
+		t.Fatalf("collected %d unique events, want %d (same-timestamp rows were skipped)", len(seen), total)
 	}
 }
 

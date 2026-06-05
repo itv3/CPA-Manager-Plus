@@ -149,6 +149,7 @@ type TaskBucket struct {
 }
 
 type EventPageItem struct {
+	ID                    int64
 	EventHash             string
 	TimestampMS           int64
 	Timestamp             string
@@ -185,6 +186,7 @@ type EventPageItem struct {
 type EventsPage struct {
 	Items        []EventPageItem
 	NextBeforeMS int64
+	NextBeforeID int64
 	HasMore      bool
 }
 
@@ -719,17 +721,40 @@ limit ?`, args...)
 	return failures, rows.Err()
 }
 
-func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsFilter, beforeMS int64, limit int) (EventsPage, error) {
+func (r *repository) EventsCountWithFilter(ctx context.Context, filter AnalyticsFilter) (int64, error) {
+	where, args := analyticsWhere(filter)
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `select count(*) from usage_events `+where, args...).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsFilter, beforeMS int64, beforeID int64, limit int) (EventsPage, error) {
 	if limit <= 0 {
 		return EventsPage{}, nil
 	}
 	queryLimit := limit + 1
-	if beforeMS > 0 && beforeMS < filter.ToMS {
-		filter.ToMS = beforeMS
-	}
 	where, args := analyticsWhere(filter)
+	// Keyset pagination cursor. The non-unique timestamp index implicitly
+	// carries the rowid (id is "integer primary key"), so ordering by
+	// (timestamp_ms desc, id desc) stays index-backed. Using the compound
+	// (timestamp_ms, id) cursor instead of only timestamp_ms guarantees that
+	// many rows sharing one timestamp_ms are never skipped across pages.
+	// beforeID <= 0 falls back to the legacy timestamp-only cursor for old
+	// clients that do not send before_id yet.
+	if beforeMS > 0 {
+		if beforeID > 0 {
+			where += " and (timestamp_ms < ? or (timestamp_ms = ? and id < ?))"
+			args = append(args, beforeMS, beforeMS, beforeID)
+		} else {
+			where += " and timestamp_ms < ?"
+			args = append(args, beforeMS)
+		}
+	}
 	args = append(args, queryLimit)
 	rows, err := r.db.QueryContext(ctx, `select
+	id,
 	event_hash,
 	timestamp_ms,
 	timestamp,
@@ -774,6 +799,7 @@ limit ?`, args...)
 		var item EventPageItem
 		var failed int
 		if err := rows.Scan(
+			&item.ID,
 			&item.EventHash,
 			&item.TimestampMS,
 			&item.Timestamp,
@@ -820,10 +846,13 @@ limit ?`, args...)
 		items = items[:limit]
 	}
 	nextBeforeMS := int64(0)
+	nextBeforeID := int64(0)
 	if hasMore && len(items) > 0 {
-		nextBeforeMS = items[len(items)-1].TimestampMS
+		last := items[len(items)-1]
+		nextBeforeMS = last.TimestampMS
+		nextBeforeID = last.ID
 	}
-	return EventsPage{Items: items, NextBeforeMS: nextBeforeMS, HasMore: hasMore}, nil
+	return EventsPage{Items: items, NextBeforeMS: nextBeforeMS, NextBeforeID: nextBeforeID, HasMore: hasMore}, nil
 }
 
 func (r *repository) ActiveDaysWithFilter(ctx context.Context, filter AnalyticsFilter) (int64, error) {
