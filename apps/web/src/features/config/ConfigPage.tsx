@@ -6,6 +6,7 @@ import { parse as parseYaml, parseDocument } from 'yaml';
 import { usePageTransitionLayer } from '@/components/common/PageTransitionLayer';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { SegmentedTabs, type SegmentedTabItem } from '@/components/ui/SegmentedTabs';
 import {
   IconCheck,
   IconChevronDown,
@@ -1178,39 +1179,41 @@ export function ConfigPage() {
     panelHostedByUsageService === true
       ? t('config_management.manager.runtime_embedded')
       : t('config_management.manager.runtime_external');
+  const configEditorTabs = useMemo<ReadonlyArray<SegmentedTabItem<ConfigEditorTab>>>(
+    () => [
+      {
+        id: 'visual',
+        label: t('config_management.tabs.visual'),
+        disabled: saving || loading,
+      },
+      {
+        id: 'source',
+        label: t('config_management.tabs.source'),
+        disabled: saving || loading,
+      },
+      ...(showManagerTab
+        ? [
+            {
+              id: 'manager' as const,
+              label: t('config_management.tabs.manager'),
+              disabled: managerSaving || managerLoading,
+            },
+          ]
+        : []),
+    ],
+    [loading, managerLoading, managerSaving, saving, showManagerTab, t]
+  );
 
   return (
     <div className={styles.container}>
       <div className={styles.workspaceShell}>
         <div className={styles.pageMeta}>
-          <div className={styles.tabBar}>
-            <button
-              type="button"
-              className={`${styles.tabItem} ${activeTab === 'visual' ? styles.tabActive : ''}`}
-              onClick={() => handleTabChange('visual')}
-              disabled={saving || loading}
-            >
-              {t('config_management.tabs.visual')}
-            </button>
-            <button
-              type="button"
-              className={`${styles.tabItem} ${activeTab === 'source' ? styles.tabActive : ''}`}
-              onClick={() => handleTabChange('source')}
-              disabled={saving || loading}
-            >
-              {t('config_management.tabs.source')}
-            </button>
-            {showManagerTab ? (
-              <button
-                type="button"
-                className={`${styles.tabItem} ${activeTab === 'manager' ? styles.tabActive : ''}`}
-                onClick={() => handleTabChange('manager')}
-                disabled={managerSaving || managerLoading}
-              >
-                {t('config_management.tabs.manager')}
-              </button>
-            ) : null}
-          </div>
+          <SegmentedTabs
+            items={configEditorTabs}
+            activeTab={activeTab}
+            onChange={handleTabChange}
+            ariaLabel={t('config_management.title')}
+          />
           <div className={`${styles.statusBadge} ${getStatusClass()}`}>{getStatusText()}</div>
         </div>
 
