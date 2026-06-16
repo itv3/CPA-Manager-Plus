@@ -288,8 +288,17 @@ export type UsageHeatmapCellDetail = {
 
 export type UsageHeatmapCellSample = {
   sampleCount: number;
+  dateKeys: string[];
   dateLabels: string[];
   overflowCount: number;
+};
+
+export type UsageHeatmapDateOption = {
+  key: string;
+  label: string;
+  fromMs: number;
+  toMs: number;
+  sampleWindowCount: number;
 };
 
 export type UsageHeatmapRangeContext = {
@@ -298,6 +307,7 @@ export type UsageHeatmapRangeContext = {
   rangeLabel: string;
   dayCount: number;
   sampleWindowCount: number;
+  dateOptions: UsageHeatmapDateOption[];
   cellSamples: Record<string, UsageHeatmapCellSample>;
 };
 
@@ -902,6 +912,7 @@ export const buildUsageHeatmapRangeContext = (
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) {
     return {
       cellSamples: {},
+      dateOptions: [],
       dayCount: 0,
       fromLabel: '-',
       rangeLabel: '-',
@@ -912,6 +923,7 @@ export const buildUsageHeatmapRangeContext = (
 
   const safeTimeZone = normalizeIntlTimeZone(timeZone);
   const cellSamples: Record<string, UsageHeatmapCellSample> = {};
+  const dateOptionsByKey = new Map<string, UsageHeatmapDateOption>();
   const dateKeys = new Set<string>();
   const startMs = Math.floor(fromMs / HOUR_MS) * HOUR_MS;
   let sampleWindowCount = 0;
@@ -924,15 +936,39 @@ export const buildUsageHeatmapRangeContext = (
     sampleWindowCount += 1;
     dateKeys.add(zonedHour.dateKey);
 
+    const clippedFromMs = Math.max(timestampMs, fromMs);
+    const clippedToMs = Math.min(timestampMs + HOUR_MS, toMs);
+    if (clippedFromMs < clippedToMs) {
+      const dateLabel = formatHeatmapSampleDateLabel(timestampMs, locale, safeTimeZone);
+      const dateOption = dateOptionsByKey.get(zonedHour.dateKey);
+      if (dateOption) {
+        dateOption.fromMs = Math.min(dateOption.fromMs, clippedFromMs);
+        dateOption.toMs = Math.max(dateOption.toMs, clippedToMs);
+        dateOption.sampleWindowCount += 1;
+      } else {
+        dateOptionsByKey.set(zonedHour.dateKey, {
+          key: zonedHour.dateKey,
+          label: dateLabel,
+          fromMs: clippedFromMs,
+          toMs: clippedToMs,
+          sampleWindowCount: 1,
+        });
+      }
+    }
+
     const cellKey = `${zonedHour.weekday}-${zonedHour.hour}`;
     const sample =
       cellSamples[cellKey] ??
       ({
+        dateKeys: [],
         dateLabels: [],
         overflowCount: 0,
         sampleCount: 0,
       } satisfies UsageHeatmapCellSample);
     sample.sampleCount += 1;
+    if (!sample.dateKeys.includes(zonedHour.dateKey)) {
+      sample.dateKeys.push(zonedHour.dateKey);
+    }
 
     const dateLabel = formatHeatmapSampleDateLabel(timestampMs, locale, safeTimeZone);
     if (
@@ -952,12 +988,26 @@ export const buildUsageHeatmapRangeContext = (
   const toLabel = formatHeatmapContextDateTime(toMs, locale, safeTimeZone);
   return {
     cellSamples,
+    dateOptions: Array.from(dateOptionsByKey.values()).sort(
+      (left, right) => left.fromMs - right.fromMs
+    ),
     dayCount: dateKeys.size,
     fromLabel,
     rangeLabel: `${fromLabel} - ${toLabel}`,
     sampleWindowCount,
     toLabel,
   };
+};
+
+export const buildUsageHeatmapCellDateOptions = (
+  context: UsageHeatmapRangeContext,
+  selection: UsageHeatmapCellSelection | null
+): UsageHeatmapDateOption[] => {
+  if (!selection) return context.dateOptions;
+  const sample = context.cellSamples[`${selection.weekday}-${selection.hour}`];
+  if (!sample) return [];
+  const dateKeys = new Set(sample.dateKeys);
+  return context.dateOptions.filter((option) => dateKeys.has(option.key));
 };
 
 const normalizeProviderLabel = (value: string | undefined) => {

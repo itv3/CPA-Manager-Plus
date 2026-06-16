@@ -1705,59 +1705,42 @@
   min-width: 0;
 }
 
-.heatmapSegmented {
+.heatmapDateTabsRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+
+  > span {
+    flex: 0 0 auto;
+    color: var(--usage-muted);
+    font-size: 12px;
+    font-weight: 800;
+  }
+}
+
+.heatmapSegmented,
+.heatmapDateTabs {
   max-width: 100%;
-  border-color: color-mix(in srgb, var(--usage-primary) 22%, var(--usage-border));
-  background: color-mix(in srgb, var(--usage-primary) 6%, var(--usage-surface));
+  border-radius: 10px;
+  background: var(--usage-muted-surface);
 
   .segmentButton {
     min-height: 32px;
     padding: 0 12px;
+    color: var(--usage-text);
     font-size: 12px;
+  }
+
+  .segmentButton:hover {
+    color: var(--usage-text);
   }
 
   .segmentButtonActive,
   .segmentButtonActive:hover {
-    border-left-color: transparent;
-    background: var(--usage-primary);
-    color: #fff;
-    font-weight: 850;
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--usage-primary) 74%, #fff) inset,
-      0 6px 14px color-mix(in srgb, var(--usage-primary) 18%, transparent);
-  }
-}
-
-.heatmapContextStrip {
-  display: grid;
-  grid-template-columns: minmax(240px, 1.2fr) minmax(180px, 0.8fr) minmax(240px, 1fr);
-  gap: 10px;
-  min-width: 0;
-
-  div {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--usage-primary) 14%, var(--usage-border));
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--usage-primary) 4%, var(--usage-muted-surface));
-  }
-
-  strong {
-    color: var(--usage-muted);
-    font-size: 11px;
-    font-weight: 850;
-  }
-
-  span {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--usage-text);
-    font-size: 12px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    background: color-mix(in srgb, var(--usage-primary) 12%, var(--usage-surface));
+    color: var(--usage-primary);
+    font-weight: 800;
   }
 }
 
@@ -1774,11 +1757,36 @@
 }
 
 .heatmapDetailBody {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
   gap: 14px;
   align-items: start;
   min-width: 0;
+}
+
+.heatmapDetailBodyRefreshing {
+  opacity: 0.78;
+}
+
+.heatmapDetailRefreshBadge {
+  position: absolute;
+  z-index: 1;
+  top: -2px;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid var(--usage-border);
+  border-radius: 999px;
+  background: var(--usage-surface);
+  color: var(--usage-muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
 
 .heatmapDetailBodySingle {
@@ -1789,56 +1797,6 @@
   display: grid;
   gap: 10px;
   min-width: 0;
-}
-
-.heatmapDateContext {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--usage-primary) 14%, var(--usage-border));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--usage-primary) 4%, var(--usage-muted-surface));
-
-  strong {
-    flex: 0 0 auto;
-    color: var(--usage-muted);
-    font-size: 12px;
-    font-weight: 850;
-  }
-
-  span {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: thin;
-  }
-
-  b,
-  em {
-    flex: 0 0 auto;
-    min-height: 24px;
-    padding: 4px 8px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-style: normal;
-    font-weight: 850;
-    line-height: 1.2;
-    white-space: nowrap;
-  }
-
-  b {
-    background: var(--usage-surface);
-    color: var(--usage-text);
-  }
-
-  em {
-    background: color-mix(in srgb, var(--usage-primary) 9%, var(--usage-surface));
-    color: var(--usage-primary);
-  }
 }
 
 .heatmapDetailMetrics {
@@ -2200,7 +2158,6 @@
   }
 
   .analysisGrid,
-  .heatmapContextStrip,
   .heatmapDetailBody,
   .overviewHeroGrid,
   .dualChartGrid,
@@ -2305,13 +2262,17 @@
     width: 100%;
   }
 
-  .heatmapDetailMetrics {
-    grid-template-columns: 1fr;
-  }
-
-  .heatmapDateContext {
+  .heatmapDateTabsRow {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .heatmapDateTabs {
+    width: 100%;
+  }
+
+  .heatmapDetailMetrics {
+    grid-template-columns: 1fr;
   }
 
   .trendEntityHeader {

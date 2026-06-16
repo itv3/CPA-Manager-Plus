@@ -13,6 +13,7 @@ import {
   buildUsageAnalyticsInclude,
   buildUsageAnomalyCauseKeys,
   buildUsageHeatmapCellDetail,
+  buildUsageHeatmapCellDateOptions,
   buildUsageHeatmapChartData,
   buildUsageHeatmapHighlights,
   buildUsageHeatmapRangeContext,
@@ -205,11 +206,28 @@ describe('usage analytics adapters', () => {
     expect(context.dayCount).toBe(8);
     expect(context.sampleWindowCount).toBe(8 * 24);
     expect(context.rangeLabel).toContain('06/08');
+    expect(context.dateOptions[0]).toMatchObject({
+      key: '2026-06-08',
+      label: '06/08',
+      sampleWindowCount: 24,
+    });
     expect(context.cellSamples['1-9']).toMatchObject({
+      dateKeys: ['2026-06-08', '2026-06-15'],
       dateLabels: ['06/08', '06/15'],
       overflowCount: 0,
       sampleCount: 2,
     });
+    expect(
+      buildUsageHeatmapCellDateOptions(context, { weekday: 1, hour: 9 }).map(
+        (option) => option.key
+      )
+    ).toEqual(['2026-06-08', '2026-06-15']);
+    expect(
+      buildUsageHeatmapCellDateOptions(context, { weekday: 2, hour: 9 }).map(
+        (option) => option.key
+      )
+    ).toEqual(['2026-06-09']);
+    expect(buildUsageHeatmapCellDateOptions(context, null)).toHaveLength(8);
   });
 
   it('maps heatmap contributor fields from backend analytics', () => {

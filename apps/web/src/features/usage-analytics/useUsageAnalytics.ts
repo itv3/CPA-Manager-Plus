@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
 import {
   adaptUsageAnalyticsData,
@@ -7,8 +7,11 @@ import {
   buildEntityTrendSeries,
   buildKeyAnomalies,
   buildUsageInsights,
+  buildUsageHeatmap,
   buildUsageHeatmapCellDetail,
+  buildUsageHeatmapCellDateOptions,
   buildUsageHeatmapHighlights,
+  buildUsageHeatmapRangeContext,
   buildUsageMatrix,
   buildUsageSummaryDelta,
   buildUsageAnalyticsFilters,
@@ -23,7 +26,9 @@ import {
   type UsageAnalyticsTab,
   type UsageSelectedFilterKey,
   type UsageAnomalyAnalysis,
+  type UsageHeatmapCellDetail,
   type UsageHeatmapCellSelection,
+  type UsageHeatmapDateOption,
   type UsageHeatmapMetricKey,
   type UsageHeatmapScaleMode,
   type UsageTimelinePoint,
@@ -31,6 +36,7 @@ import {
 import { readUsageAnalyticsUiState, writeUsageAnalyticsUiState } from './usageAnalyticsUiState';
 
 const USAGE_SEARCH_DEBOUNCE_MS = 350;
+const USAGE_HEATMAP_ALL_DATES_KEY = 'all';
 
 const getBrowserTimeZone = () => {
   if (typeof Intl === 'undefined') return 'UTC';
@@ -63,6 +69,7 @@ export function useUsageAnalytics() {
   const [matrixMetric, setMatrixMetric] = useState<UsageMatrixMetricKey>('requestCount');
   const [heatmapMetric, setHeatmapMetric] = useState<UsageHeatmapMetricKey>('requestCount');
   const [heatmapScaleMode, setHeatmapScaleMode] = useState<UsageHeatmapScaleMode>('absolute');
+  const [selectedHeatmapDateKey, setSelectedHeatmapDateKey] = useState(USAGE_HEATMAP_ALL_DATES_KEY);
   const [selectedHeatmapCell, setSelectedHeatmapCell] = useState<UsageHeatmapCellSelection | null>(
     null
   );
@@ -77,6 +84,24 @@ export function useUsageAnalytics() {
   );
 
   const bounds = useMemo(() => getUsageRangeBounds(filters, nowMs), [filters, nowMs]);
+  const heatmapRangeContext = useMemo(
+    () => buildUsageHeatmapRangeContext(bounds, 'en-US', browserTimeZone),
+    [bounds, browserTimeZone]
+  );
+  const heatmapDateOptions = useMemo(
+    () => buildUsageHeatmapCellDateOptions(heatmapRangeContext, selectedHeatmapCell),
+    [heatmapRangeContext, selectedHeatmapCell]
+  );
+  const selectedHeatmapDate = useMemo<UsageHeatmapDateOption | null>(
+    () =>
+      selectedHeatmapDateKey === USAGE_HEATMAP_ALL_DATES_KEY
+        ? null
+        : (heatmapDateOptions.find((option) => option.key === selectedHeatmapDateKey) ?? null),
+    [heatmapDateOptions, selectedHeatmapDateKey]
+  );
+  const activeHeatmapDateKey = selectedHeatmapDate
+    ? selectedHeatmapDateKey
+    : USAGE_HEATMAP_ALL_DATES_KEY;
   const resolvedGranularity = useMemo(
     () => resolveUsageGranularity(filters, nowMs),
     [filters, nowMs]
@@ -118,11 +143,57 @@ export function useUsageAnalytics() {
     throttleMs: 0,
   });
 
+  const heatmapDateInclude = useMemo(
+    () => ({
+      granularity: 'hour' as const,
+      heatmap: true,
+    }),
+    []
+  );
+  const heatmapDateDataScopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        date: selectedHeatmapDate
+          ? {
+              fromMs: selectedHeatmapDate.fromMs,
+              key: selectedHeatmapDate.key,
+              toMs: selectedHeatmapDate.toMs,
+            }
+          : null,
+        filters: analyticsFilters,
+        searchQuery: debouncedSearchQuery,
+      }),
+    [analyticsFilters, debouncedSearchQuery, selectedHeatmapDate]
+  );
+  const heatmapDateAnalytics = useMonitoringAnalytics({
+    fromMs: selectedHeatmapDate?.fromMs,
+    toMs: selectedHeatmapDate?.toMs,
+    nowMs,
+    dataScopeKey: heatmapDateDataScopeKey,
+    searchQuery: debouncedSearchQuery,
+    filters: analyticsFilters,
+    include: heatmapDateInclude,
+    throttleMs: 0,
+  });
+
   const analyticsData = analytics.dataStale ? null : analytics.data;
   const adapted = useMemo(
     () => adaptUsageAnalyticsData(analyticsData, resolvedGranularity, filters.apiKeyKeyword),
     [analyticsData, filters.apiKeyKeyword, resolvedGranularity]
   );
+  const heatmapDateData = heatmapDateAnalytics.dataStale ? null : heatmapDateAnalytics.data;
+  const heatmapDateRows = useMemo(
+    () => buildUsageHeatmap(heatmapDateData?.heatmap ?? []),
+    [heatmapDateData]
+  );
+  const heatmapDetailSource = selectedHeatmapDate ? heatmapDateRows : adapted.heatmap;
+  const heatmapDateRefreshing = Boolean(
+    selectedHeatmapDate &&
+      (heatmapDateAnalytics.loading ||
+        heatmapDateAnalytics.dataStale ||
+        (!heatmapDateAnalytics.data && !heatmapDateAnalytics.error))
+  );
+  const lastVisibleHeatmapDetailRef = useRef<UsageHeatmapCellDetail | null>(null);
 
   const summaryDelta = useMemo(
     () => buildUsageSummaryDelta(adapted.summary, adapted.summaryComparison),
@@ -175,9 +246,14 @@ export function useUsageAnalytics() {
     [visibleCredentialRows, adapted.timeline, trendMetric]
   );
   const heatmapDetail = useMemo(
-    () => buildUsageHeatmapCellDetail(adapted.heatmap, selectedHeatmapCell, heatmapMetric),
-    [adapted.heatmap, heatmapMetric, selectedHeatmapCell]
+    () => buildUsageHeatmapCellDetail(heatmapDetailSource, selectedHeatmapCell, heatmapMetric),
+    [heatmapDetailSource, heatmapMetric, selectedHeatmapCell]
   );
+  if (heatmapDetail) {
+    lastVisibleHeatmapDetailRef.current = heatmapDetail;
+  }
+  const visibleHeatmapDetail =
+    heatmapDetail ?? (heatmapDateRefreshing ? lastVisibleHeatmapDetailRef.current : null);
   const heatmapHighlights = useMemo(
     () => buildUsageHeatmapHighlights(adapted.heatmap),
     [adapted.heatmap]
@@ -225,6 +301,7 @@ export function useUsageAnalytics() {
       return next;
     });
     setSelectedBucketMs(null);
+    setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
     setSelectedHeatmapCell(null);
   }, []);
 
@@ -232,6 +309,7 @@ export function useUsageAnalytics() {
     setFiltersState(USAGE_ANALYTICS_DEFAULT_FILTERS);
     writeUsageAnalyticsUiState({ filters: USAGE_ANALYTICS_DEFAULT_FILTERS });
     setSelectedBucketMs(null);
+    setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
     setSelectedHeatmapCell(null);
   }, []);
 
@@ -245,6 +323,7 @@ export function useUsageAnalytics() {
       return next;
     });
     setSelectedBucketMs(null);
+    setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
     setSelectedHeatmapCell(null);
   }, []);
 
@@ -254,12 +333,20 @@ export function useUsageAnalytics() {
 
   const selectHeatmapCell = useCallback((cell: UsageHeatmapCellSelection | null) => {
     setSelectedHeatmapCell(cell);
+    setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
+  }, []);
+
+  const selectHeatmapDate = useCallback((key: string) => {
+    setSelectedHeatmapDateKey(key || USAGE_HEATMAP_ALL_DATES_KEY);
   }, []);
 
   const refresh = useCallback(() => {
     setNowMs(Date.now());
     void analytics.refresh({ force: true });
-  }, [analytics]);
+    if (selectedHeatmapDate) {
+      void heatmapDateAnalytics.refresh({ force: true });
+    }
+  }, [analytics, heatmapDateAnalytics, selectedHeatmapDate]);
 
   return {
     filters,
@@ -289,9 +376,14 @@ export function useUsageAnalytics() {
     setHeatmapMetric,
     heatmapScaleMode,
     setHeatmapScaleMode,
+    heatmapDateOptions,
+    selectedHeatmapDateKey: activeHeatmapDateKey,
+    selectHeatmapDate,
+    heatmapDateLoading: heatmapDateRefreshing,
+    heatmapDateError: selectedHeatmapDate ? heatmapDateAnalytics.error : '',
     selectedHeatmapCell,
     selectHeatmapCell,
-    heatmapDetail,
+    heatmapDetail: visibleHeatmapDetail,
     heatmapHighlights,
     browserTimeZone,
     matrix,

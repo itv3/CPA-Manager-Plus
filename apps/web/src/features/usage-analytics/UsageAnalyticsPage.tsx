@@ -37,7 +37,6 @@ import {
 import { useThemeStore } from '@/stores';
 import {
   buildUsageHeatmapChartData,
-  buildUsageHeatmapRangeContext,
   buildModelKeyDistribution,
   buildMonitoringDetailUrl,
   buildOptionValues,
@@ -72,11 +71,11 @@ import {
   type UsageHeatmapCellDetail,
   type UsageHeatmapCellSelection,
   type UsageHeatmapContributor,
+  type UsageHeatmapDateOption,
   type UsageHeatmapHighlight,
   type UsageHeatmapHighlights,
   type UsageHeatmapMetricKey,
   type UsageHeatmapPoint,
-  type UsageHeatmapRangeContext,
   type UsageHeatmapScaleMode,
   type UsageKeyAnomalyRow,
   type UsageMetricKey,
@@ -1653,12 +1652,14 @@ const weekdayLabelKeys = [
 ] as const;
 
 function UsageHeatmapChart({
+  loading = false,
   metric,
   onSelect,
   points,
   scaleMode,
   selectedCell,
 }: {
+  loading?: boolean;
   metric: UsageHeatmapMetricKey;
   onSelect: (cell: UsageHeatmapCellSelection | null) => void;
   points: UsageHeatmapPoint[];
@@ -1678,8 +1679,10 @@ function UsageHeatmapChart({
       ? {
           value: point,
           itemStyle: {
-            borderColor: chartTheme.surface.heatmapEmphasisBorder,
-            borderWidth: 2,
+            borderColor: chartTheme.axisColors.requests,
+            borderWidth: 1,
+            shadowBlur: 8,
+            shadowColor: appendHexAlpha(chartTheme.axisColors.requests, '66'),
           },
         }
       : point;
@@ -1687,7 +1690,7 @@ function UsageHeatmapChart({
   const option: HeatmapChartOption = {
     animationDuration: 260,
     backgroundColor: 'transparent',
-    grid: { bottom: 28, containLabel: true, left: 8, right: 14, top: 10 },
+    grid: { bottom: 74, containLabel: true, left: 8, right: 14, top: 10 },
     tooltip: {
       appendToBody: true,
       ...getTooltipOption(chartTheme),
@@ -1740,7 +1743,7 @@ function UsageHeatmapChart({
       padding: 0,
     },
     visualMap: {
-      bottom: 0,
+      bottom: 4,
       calculable: true,
       dimension: 2,
       formatter: (value: unknown) => formatHeatmapVisualValue(metric, scaleMode, Number(value)),
@@ -1770,7 +1773,12 @@ function UsageHeatmapChart({
         data: chartData,
         encode: { x: 0, y: 1, value: 2, tooltip: [2, 3, 4] },
         emphasis: {
-          itemStyle: { borderColor: chartTheme.surface.heatmapEmphasisBorder, borderWidth: 1 },
+          itemStyle: {
+            borderColor: chartTheme.axisColors.requests,
+            borderWidth: 1,
+            shadowBlur: 6,
+            shadowColor: appendHexAlpha(chartTheme.axisColors.requests, '4D'),
+          },
         },
         itemStyle: { borderColor: chartTheme.surface.heatmapCellBorder, borderWidth: 1 },
         label: { show: false },
@@ -1779,6 +1787,15 @@ function UsageHeatmapChart({
       },
     ],
   };
+
+  if (loading) {
+    return (
+      <div className={styles.chartEmptyInline}>
+        <IconRefreshCw size={24} />
+        <span>{t('common.loading')}</span>
+      </div>
+    );
+  }
 
   if (data.length === 0) {
     return (
@@ -1793,7 +1810,7 @@ function UsageHeatmapChart({
     <EChartsView
       option={option}
       className={styles.echartsCanvas}
-      style={{ height: 340 }}
+      style={{ height: 380 }}
       ariaLabel={t('usage_analytics.heatmap_title')}
       onClick={(event) => onSelect(getHeatmapEventSelection(event))}
     />
@@ -1805,26 +1822,45 @@ const formatHeatmapWindowLabel = (
   weekdays: string[]
 ) => `${weekdays[point.weekday] ?? ''} ${String(point.hour).padStart(2, '0')}:00`;
 
-function HeatmapRangeContextStrip({ context }: { context: UsageHeatmapRangeContext }) {
+function HeatmapDateTabs({
+  dateOptions,
+  onSelect,
+  selectedKey,
+}: {
+  dateOptions: UsageHeatmapDateOption[];
+  onSelect: (key: string) => void;
+  selectedKey: string;
+}) {
   const { t } = useTranslation();
   return (
-    <div className={styles.heatmapContextStrip}>
-      <div>
-        <strong>{t('usage_analytics.heatmap_range_label')}</strong>
-        <span>{context.rangeLabel}</span>
-      </div>
-      <div>
-        <strong>{t('usage_analytics.heatmap_coverage_label')}</strong>
-        <span>
-          {t('usage_analytics.heatmap_coverage_value', {
-            days: context.dayCount,
-            windows: context.sampleWindowCount,
-          })}
-        </span>
-      </div>
-      <div>
-        <strong>{t('usage_analytics.heatmap_bucket_label')}</strong>
-        <span>{t('usage_analytics.heatmap_bucket_hint')}</span>
+    <div className={styles.heatmapDateTabsRow}>
+      <div
+        className={`${styles.segmentedControl} ${styles.heatmapDateTabs}`}
+        aria-label={t('usage_analytics.heatmap_date_tabs_label')}
+      >
+        <button
+          type="button"
+          aria-pressed={selectedKey === 'all'}
+          className={`${styles.segmentButton} ${
+            selectedKey === 'all' ? styles.segmentButtonActive : ''
+          }`}
+          onClick={() => onSelect('all')}
+        >
+          {t('usage_analytics.heatmap_date_all')}
+        </button>
+        {dateOptions.map((option) => (
+          <button
+            key={option.key}
+            type="button"
+            aria-pressed={selectedKey === option.key}
+            className={`${styles.segmentButton} ${
+              selectedKey === option.key ? styles.segmentButtonActive : ''
+            }`}
+            onClick={() => onSelect(option.key)}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -1870,130 +1906,137 @@ function HeatmapContributorGroup({
 }
 
 function HeatmapDetailPanel({
+  dateError,
+  dateLoading,
+  dateOptions,
   detail,
   metric,
   onClear,
-  rangeContext,
+  onSelectDate,
+  selectedCell,
+  selectedDateKey,
   timeZone,
 }: {
-  detail: UsageHeatmapCellDetail;
+  dateError: string;
+  dateLoading: boolean;
+  dateOptions: UsageHeatmapDateOption[];
+  detail: UsageHeatmapCellDetail | null;
   metric: UsageHeatmapMetricKey;
   onClear: () => void;
-  rangeContext: UsageHeatmapRangeContext;
+  onSelectDate: (key: string) => void;
+  selectedCell: UsageHeatmapCellSelection;
+  selectedDateKey: string;
   timeZone: string;
 }) {
   const { t } = useTranslation();
   const weekdays = weekdayLabelKeys.map((key) => t(key));
-  const cellSample = rangeContext.cellSamples[`${detail.point.weekday}-${detail.point.hour}`];
+  const selectedWindowLabel = formatHeatmapWindowLabel(detail?.point ?? selectedCell, weekdays);
   const metricLabel = t(`usage_analytics.heatmap_metric_${metric}`);
-  const metrics = [
-    {
-      label: metricLabel,
-      value: formatHeatmapMetricValue(metric, detail.metricValue),
-    },
-    {
-      label: t('usage_analytics.metric_request_count'),
-      value: compactNumber(detail.point.requestCount),
-    },
-    {
-      label: t('usage_analytics.metric_total_tokens'),
-      value: compactNumber(detail.point.totalTokens),
-    },
-    {
-      label: t('usage_analytics.metric_estimated_cost'),
-      value: formatMetricValue('estimatedCost', detail.point.estimatedCost),
-    },
-    {
-      label: t('usage_analytics.metric_failure_count'),
-      value: compactNumber(detail.point.failureCount),
-    },
-    {
-      label: t('usage_analytics.failure_rate'),
-      value: formatPercent(detail.point.failureRate),
-    },
-  ];
-  const comparisons = [
-    {
-      label: t('usage_analytics.heatmap_compare_overall'),
-      value: detail.overallBaseline,
-      delta: detail.overallDelta,
-    },
-    {
-      label: t('usage_analytics.heatmap_compare_weekday'),
-      value: detail.weekdayBaseline,
-      delta: detail.weekdayDelta,
-    },
-    {
-      label: t('usage_analytics.heatmap_compare_hour'),
-      value: detail.hourBaseline,
-      delta: detail.hourDelta,
-    },
-  ];
-  const contributorGroups = [
-    {
-      kind: 'model' as const,
-      rows: detail.point.modelContributors ?? [],
-      title: t('usage_analytics.heatmap_contributor_models'),
-    },
-    {
-      kind: 'apiKey' as const,
-      rows: detail.point.apiKeyContributors ?? [],
-      title: t('usage_analytics.heatmap_contributor_api_keys'),
-    },
-    {
-      kind: 'provider' as const,
-      rows: detail.point.providerContributors ?? [],
-      title: t('usage_analytics.heatmap_contributor_providers'),
-    },
-  ];
+  const metrics = detail
+    ? [
+        {
+          label: metricLabel,
+          value: formatHeatmapMetricValue(metric, detail.metricValue),
+        },
+        {
+          label: t('usage_analytics.metric_request_count'),
+          value: compactNumber(detail.point.requestCount),
+        },
+        {
+          label: t('usage_analytics.metric_total_tokens'),
+          value: compactNumber(detail.point.totalTokens),
+        },
+        {
+          label: t('usage_analytics.metric_estimated_cost'),
+          value: formatMetricValue('estimatedCost', detail.point.estimatedCost),
+        },
+        {
+          label: t('usage_analytics.metric_failure_count'),
+          value: compactNumber(detail.point.failureCount),
+        },
+        {
+          label: t('usage_analytics.failure_rate'),
+          value: formatPercent(detail.point.failureRate),
+        },
+      ]
+    : [];
+  const comparisons = detail
+    ? [
+        {
+          label: t('usage_analytics.heatmap_compare_overall'),
+          value: detail.overallBaseline,
+          delta: detail.overallDelta,
+        },
+        {
+          label: t('usage_analytics.heatmap_compare_weekday'),
+          value: detail.weekdayBaseline,
+          delta: detail.weekdayDelta,
+        },
+        {
+          label: t('usage_analytics.heatmap_compare_hour'),
+          value: detail.hourBaseline,
+          delta: detail.hourDelta,
+        },
+      ]
+    : [];
+  const contributorGroups = detail
+    ? [
+        {
+          kind: 'model' as const,
+          rows: detail.point.modelContributors ?? [],
+          title: t('usage_analytics.heatmap_contributor_models'),
+        },
+        {
+          kind: 'apiKey' as const,
+          rows: detail.point.apiKeyContributors ?? [],
+          title: t('usage_analytics.heatmap_contributor_api_keys'),
+        },
+        {
+          kind: 'provider' as const,
+          rows: detail.point.providerContributors ?? [],
+          title: t('usage_analytics.heatmap_contributor_providers'),
+        },
+      ]
+    : [];
   const hasContributors = contributorGroups.some((group) => group.rows.length > 0);
+  let content: ReactNode;
 
-  return (
-    <div className={`${styles.panel} ${styles.heatmapDetailPanel}`}>
-      <div className={styles.panelHeader}>
-        <div>
-          <h2>{t('usage_analytics.heatmap_detail_title')}</h2>
-          <p>
-            {t('usage_analytics.heatmap_detail_hint', {
-              time: formatHeatmapWindowLabel(detail.point, weekdays),
-              timeZone,
-            })}
-          </p>
-        </div>
-        <button type="button" onClick={onClear}>
-          {t('usage_analytics.heatmap_clear_selection')}
-        </button>
+  if (dateLoading && !detail) {
+    content = (
+      <div className={styles.chartEmptyInline}>
+        <IconRefreshCw size={24} />
+        <span>{t('common.loading')}</span>
       </div>
-      <div className={styles.heatmapDateContext}>
-        {cellSample && cellSample.sampleCount > 0 ? (
-          <>
-            <strong>
-              {t('usage_analytics.heatmap_detail_date_windows', {
-                count: cellSample.sampleCount,
-              })}
-            </strong>
-            <span>
-              {cellSample.dateLabels.map((label) => (
-                <b key={label}>{label}</b>
-              ))}
-              {cellSample.overflowCount > 0 ? (
-                <em>
-                  {t('usage_analytics.heatmap_detail_date_more', {
-                    count: cellSample.overflowCount,
-                  })}
-                </em>
-              ) : null}
-            </span>
-          </>
-        ) : (
-          <strong>{t('usage_analytics.heatmap_detail_date_empty')}</strong>
-        )}
+    );
+  } else if (dateError) {
+    content = (
+      <div className={styles.chartEmptyInline}>
+        <IconX size={24} />
+        <span>{t('usage_analytics.error_title')}</span>
+        <span>{dateError}</span>
       </div>
+    );
+  } else if (!detail) {
+    content = (
+      <div className={styles.chartEmptyInline}>
+        <IconInbox size={24} />
+        <span>{t('usage_analytics.heatmap_date_empty')}</span>
+      </div>
+    );
+  } else {
+    content = (
       <div
         className={`${styles.heatmapDetailBody} ${
           hasContributors ? '' : styles.heatmapDetailBodySingle
-        }`}
+        } ${dateLoading ? styles.heatmapDetailBodyRefreshing : ''}`}
+        aria-busy={dateLoading}
       >
+        {dateLoading ? (
+          <div className={styles.heatmapDetailRefreshBadge} role="status">
+            <IconRefreshCw size={14} />
+            <span>{t('common.loading')}</span>
+          </div>
+        ) : null}
         <div className={styles.heatmapDetailSummary}>
           <div className={styles.heatmapDetailMetrics}>
             {metrics.map((item) => (
@@ -2037,6 +2080,31 @@ function HeatmapDetailPanel({
           </div>
         ) : null}
       </div>
+    );
+  }
+
+  return (
+    <div className={`${styles.panel} ${styles.heatmapDetailPanel}`}>
+      <div className={styles.panelHeader}>
+        <div>
+          <h2>{t('usage_analytics.heatmap_detail_title')}</h2>
+          <p>
+            {t('usage_analytics.heatmap_detail_hint', {
+              time: selectedWindowLabel,
+              timeZone,
+            })}
+          </p>
+        </div>
+        <button type="button" onClick={onClear}>
+          {t('usage_analytics.heatmap_clear_selection')}
+        </button>
+      </div>
+      <HeatmapDateTabs
+        dateOptions={dateOptions}
+        selectedKey={selectedDateKey}
+        onSelect={onSelectDate}
+      />
+      {content}
     </div>
   );
 }
@@ -2860,11 +2928,6 @@ function UsageAnalyticsPageInner() {
       }),
     [i18n.language, t, usage.summary]
   );
-  const heatmapRangeContext = useMemo(
-    () => buildUsageHeatmapRangeContext(usage.bounds, i18n.language, usage.browserTimeZone),
-    [i18n.language, usage.bounds, usage.browserTimeZone]
-  );
-
   const toggleMetric = (key: UsageMetricKey) => {
     setSelectedMetrics((current) =>
       current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
@@ -3654,7 +3717,6 @@ function UsageAnalyticsPageInner() {
                 </div>
               </div>
             </div>
-            <HeatmapRangeContextStrip context={heatmapRangeContext} />
             <UsageHeatmapChart
               metric={usage.heatmapMetric}
               points={usage.heatmap}
@@ -3664,13 +3726,18 @@ function UsageAnalyticsPageInner() {
             />
           </section>
           <section className={styles.heatmapWorkspace}>
-            {usage.heatmapDetail ? (
+            {usage.selectedHeatmapCell ? (
               <HeatmapDetailPanel
+                dateError={usage.heatmapDateError}
+                dateLoading={usage.heatmapDateLoading}
+                dateOptions={usage.heatmapDateOptions}
                 detail={usage.heatmapDetail}
                 metric={usage.heatmapMetric}
-                rangeContext={heatmapRangeContext}
+                selectedCell={usage.selectedHeatmapCell}
+                selectedDateKey={usage.selectedHeatmapDateKey}
                 timeZone={usage.browserTimeZone}
                 onClear={() => usage.selectHeatmapCell(null)}
+                onSelectDate={usage.selectHeatmapDate}
               />
             ) : (
               <HeatmapHighlightsPanel

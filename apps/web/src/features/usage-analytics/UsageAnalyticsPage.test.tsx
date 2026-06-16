@@ -219,6 +219,19 @@ const createUsageState = (overrides: Record<string, unknown> = {}) => {
     setHeatmapMetric: vi.fn(),
     heatmapScaleMode: 'absolute',
     setHeatmapScaleMode: vi.fn(),
+    heatmapDateOptions: [
+      {
+        key: '2026-06-08',
+        label: '06/08',
+        fromMs: Date.UTC(2026, 5, 8, 0, 0, 0),
+        toMs: Date.UTC(2026, 5, 9, 0, 0, 0),
+        sampleWindowCount: 24,
+      },
+    ],
+    selectedHeatmapDateKey: 'all',
+    selectHeatmapDate: vi.fn(),
+    heatmapDateLoading: false,
+    heatmapDateError: '',
     selectedHeatmapCell: null,
     selectHeatmapCell: vi.fn(),
     heatmapDetail: null,
@@ -712,8 +725,9 @@ describe('UsageAnalyticsPage', () => {
     expect(text).toContain('usage_analytics.heatmap_title');
     expect(text).toContain('usage_analytics.heatmap_metric_requestCount');
     expect(text).toContain('usage_analytics.heatmap_scale_absolute');
-    expect(text).toContain('usage_analytics.heatmap_range_label');
-    expect(text).toContain('usage_analytics.heatmap_bucket_hint');
+    expect(text).not.toContain('usage_analytics.heatmap_date_all');
+    expect(text).not.toContain('06/08');
+    expect(text).not.toContain('usage_analytics.heatmap_range_label');
     expect(text).toContain('usage_analytics.heatmap_focus_title');
     expect(text).toContain('usage_analytics.heatmap_peak_requests');
     expect(text).not.toContain('usage_analytics.insights_title');
@@ -786,7 +800,7 @@ describe('UsageAnalyticsPage', () => {
         },
       ],
     };
-    mocks.usageState = createUsageState({
+    const usageState = createUsageState({
       activeTab: 'heatmap',
       bounds: {
         fromMs: Date.UTC(2026, 5, 8, 0, 0, 0),
@@ -808,17 +822,74 @@ describe('UsageAnalyticsPage', () => {
         totalCells: 1,
       },
     });
+    mocks.usageState = usageState;
     const renderer = renderPage();
     const text = getText(renderer.root);
 
-    expect(text).toContain('usage_analytics.heatmap_contributors_title');
-    expect(text).toContain('usage_analytics.heatmap_detail_date_windows');
+    expect(text).toContain('usage_analytics.heatmap_date_all');
     expect(text).toContain('06/08');
-    expect(text).toContain('06/15');
+    expect(text).toContain('usage_analytics.heatmap_contributors_title');
     expect(text).toContain('gpt-4o');
     expect(text).toContain('sk-****7890');
     expect(text).toContain('openai');
     expect(text).not.toContain('abcdef1234567890');
+
+    clickHostButton(findHostButtonByText(renderer, '06/08'));
+    expect(usageState.selectHeatmapDate).toHaveBeenCalledWith('2026-06-08');
+  });
+
+  it('keeps date-specific empty heatmap details inside the selected window panel', () => {
+    mocks.usageState = createUsageState({
+      activeTab: 'heatmap',
+      heatmapDetail: null,
+      selectedHeatmapCell: { weekday: 1, hour: 9 },
+      selectedHeatmapDateKey: '2026-06-08',
+    });
+    const renderer = renderPage();
+    const text = getText(renderer.root);
+
+    expect(text).toContain('usage_analytics.heatmap_detail_title');
+    expect(text).toContain('usage_analytics.heatmap_date_all');
+    expect(text).toContain('usage_analytics.heatmap_date_empty');
+    expect(text).not.toContain('usage_analytics.heatmap_focus_title');
+  });
+
+  it('keeps heatmap detail content mounted while a date tab refreshes', () => {
+    const point = {
+      weekday: 1,
+      hour: 9,
+      requestCount: 12,
+      successCount: 11,
+      failureCount: 1,
+      totalTokens: 1200,
+      estimatedCost: 1.25,
+      failureRate: 1 / 12,
+    };
+    mocks.usageState = createUsageState({
+      activeTab: 'heatmap',
+      heatmapDateLoading: true,
+      heatmapDetail: {
+        point,
+        metricValue: 12,
+        overallBaseline: 12,
+        weekdayBaseline: 12,
+        hourBaseline: 12,
+        overallDelta: 0,
+        weekdayDelta: 0,
+        hourDelta: 0,
+        rank: 1,
+        totalCells: 1,
+      },
+      selectedHeatmapCell: { weekday: 1, hour: 9 },
+      selectedHeatmapDateKey: '2026-06-08',
+    });
+    const renderer = renderPage();
+    const text = getText(renderer.root);
+
+    expect(text).toContain('common.loading');
+    expect(text).toContain('usage_analytics.metric_request_count');
+    expect(text).toContain('usage_analytics.metric_total_tokens');
+    expect(text).not.toContain('usage_analytics.heatmap_date_empty');
   });
 
   it('offers time range and status controls that update usage filters', () => {
