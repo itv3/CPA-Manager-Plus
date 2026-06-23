@@ -32,6 +32,7 @@ jobs:
           set -euo pipefail
 
           body="${PR_BODY:-}"
+          body="${body//$'\r'/}"
           required_headers=(
             "## Summary"
             "## Scope"
