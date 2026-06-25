@@ -57,7 +57,6 @@ import {
 import {
   monitoringAnalyticsApi,
   usageServiceApi,
-  type CodexInspectionResult,
   type QuotaCooldownInfo,
   type UsageHeaderSnapshot,
 } from '@/services/api/usageService';
@@ -90,9 +89,11 @@ import {
   getAuthFileCodexStatus,
   getAuthFilePatchTarget,
   getAuthFilePlanSortRank,
+  getAuthFileScopedCodexQuota,
   getAuthFileSearchValues,
   getAuthFileSelectionKey,
   getAuthFileNameFromSelectionKey,
+  getFreshAuthFileCodexStatusSources,
   hasPartialSharedAuthFileSelection,
   normalizeAuthFilesCodexPlanFilter,
   normalizeAuthFilesCodexStatusFilter,
@@ -125,8 +126,31 @@ const hasInlineQuotaLayout = (file: AuthFileItem): boolean => {
   return QUOTA_PROVIDER_TYPES.has(provider as QuotaProviderType);
 };
 
+type CodexInspectionSnapshotSource = {
+  fileName: string;
+  authIndex?: string | number | null;
+  statusCode?: number | string | null;
+  action?: string | null;
+  usedPercent?: number | string | null;
+  isQuota?: boolean | null;
+};
+
+const readCodexInspectionRunAtMs = (run: {
+  finishedAtMs?: number;
+  updatedAtMs?: number;
+  startedAtMs?: number;
+}): number | null =>
+  run.finishedAtMs && Number.isFinite(run.finishedAtMs)
+    ? run.finishedAtMs
+    : run.updatedAtMs && Number.isFinite(run.updatedAtMs)
+      ? run.updatedAtMs
+      : run.startedAtMs && Number.isFinite(run.startedAtMs)
+        ? run.startedAtMs
+        : null;
+
 const toAuthFileCodexInspectionSnapshots = (
-  results: CodexInspectionResult[]
+  results: CodexInspectionSnapshotSource[],
+  inspectionAtMs?: number | null
 ): AuthFileCodexInspectionSnapshot[] =>
   results.map((item) => ({
     fileName: item.fileName,
@@ -135,6 +159,7 @@ const toAuthFileCodexInspectionSnapshots = (
     action: item.action ?? null,
     usedPercent: item.usedPercent ?? null,
     isQuota: item.isQuota ?? null,
+    inspectionAtMs: inspectionAtMs ?? null,
   }));
 
 const isStaleCodexReauthSnapshot = (item: AuthFileCodexInspectionSnapshot): boolean => {
@@ -423,7 +448,12 @@ export function AuthFilesPage() {
             managementKey,
             latestRun.id
           );
-          setLastCodexInspectionResults(toAuthFileCodexInspectionSnapshots(detail.results));
+          setLastCodexInspectionResults(
+            toAuthFileCodexInspectionSnapshots(
+              detail.results,
+              readCodexInspectionRunAtMs(detail.run)
+            )
+          );
           return;
         }
       } catch {
@@ -431,7 +461,14 @@ export function AuthFilesPage() {
       }
     }
 
-    setLastCodexInspectionResults(lastRun?.result.results ?? []);
+    setLastCodexInspectionResults(
+      lastRun
+        ? toAuthFileCodexInspectionSnapshots(
+            lastRun.result.results,
+            lastRun.result.finishedAt || lastRun.result.startedAt || null
+          )
+        : []
+    );
   }, [
     connectionFingerprint,
     featureAvailability.checking,
@@ -641,40 +678,74 @@ export function AuthFilesPage() {
     [headerSnapshots]
   );
 
-  const getDisplayCodexQuota = useCallback(
+  const getActiveCodexQuota = useCallback(
     (file: AuthFileItem): CodexQuotaState | undefined => {
       if (resolveAuthProvider(file) !== 'codex') return undefined;
-      const activeQuota = codexQuota[file.name];
-      const observedQuota = buildObservedCodexQuotaState(
+      const storeKey = getAuthFileCodexInspectionKeyForFile(file);
+      return getAuthFileScopedCodexQuota(
         file,
-        getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file),
-        t
+        codexQuota[storeKey] ?? codexQuota[file.name]
       );
-      return resolveQuotaDisplayState(activeQuota, observedQuota);
     },
-    [codexQuota, headerSnapshotLookup, t]
+    [codexQuota]
   );
 
-  const codexStatusByAuthFileKey = useMemo(() => {
-    const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
+  const codexStatusSourcesByAuthFileKey = useMemo(() => {
+    const sourcesMap = new Map<
+      string,
+      ReturnType<typeof getFreshAuthFileCodexStatusSources>
+    >();
     files.forEach((file) => {
       const statusKey = getAuthFileCodexInspectionKeyForFile(file);
       const headerSnapshot = getHighConfidenceUsageHeaderSnapshotForAuthFile(
         headerSnapshotLookup,
         file
       );
-      statusMap.set(
+      sourcesMap.set(
         statusKey,
-        getAuthFileCodexStatus(
+        getFreshAuthFileCodexStatusSources(
           file,
-          getDisplayCodexQuota(file),
+          getActiveCodexQuota(file),
           codexInspectionByAuthFile.get(statusKey),
           headerSnapshot
         )
       );
     });
+    return sourcesMap;
+  }, [codexInspectionByAuthFile, files, getActiveCodexQuota, headerSnapshotLookup]);
+
+  const getDisplayCodexQuota = useCallback(
+    (file: AuthFileItem): CodexQuotaState | undefined => {
+      if (resolveAuthProvider(file) !== 'codex') return undefined;
+      const statusKey = getAuthFileCodexInspectionKeyForFile(file);
+      const activeQuota = getActiveCodexQuota(file);
+      const observedQuota = buildObservedCodexQuotaState(
+        file,
+        codexStatusSourcesByAuthFileKey.get(statusKey)?.headerSnapshot,
+        t
+      );
+      return resolveQuotaDisplayState(activeQuota, observedQuota);
+    },
+    [codexStatusSourcesByAuthFileKey, getActiveCodexQuota, t]
+  );
+
+  const codexStatusByAuthFileKey = useMemo(() => {
+    const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
+    files.forEach((file) => {
+      const statusKey = getAuthFileCodexInspectionKeyForFile(file);
+      const sources = codexStatusSourcesByAuthFileKey.get(statusKey);
+      statusMap.set(
+        statusKey,
+        getAuthFileCodexStatus(
+          file,
+          getDisplayCodexQuota(file),
+          sources?.inspection,
+          sources?.headerSnapshot
+        )
+      );
+    });
     return statusMap;
-  }, [codexInspectionByAuthFile, files, getDisplayCodexQuota, headerSnapshotLookup]);
+  }, [codexStatusSourcesByAuthFileKey, files, getDisplayCodexQuota]);
 
   const filesMatchingStatusFilters = useMemo(
     () =>
@@ -780,6 +851,13 @@ export function AuthFilesPage() {
     return filesMatchingStatusFilters.filter((item) => {
       const type = normalizeProviderKey(String(item.type ?? item.provider ?? ''));
       const matchType = normalizedFilter === 'all' || type === normalizedFilter;
+      const authFileKey = getAuthFileCodexInspectionKeyForFile(item);
+      const planHeaderSnapshot = getHighConfidenceUsageHeaderSnapshotForAuthFile(
+        headerSnapshotLookup,
+        item
+      );
+      const statusHeaderSnapshot =
+        codexStatusSourcesByAuthFileKey.get(authFileKey)?.headerSnapshot;
       const matchSearch =
         !normalizedSearch ||
         stringifySearchValue(
@@ -787,8 +865,9 @@ export function AuthFilesPage() {
             item,
             t,
             getDisplayCodexQuota(item),
-            codexStatusByAuthFileKey.get(getAuthFileCodexInspectionKeyForFile(item)),
-            getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, item)
+            codexStatusByAuthFileKey.get(authFileKey),
+            statusHeaderSnapshot,
+            planHeaderSnapshot
           )
         ).some((value) => {
           const content = value.toString();
@@ -800,6 +879,7 @@ export function AuthFilesPage() {
     });
   }, [
     codexStatusByAuthFileKey,
+    codexStatusSourcesByAuthFileKey,
     filesMatchingStatusFilters,
     getDisplayCodexQuota,
     headerSnapshotLookup,

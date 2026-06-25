@@ -392,7 +392,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
                 file={file}
                 quotaType={quotaType}
                 disableControls={disableControls}
-                quotaOverride={quotaType === 'codex' ? codexDisplayQuota : undefined}
+                quotaOverride={quotaType === 'codex' ? (codexDisplayQuota ?? null) : undefined}
               />
             )}
           </div>

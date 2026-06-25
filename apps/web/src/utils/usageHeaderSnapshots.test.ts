@@ -8,6 +8,7 @@ import {
   getHeaderSnapshotReachedWindowKind,
   getHeaderSnapshotPlanType,
   getHeaderSnapshotSummaryWindowKind,
+  getHeaderSnapshotWindowUsedPercent,
   getHighConfidenceUsageHeaderSnapshotForAuthFile,
   getUsageHeaderSnapshotForAuthFile,
   hasUsageHeaderDiagnosticSignal,
@@ -128,6 +129,32 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
     ]);
   });
 
+  it('reads used percent for the reached quota window', () => {
+    const snapshot: UsageHeaderSnapshot = {
+      event_hash: 'event-reached-window-percent',
+      timestamp_ms: 1_700_000_000_000,
+      response_metadata: {
+        quota: {
+          rate_limit_reached_type: 'secondary',
+          reached_window_kind: 'weekly',
+          reached_window_source: 'secondary',
+          primary: {
+            used_percent: 99,
+            window_minutes: 300,
+          },
+          secondary: {
+            used_percent: 98,
+            window_minutes: 10_080,
+          },
+        },
+      },
+    };
+
+    expect(getHeaderSnapshotWindowUsedPercent(snapshot, 'five_hour')).toBe(99);
+    expect(getHeaderSnapshotWindowUsedPercent(snapshot, 'weekly')).toBe(98);
+    expect(getHeaderSnapshotWindowUsedPercent(snapshot, 'monthly')).toBeNull();
+  });
+
   it('does not treat trace-only metadata as quota evidence', () => {
     const snapshot: UsageHeaderSnapshot = {
       event_hash: 'trace-only',
@@ -189,6 +216,48 @@ describe('buildObservedCodexQuotaFromHeaderSnapshot', () => {
       'auth-index-only'
     );
     expect(getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, unmatchedFile)).toBeUndefined();
+  });
+
+  it('does not use same-file header snapshots across different auth indexes', () => {
+    const lookup = buildUsageHeaderSnapshotLookup([
+      {
+        event_hash: 'shared-file-index-0',
+        timestamp_ms: 1_700_000_000_200,
+        auth_file_snapshot: 'shared-codex.json',
+        auth_index: '0',
+        response_metadata: {
+          quota: {
+            plan_type: 'plus',
+          },
+        },
+      },
+      {
+        event_hash: 'shared-file-index-1',
+        timestamp_ms: 1_700_000_000_100,
+        auth_file_snapshot: 'shared-codex.json',
+        auth_index: '1',
+        response_metadata: {
+          quota: {
+            plan_type: 'team',
+          },
+        },
+      },
+    ]);
+    const file = {
+      name: 'shared-codex.json',
+      provider: 'codex',
+      authIndex: '1',
+    } as AuthFileItem;
+    const missingIndexFile = {
+      name: 'shared-codex.json',
+      provider: 'codex',
+      authIndex: '2',
+    } as AuthFileItem;
+
+    expect(getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, file)?.event_hash).toBe(
+      'shared-file-index-1'
+    );
+    expect(getHighConfidenceUsageHeaderSnapshotForAuthFile(lookup, missingIndexFile)).toBeUndefined();
   });
 
   it('does not use active limit as the plan type', () => {

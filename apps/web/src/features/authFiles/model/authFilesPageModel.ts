@@ -15,6 +15,7 @@ import {
   getHeaderSnapshotSummaryWindowKind,
   getHeaderSnapshotTraceId,
   getHeaderSnapshotUsedPercent,
+  getHeaderSnapshotWindowUsedPercent,
 } from '@/utils/usageHeaderSnapshots';
 import {
   getTypeLabel,
@@ -115,7 +116,14 @@ export type AuthFileCodexInspectionSnapshot = {
   action?: string | null;
   usedPercent?: number | string | null;
   isQuota?: boolean | null;
+  inspectionAtMs?: number | null;
 };
+
+export type AuthFileCodexStatusSources = {
+  inspection?: AuthFileCodexInspectionSnapshot;
+  headerSnapshot?: UsageHeaderSnapshot;
+};
+
 export type AuthFilePatchTarget = {
   name: string;
   authIndex?: string | number | null;
@@ -166,11 +174,16 @@ const isObservedQuotaLimitError = (kind: string, code: string) => {
   );
 };
 
+const isUnderQuotaLimit = (value: number | null): boolean => value !== null && value < 100;
+
 const normalizeAuthIndexKey = (value: unknown): string => {
   if (value === undefined || value === null) return UNKNOWN_AUTH_INDEX_KEY;
   const normalized = String(value).trim();
   return normalized || UNKNOWN_AUTH_INDEX_KEY;
 };
+
+const readFiniteTimestamp = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
 
 const readAuthFileAuthIndex = (file: AuthFileItem): string | number | null =>
   (file.authIndex ?? file['auth_index'] ?? file['auth-index'] ?? null) as string | number | null;
@@ -295,6 +308,67 @@ export const buildAuthFileCodexInspectionMap = (
   return map;
 };
 
+const activeCodexQuotaMatchesAuthFile = (
+  file: AuthFileItem,
+  quota: CodexQuotaState | undefined
+): boolean => {
+  const quotaAuthFileKey = typeof quota?.authFileKey === 'string' ? quota.authFileKey.trim() : '';
+  if (!quotaAuthFileKey) return false;
+  return quotaAuthFileKey === getAuthFileCodexInspectionKeyForFile(file);
+};
+
+export const getAuthFileScopedCodexQuota = (
+  file: AuthFileItem,
+  quota: CodexQuotaState | undefined
+): CodexQuotaState | undefined => {
+  if (!quota) return undefined;
+  if (!quota.authFileKey) return readAuthFileAuthIndex(file) == null ? quota : undefined;
+  return activeCodexQuotaMatchesAuthFile(file, quota) ? quota : undefined;
+};
+
+const shouldSuppressOlderCodexStatusSource = (
+  file: AuthFileItem,
+  quota: CodexQuotaState | undefined,
+  sourceAtMs: unknown,
+  newerSourceAtMs?: unknown
+): boolean => {
+  const normalizedSourceAtMs = readFiniteTimestamp(sourceAtMs);
+  if (normalizedSourceAtMs === null) return false;
+  const fetchedAtMs =
+    quota?.status === 'success' && activeCodexQuotaMatchesAuthFile(file, quota)
+      ? readFiniteTimestamp(quota.fetchedAtMs)
+      : null;
+  const normalizedNewerSourceAtMs = readFiniteTimestamp(newerSourceAtMs);
+  return (
+    (fetchedAtMs !== null && fetchedAtMs >= normalizedSourceAtMs) ||
+    (normalizedNewerSourceAtMs !== null && normalizedNewerSourceAtMs > normalizedSourceAtMs)
+  );
+};
+
+export const getFreshAuthFileCodexStatusSources = (
+  file: AuthFileItem,
+  quota: CodexQuotaState | undefined,
+  inspection?: AuthFileCodexInspectionSnapshot,
+  headerSnapshot?: UsageHeaderSnapshot
+): AuthFileCodexStatusSources => ({
+  inspection: shouldSuppressOlderCodexStatusSource(
+    file,
+    quota,
+    inspection?.inspectionAtMs,
+    headerSnapshot?.timestamp_ms
+  )
+    ? undefined
+    : inspection,
+  headerSnapshot: shouldSuppressOlderCodexStatusSource(
+    file,
+    quota,
+    headerSnapshot?.timestamp_ms,
+    inspection?.inspectionAtMs
+  )
+    ? undefined
+    : headerSnapshot,
+});
+
 export const getAuthFileCodexStatus = (
   file: AuthFileItem,
   quota?: CodexQuotaState,
@@ -353,12 +427,26 @@ export const getAuthFileCodexStatus = (
     (observedUsedPercent !== null && observedUsedPercent >= 100
       ? observedSummaryWindowKind
       : null);
+  const getObservedWindowUsedPercent = (windowKind: 'five_hour' | 'weekly' | 'monthly') =>
+    getHeaderSnapshotWindowUsedPercent(headerSnapshot, windowKind) ??
+    (observedLimitWindowKind === windowKind ? observedUsedPercent : null);
+  const observedFiveHourUsedPercent = getObservedWindowUsedPercent('five_hour');
+  const observedWeeklyUsedPercent = getObservedWindowUsedPercent('weekly');
+  const observedMonthlyUsedPercent = getObservedWindowUsedPercent('monthly');
+  const observedFiveHourUnderLimit = isUnderQuotaLimit(observedFiveHourUsedPercent);
+  const observedWeeklyUnderLimit = isUnderQuotaLimit(observedWeeklyUsedPercent);
+  const observedMonthlyUnderLimit = isUnderQuotaLimit(observedMonthlyUsedPercent);
+  const observedSpecificLimitSuppressed =
+    (observedLimitWindowKind === 'five_hour' && observedFiveHourUnderLimit) ||
+    (observedLimitWindowKind === 'weekly' && observedWeeklyUnderLimit) ||
+    (observedLimitWindowKind === 'monthly' && observedMonthlyUnderLimit);
   const observedFiveHourLimited =
-    observedQuotaLimited && observedLimitWindowKind === 'five_hour';
+    observedQuotaLimited && observedLimitWindowKind === 'five_hour' && !observedFiveHourUnderLimit;
   const observedWeeklyLimited =
-    observedQuotaLimited && observedLimitWindowKind === 'weekly';
+    observedQuotaLimited && observedLimitWindowKind === 'weekly' && !observedWeeklyUnderLimit;
   const observedMonthlyLimited =
-    observedQuotaLimited && observedLimitWindowKind === 'monthly';
+    observedQuotaLimited && observedLimitWindowKind === 'monthly' && !observedMonthlyUnderLimit;
+  const observedQuotaLimitedStatus = observedQuotaLimited && !observedSpecificLimitSuppressed;
   const monthlyUsedPercent =
     monthlyWindowUsedPercent ?? (monthlyWindow ? inspectionUsedPercent : null);
   const longWindowUsedPercent = weeklyWindowUsedPercent ?? monthlyUsedPercent;
@@ -399,14 +487,17 @@ export const getAuthFileCodexStatus = (
   const isFiveHourLimited =
     (fiveHourUsedPercent !== null && fiveHourUsedPercent >= 100) || observedFiveHourLimited;
   const isUnknownQuotaLimited =
-    observedQuotaLimited && !isFiveHourLimited && !isWeeklyLimited && !isMonthlyLimited;
+    observedQuotaLimitedStatus &&
+    !isFiveHourLimited &&
+    !isWeeklyLimited &&
+    !isMonthlyLimited;
   const isQuotaLimited =
     isFiveHourLimited || isWeeklyLimited || isMonthlyLimited || isUnknownQuotaLimited;
   const recoveryResetLabel =
     (isMonthlyLimited && monthlyResetLabel) ||
     (isWeeklyLimited && weeklyResetLabel) ||
     (isFiveHourLimited && fiveHourResetLabel) ||
-    (observedQuotaLimited && observedRecoverLabel) ||
+    (observedQuotaLimitedStatus && observedRecoverLabel) ||
     null;
   const hasDisabledRecoveryReset = file.disabled === true && recoveryResetLabel !== null;
   const badges: AuthFileCodexStatusBadge[] = [];
@@ -467,7 +558,7 @@ export const getAuthFileCodexStatus = (
     });
   }
 
-  if (observedQuotaLimited) {
+  if (observedQuotaLimitedStatus) {
     badges.push({
       kind: 'observed_quota',
       tone: 'warning',
@@ -688,9 +779,10 @@ export const getAuthFileSearchValues = (
   t: TFunction,
   quota?: CodexQuotaState,
   codexStatus?: AuthFileCodexStatusSummary,
-  headerSnapshot?: UsageHeaderSnapshot
+  headerSnapshot?: UsageHeaderSnapshot,
+  planHeaderSnapshot: UsageHeaderSnapshot | undefined = headerSnapshot
 ) => {
-  const planType = getAuthFilePlanType(file, quota, headerSnapshot);
+  const planType = getAuthFilePlanType(file, quota, planHeaderSnapshot);
   const planLabel = getCodexPlanLabel(planType, t);
   const accountId = resolveCodexChatgptAccountId(file);
   const type = file.type || file.provider;

@@ -80,6 +80,11 @@ const getHeaderQuotaWindowBySource = (
   return undefined;
 };
 
+const normalizeHeaderQuotaWindowSource = (value: unknown): 'primary' | 'secondary' | null => {
+  const source = readString(value).toLowerCase();
+  return source === 'primary' || source === 'secondary' ? source : null;
+};
+
 const newerSnapshot = (
   current: UsageHeaderSnapshot | undefined,
   next: UsageHeaderSnapshot
@@ -164,9 +169,10 @@ export const getUsageHeaderSnapshotMatchForIdentity = (
   const authIndex = normalizeAuthIndex(identity.authIndex);
   const account = readString(identity.account);
   const source = readString(identity.source);
+  const hasAuthIndex = authIndex !== null;
   const candidates = [
     matchOf(lookup.byFileAuthIndex.get(fileAuthKey(fileName, authIndex ?? '')), 'high'),
-    matchOf(lookup.byFileName.get(normalizeKey(fileName)), 'high'),
+    matchOf(hasAuthIndex ? undefined : lookup.byFileName.get(normalizeKey(fileName)), 'high'),
     matchOf(lookup.byAccount.get(normalizeKey(account)), 'high'),
     matchOf(lookup.byAuthIndex.get(normalizeKey(authIndex)), 'low'),
     matchOf(lookup.bySource.get(normalizeKey(source)), 'low'),
@@ -248,6 +254,43 @@ export const getHeaderSnapshotReachedWindowKind = (
       ? readString(quota?.rate_limit_reached_type).toLowerCase()
       : '');
   return classifyHeaderQuotaWindowKind(getHeaderQuotaWindowBySource(quota, source));
+};
+
+export const getHeaderSnapshotWindowUsedPercent = (
+  snapshot: UsageHeaderSnapshot | null | undefined,
+  windowKind: 'five_hour' | 'weekly' | 'monthly' | 'unknown'
+): number | null => {
+  const quota = getHeaderSnapshotQuotaMetadata(snapshot);
+  if (!quota) return null;
+
+  const sourceCandidates: Array<'primary' | 'secondary'> = [];
+  const addSourceCandidate = (value: unknown) => {
+    const source = normalizeHeaderQuotaWindowSource(value);
+    if (source && !sourceCandidates.includes(source)) {
+      sourceCandidates.push(source);
+    }
+  };
+
+  if (getHeaderSnapshotReachedWindowKind(snapshot) === windowKind) {
+    addSourceCandidate(quota.reached_window_source);
+    addSourceCandidate(quota.rate_limit_reached_type);
+  }
+  if (getHeaderSnapshotSummaryWindowKind(snapshot) === windowKind) {
+    addSourceCandidate(quota.summary_window_source);
+  }
+
+  for (const source of sourceCandidates) {
+    const value = readNumber(getHeaderQuotaWindowBySource(quota, source)?.used_percent);
+    if (value !== null) return value;
+  }
+
+  const classifiedValues = [quota.primary, quota.secondary]
+    .filter((window) => classifyHeaderQuotaWindowKind(window) === windowKind)
+    .map((window) => readNumber(window?.used_percent))
+    .filter((value): value is number => value !== null);
+
+  if (classifiedValues.length > 0) return Math.max(...classifiedValues);
+  return null;
 };
 
 export const getHeaderSnapshotUsedPercent = (
