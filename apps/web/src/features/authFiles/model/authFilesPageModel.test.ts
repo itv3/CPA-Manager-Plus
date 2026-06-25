@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthFileItem, CodexQuotaState } from '@/types';
+import type { UsageHeaderSnapshot } from '@/services/api/usageService';
 import {
   authFileMatchesCodexPlanFilter,
   authFileMatchesCodexStatusFilter,
@@ -252,6 +253,50 @@ describe('auth file Codex status helpers', () => {
     expect(authFileMatchesCodexStatusFilter(status, 'monthly_limited')).toBe(false);
   });
 
+  it('treats plain Retry-After headers as diagnostics instead of quota exhaustion', () => {
+    const retryAfterSnapshot: UsageHeaderSnapshot = {
+      event_hash: 'retry-after-only',
+      timestamp_ms: 1_700_000_000_000,
+      response_metadata: {
+        errors: {
+          kind: 'rate_limit',
+          code: 'retry_after',
+          retry_after_seconds: 60,
+          retry_after_recover_at_ms: 1_700_000_060_000,
+        },
+      },
+    };
+
+    const status = getAuthFileCodexStatus(codexFile(), undefined, undefined, retryAfterSnapshot);
+
+    expect(status.isWeeklyLimited).toBe(false);
+    expect(status.isMonthlyLimited).toBe(false);
+    expect(status.badges.map((badge) => badge.kind)).toContain('observed_error');
+    expect(status.badges.map((badge) => badge.kind)).not.toContain('observed_quota');
+  });
+
+  it('still treats explicit usage-limit header evidence as observed quota exhaustion', () => {
+    const usageLimitSnapshot: UsageHeaderSnapshot = {
+      event_hash: 'usage-limit',
+      timestamp_ms: 1_700_000_000_000,
+      response_metadata: {
+        quota: {
+          rate_limit_reached_type: 'workspace_member_credits_depleted',
+          recover_at_ms: 1_700_000_060_000,
+        },
+        errors: {
+          kind: 'rate_limit',
+          code: 'usage_limit_reached',
+        },
+      },
+    };
+
+    const status = getAuthFileCodexStatus(codexFile(), undefined, undefined, usageLimitSnapshot);
+
+    expect(status.isWeeklyLimited).toBe(true);
+    expect(status.badges.map((badge) => badge.kind)).toContain('observed_quota');
+  });
+
   it('ignores non-Codex files for Codex-only status filters', () => {
     const status = getAuthFileCodexStatus({ name: 'qwen.json', type: 'qwen' }, codexQuota());
 
@@ -321,6 +366,17 @@ describe('auth file Codex plan helpers', () => {
       )
     ).toBe(true);
     expect(authFileMatchesCodexPlanFilter(codexFile(), undefined, 'unknown')).toBe(true);
+    expect(
+      authFileMatchesCodexPlanFilter(codexFile(), undefined, 'unknown', {
+        event_hash: 'active-limit-only',
+        timestamp_ms: 1_700_000_000_000,
+        response_metadata: {
+          quota: {
+            active_limit: 'premium',
+          },
+        },
+      })
+    ).toBe(true);
     expect(
       authFileMatchesCodexPlanFilter({ name: 'qwen.json', type: 'qwen' }, undefined, 'plus')
     ).toBe(false);

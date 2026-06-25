@@ -63,7 +63,7 @@ import {
 } from '@/services/api/usageService';
 import {
   buildUsageHeaderSnapshotLookup,
-  getUsageHeaderSnapshotForAuthFile,
+  getHighConfidenceUsageHeaderSnapshotForAuthFile,
 } from '@/utils/usageHeaderSnapshots';
 import { useAuthFilesData } from '@/features/authFiles/hooks/useAuthFilesData';
 import { useAuthFilesModels } from '@/features/authFiles/hooks/useAuthFilesModels';
@@ -540,7 +540,10 @@ export function AuthFilesPage() {
     // we land, we drop the result instead of writing stale badges back.
     const id = ++cooldownReqId.current;
     try {
-      const items = await usageServiceApi.getActiveQuotaCooldowns(managerServiceBase, managementKey);
+      const items = await usageServiceApi.getActiveQuotaCooldowns(
+        managerServiceBase,
+        managementKey
+      );
       if (id !== cooldownReqId.current) return;
       const next = new Map<string, QuotaCooldownInfo>();
       for (const item of items) {
@@ -563,10 +566,14 @@ export function AuthFilesPage() {
     }
     const id = ++headerSnapshotReqId.current;
     try {
-      const response = await monitoringAnalyticsApi.getHeaderSnapshots(managerServiceBase, managementKey, {
-        days: 30,
-        limit: 1000,
-      });
+      const response = await monitoringAnalyticsApi.getHeaderSnapshots(
+        managerServiceBase,
+        managementKey,
+        {
+          days: 30,
+          limit: 1000,
+        }
+      );
       if (id !== headerSnapshotReqId.current) return;
       setHeaderSnapshots(response.items ?? []);
     } catch {
@@ -641,9 +648,12 @@ export function AuthFilesPage() {
       if (activeQuota && activeQuota.status !== 'idle' && activeQuota.status !== 'error') {
         return activeQuota;
       }
+      if (activeQuota?.status === 'error' && activeQuota.errorStatus === 401) {
+        return activeQuota;
+      }
       const observedQuota = buildObservedCodexQuotaState(
         file,
-        getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file),
+        getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file),
         t
       );
       return observedQuota ?? activeQuota;
@@ -655,7 +665,10 @@ export function AuthFilesPage() {
     const statusMap = new Map<string, ReturnType<typeof getAuthFileCodexStatus>>();
     files.forEach((file) => {
       const statusKey = getAuthFileCodexInspectionKeyForFile(file);
-      const headerSnapshot = getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file);
+      const headerSnapshot = getHighConfidenceUsageHeaderSnapshotForAuthFile(
+        headerSnapshotLookup,
+        file
+      );
       statusMap.set(
         statusKey,
         getAuthFileCodexStatus(
@@ -688,7 +701,7 @@ export function AuthFilesPage() {
             file,
             getDisplayCodexQuota(file),
             codexPlanFilter,
-            getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file)
+            getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file)
           )
         ) {
           return false;
@@ -780,7 +793,7 @@ export function AuthFilesPage() {
             t,
             getDisplayCodexQuota(item),
             codexStatusByAuthFileKey.get(getAuthFileCodexInspectionKeyForFile(item)),
-            getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, item)
+            getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, item)
           )
         ).some((value) => {
           const content = value.toString();
@@ -824,12 +837,12 @@ export function AuthFilesPage() {
         const leftRank = getAuthFilePlanSortRank(
           a,
           getDisplayCodexQuota(a),
-          getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, a)
+          getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, a)
         );
         const rightRank = getAuthFilePlanSortRank(
           b,
           getDisplayCodexQuota(b),
-          getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, b)
+          getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, b)
         );
         const leftKnown = leftRank !== null && leftRank !== undefined;
         const rightKnown = rightRank !== null && rightRank !== undefined;

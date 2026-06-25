@@ -50,7 +50,7 @@ import {
   getHeaderSnapshotRecoverAtMs,
   getHeaderSnapshotTraceId,
   getHeaderSnapshotUsedPercent,
-  hasUsageHeaderSnapshotSignal,
+  hasUsageHeaderQuotaSignal,
 } from '@/utils/usageHeaderSnapshots';
 import {
   formatCompactNumber,
@@ -981,7 +981,7 @@ export const buildObservedCodexAccountQuotaEntry = (
   snapshot: UsageHeaderSnapshot | undefined,
   t: TFunction
 ): AccountQuotaEntry | null => {
-  if (target.provider !== 'codex' || !hasUsageHeaderSnapshotSignal(snapshot)) return null;
+  if (target.provider !== 'codex' || !hasUsageHeaderQuotaSignal(snapshot)) return null;
   const planType = target.planType ?? getHeaderSnapshotPlanType(snapshot) ?? null;
   const planLabel = getCodexPlanLabel(planType, t);
   const observedAt =

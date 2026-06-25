@@ -17,7 +17,6 @@ type MonitoringFiltersPanelProps = {
   selectedHeaderErrorKind: string;
   selectedHeaderErrorCode: string;
   selectedHeaderQuotaPlan: string;
-  selectedHeaderTraceId: string;
   selectedStatus: string;
   searchInput: string;
   accountOptions: ReadonlyArray<SelectOption>;
@@ -28,7 +27,6 @@ type MonitoringFiltersPanelProps = {
   headerErrorKindOptions: ReadonlyArray<SelectOption>;
   headerErrorCodeOptions: ReadonlyArray<SelectOption>;
   headerQuotaPlanOptions: ReadonlyArray<SelectOption>;
-  headerTraceIdOptions: ReadonlyArray<SelectOption>;
   statusOptions: ReadonlyArray<SelectOption>;
   combinedError: string | null;
   usageStatisticsEnabled: boolean;
@@ -45,7 +43,6 @@ type MonitoringFiltersPanelProps = {
   onHeaderErrorKindChange: (value: string) => void;
   onHeaderErrorCodeChange: (value: string) => void;
   onHeaderQuotaPlanChange: (value: string) => void;
-  onHeaderTraceIdChange: (value: string) => void;
   onStatusChange: (value: string) => void;
   onSearchChange: (value: string) => void;
   onClearFilters: () => void;
@@ -86,7 +83,6 @@ export function MonitoringFiltersPanel({
   selectedHeaderErrorKind,
   selectedHeaderErrorCode,
   selectedHeaderQuotaPlan,
-  selectedHeaderTraceId,
   selectedStatus,
   searchInput,
   accountOptions,
@@ -97,7 +93,6 @@ export function MonitoringFiltersPanel({
   headerErrorKindOptions,
   headerErrorCodeOptions,
   headerQuotaPlanOptions,
-  headerTraceIdOptions,
   statusOptions,
   combinedError,
   usageStatisticsEnabled,
@@ -114,7 +109,6 @@ export function MonitoringFiltersPanel({
   onHeaderErrorKindChange,
   onHeaderErrorCodeChange,
   onHeaderQuotaPlanChange,
-  onHeaderTraceIdChange,
   onStatusChange,
   onSearchChange,
   onClearFilters,
@@ -261,13 +255,6 @@ export function MonitoringFiltersPanel({
             options={headerQuotaPlanOptions}
             onChange={onHeaderQuotaPlanChange}
             ariaLabel={t('monitoring.filter_header_quota_plan')}
-            triggerClassName={styles.filterSelectTrigger}
-          />
-          <Select
-            value={selectedHeaderTraceId}
-            options={headerTraceIdOptions}
-            onChange={onHeaderTraceIdChange}
-            ariaLabel={t('monitoring.filter_header_trace')}
             triggerClassName={styles.filterSelectTrigger}
           />
           <Select

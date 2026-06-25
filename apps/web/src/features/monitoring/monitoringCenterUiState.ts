@@ -133,7 +133,9 @@ export const normalizeMonitoringCenterUiState = (value: unknown): MonitoringCent
     selectedHeaderErrorKind: normalizeSelectValue(record.selectedHeaderErrorKind),
     selectedHeaderErrorCode: normalizeSelectValue(record.selectedHeaderErrorCode),
     selectedHeaderQuotaPlan: normalizeSelectValue(record.selectedHeaderQuotaPlan),
-    selectedHeaderTraceId: normalizeSelectValue(record.selectedHeaderTraceId),
+    // Trace IDs are high-cardinality diagnostics. Keep URL-driven exact filters
+    // supported at runtime, but do not persist hidden trace filters across visits.
+    selectedHeaderTraceId: defaults.selectedHeaderTraceId,
     selectedStatus: normalizeMonitoringStatusFilter(record.selectedStatus),
     apiKeyPageSize: normalizePageSize(
       record.apiKeyPageSize,

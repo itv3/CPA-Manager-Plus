@@ -12,7 +12,7 @@ import { useNotificationStore, useQuotaStore, useThemeStore } from '@/stores';
 import type { AuthFileItem, ResolvedTheme } from '@/types';
 import { getStatusFromError } from '@/utils/quota';
 import {
-  getUsageHeaderSnapshotForAuthFile,
+  getHighConfidenceUsageHeaderSnapshotForAuthFile,
   type UsageHeaderSnapshotLookup,
 } from '@/utils/usageHeaderSnapshots';
 import { QuotaCard } from './QuotaCard';
@@ -195,9 +195,15 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
       if (activeQuota && activeQuota.status !== 'idle' && activeQuota.status !== 'error') {
         return activeQuota;
       }
+      if (
+        activeQuota?.status === 'error' &&
+        (activeQuota as { errorStatus?: number | null }).errorStatus === 401
+      ) {
+        return activeQuota;
+      }
       const observedQuota = config.buildObservedState?.(
         file,
-        getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file),
+        getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, file),
         t
       );
       return observedQuota ?? activeQuota;
@@ -430,7 +436,16 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
         },
       });
     },
-    [config, disabled, getAccountDisplayName, quota, setQuota, showConfirmation, showNotification, t]
+    [
+      config,
+      disabled,
+      getAccountDisplayName,
+      quota,
+      setQuota,
+      showConfirmation,
+      showNotification,
+      t,
+    ]
   );
 
   const titleNode = (

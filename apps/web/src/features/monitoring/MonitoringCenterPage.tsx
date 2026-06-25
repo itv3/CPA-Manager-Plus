@@ -115,7 +115,7 @@ import { sha256Hex } from '@/utils/apiKeyHash';
 import { formatCompactNumber } from '@/utils/usage';
 import {
   buildUsageHeaderSnapshotLookup,
-  getUsageHeaderSnapshotForAuthFile,
+  getHighConfidenceUsageHeaderSnapshotForAuthFile,
 } from '@/utils/usageHeaderSnapshots';
 import styles from './MonitoringCenterPage.module.scss';
 
@@ -606,18 +606,6 @@ export function MonitoringCenterPage() {
     [monitoringFilterOptions.headerQuotaPlans, selectedHeaderQuotaPlan, t]
   );
 
-  const headerTraceIdOptions = useMemo(
-    () =>
-      buildHeaderValueOptionsFromValues(
-        monitoringFilterOptions.headerTraceIds,
-        selectedHeaderTraceId,
-        t,
-        'monitoring.filter_all_header_traces',
-        'monitoring.filter_all_header_traces_short'
-      ),
-    [monitoringFilterOptions.headerTraceIds, selectedHeaderTraceId, t]
-  );
-
   const statusOptions = useMemo(() => buildStatusOptions(t), [t]);
 
   const authFilesByAuthIndex = useMemo(() => buildAuthFilesByAuthIndex(authFiles), [authFiles]);
@@ -970,7 +958,7 @@ export function MonitoringCenterPage() {
         .map((target) =>
           buildObservedCodexAccountQuotaEntry(
             target,
-            getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, target.file),
+            getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, target.file),
             t
           )
         )
@@ -1032,7 +1020,7 @@ export function MonitoringCenterPage() {
         return (
           buildObservedCodexAccountQuotaEntry(
             fallback,
-            getUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, fallback.file),
+            getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, fallback.file),
             t
           ) ?? buildAccountQuotaErrorEntry(fallback, error, t)
         );
@@ -1407,7 +1395,6 @@ export function MonitoringCenterPage() {
         selectedHeaderErrorKind={selectedHeaderErrorKind}
         selectedHeaderErrorCode={selectedHeaderErrorCode}
         selectedHeaderQuotaPlan={selectedHeaderQuotaPlan}
-        selectedHeaderTraceId={selectedHeaderTraceId}
         selectedStatus={selectedStatus}
         searchInput={searchInput}
         accountOptions={accountOptions}
@@ -1418,7 +1405,6 @@ export function MonitoringCenterPage() {
         headerErrorKindOptions={headerErrorKindOptions}
         headerErrorCodeOptions={headerErrorCodeOptions}
         headerQuotaPlanOptions={headerQuotaPlanOptions}
-        headerTraceIdOptions={headerTraceIdOptions}
         statusOptions={statusOptions}
         combinedError={combinedError}
         usageStatisticsEnabled={Boolean(config?.usageStatisticsEnabled)}
@@ -1435,7 +1421,6 @@ export function MonitoringCenterPage() {
         onHeaderErrorKindChange={setSelectedHeaderErrorKind}
         onHeaderErrorCodeChange={setSelectedHeaderErrorCode}
         onHeaderQuotaPlanChange={setSelectedHeaderQuotaPlan}
-        onHeaderTraceIdChange={setSelectedHeaderTraceId}
         onStatusChange={(value) => setSelectedStatus(value as StatusFilter)}
         onSearchChange={setSearchInput}
         onClearFilters={clearFilters}

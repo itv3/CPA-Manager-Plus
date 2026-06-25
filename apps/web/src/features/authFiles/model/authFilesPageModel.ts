@@ -151,14 +151,13 @@ const isObservedAuthError = (kind: string, code: string) => {
   );
 };
 
-const isObservedQuotaError = (kind: string, code: string) => {
+const isObservedQuotaLimitError = (kind: string, code: string) => {
   const text = `${kind} ${code}`.toLowerCase();
   return (
-    text.includes('quota') ||
-    text.includes('rate_limit') ||
-    text.includes('rate-limit') ||
-    text.includes('usage_limit') ||
-    text.includes('retry_after')
+    text.includes('usage_limit_reached') ||
+    text.includes('quota_exceeded') ||
+    text.includes('quota_depleted') ||
+    text.includes('credits_depleted')
   );
 };
 
@@ -332,9 +331,14 @@ export const getAuthFileCodexStatus = (
   const observedErrorKind = getHeaderSnapshotErrorKind(headerSnapshot);
   const observedErrorCode = getHeaderSnapshotErrorCode(headerSnapshot);
   const observedTraceID = getHeaderSnapshotTraceId(headerSnapshot);
+  const observedRateLimitReachedType =
+    typeof headerSnapshot?.response_metadata?.quota?.rate_limit_reached_type === 'string'
+      ? headerSnapshot.response_metadata.quota.rate_limit_reached_type.trim()
+      : '';
   const observedQuotaLimited =
     (observedUsedPercent !== null && observedUsedPercent >= 100) ||
-    isObservedQuotaError(observedErrorKind, observedErrorCode);
+    Boolean(observedRateLimitReachedType) ||
+    isObservedQuotaLimitError(observedErrorKind, observedErrorCode);
   const monthlyUsedPercent =
     monthlyWindowUsedPercent ?? (monthlyWindow ? inspectionUsedPercent : null);
   const longWindowUsedPercent = weeklyWindowUsedPercent ?? monthlyUsedPercent;
@@ -443,7 +447,9 @@ export const getAuthFileCodexStatus = (
       tone: 'warning',
       labelKey: 'auth_files.codex_status_badge_observed_quota',
       defaultLabel:
-        observedUsedPercent !== null ? `Observed quota ${Math.round(observedUsedPercent)}%` : 'Observed quota issue',
+        observedUsedPercent !== null
+          ? `Observed quota ${Math.round(observedUsedPercent)}%`
+          : 'Observed quota issue',
       titleKey: 'auth_files.codex_status_badge_observed_quota_title',
       defaultTitle: [
         'Latest usage response headers reported a Codex quota issue.',
@@ -598,7 +604,11 @@ const getAuthFilePlanType = (
   file: AuthFileItem,
   quota?: CodexQuotaState,
   headerSnapshot?: UsageHeaderSnapshot
-): string | null => resolveCodexPlanType(file) ?? quota?.planType ?? getHeaderSnapshotPlanType(headerSnapshot) ?? null;
+): string | null =>
+  resolveCodexPlanType(file) ??
+  quota?.planType ??
+  getHeaderSnapshotPlanType(headerSnapshot) ??
+  null;
 
 const getCodexPlanFilterValue = (
   file: AuthFileItem,

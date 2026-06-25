@@ -48,7 +48,7 @@ import {
   getHeaderSnapshotRecoverAtMs,
   getHeaderSnapshotTraceId,
   getHeaderSnapshotUsedPercent,
-  hasUsageHeaderSnapshotSignal,
+  hasUsageHeaderQuotaSignal,
 } from '@/utils/usageHeaderSnapshots';
 import type { QuotaRenderHelpers } from './QuotaCard';
 import styles from '@/features/quota/QuotaPage.module.scss';
@@ -233,7 +233,7 @@ export const buildObservedCodexQuotaState = (
   snapshot: UsageHeaderSnapshot | undefined,
   t: TFunction
 ): CodexQuotaState | undefined => {
-  if (!hasUsageHeaderSnapshotSignal(snapshot)) return undefined;
+  if (!hasUsageHeaderQuotaSignal(snapshot)) return undefined;
   const observedQuota = buildObservedCodexQuotaFromHeaderSnapshot(snapshot);
   const usedPercent = getHeaderSnapshotUsedPercent(snapshot);
   const recoverAtMS = getHeaderSnapshotRecoverAtMs(snapshot);

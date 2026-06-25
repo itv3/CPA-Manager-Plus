@@ -11,6 +11,14 @@ export type UsageHeaderSnapshotLookup = {
   byFileAuthIndex: Map<string, UsageHeaderSnapshot>;
   byAuthIndex: Map<string, UsageHeaderSnapshot>;
   byAccount: Map<string, UsageHeaderSnapshot>;
+  bySource: Map<string, UsageHeaderSnapshot>;
+};
+
+export type UsageHeaderSnapshotMatchConfidence = 'none' | 'low' | 'high';
+
+export type UsageHeaderSnapshotMatch = {
+  snapshot?: UsageHeaderSnapshot;
+  confidence: UsageHeaderSnapshotMatchConfidence;
 };
 
 const readString = (value: unknown): string => {
@@ -63,6 +71,29 @@ const setNewest = (
 const fileAuthKey = (fileName: string, authIndex: string) =>
   fileName && authIndex ? `${normalizeKey(fileName)}::${normalizeKey(authIndex)}` : '';
 
+const confidenceRank: Record<UsageHeaderSnapshotMatchConfidence, number> = {
+  none: 0,
+  low: 1,
+  high: 2,
+};
+
+const newerMatch = (
+  current: UsageHeaderSnapshotMatch,
+  next: UsageHeaderSnapshotMatch
+): UsageHeaderSnapshotMatch => {
+  if (!next.snapshot) return current;
+  if (!current.snapshot) return next;
+  const currentRank = confidenceRank[current.confidence];
+  const nextRank = confidenceRank[next.confidence];
+  if (nextRank !== currentRank) return nextRank > currentRank ? next : current;
+  return newerSnapshot(current.snapshot, next.snapshot) === next.snapshot ? next : current;
+};
+
+const matchOf = (
+  snapshot: UsageHeaderSnapshot | undefined,
+  confidence: UsageHeaderSnapshotMatchConfidence
+): UsageHeaderSnapshotMatch => (snapshot ? { snapshot, confidence } : { confidence: 'none' });
+
 export const buildUsageHeaderSnapshotLookup = (
   snapshots: UsageHeaderSnapshot[] = []
 ): UsageHeaderSnapshotLookup => {
@@ -71,6 +102,7 @@ export const buildUsageHeaderSnapshotLookup = (
     byFileAuthIndex: new Map(),
     byAuthIndex: new Map(),
     byAccount: new Map(),
+    bySource: new Map(),
   };
 
   snapshots.forEach((snapshot) => {
@@ -83,10 +115,37 @@ export const buildUsageHeaderSnapshotLookup = (
     setNewest(lookup.byFileAuthIndex, fileAuthKey(fileName, authIndex ?? ''), snapshot);
     setNewest(lookup.byAuthIndex, normalizeKey(authIndex), snapshot);
     setNewest(lookup.byAccount, normalizeKey(account), snapshot);
-    setNewest(lookup.byAccount, normalizeKey(source), snapshot);
+    setNewest(lookup.bySource, normalizeKey(source), snapshot);
   });
 
   return lookup;
+};
+
+export const getUsageHeaderSnapshotMatchForIdentity = (
+  lookup: UsageHeaderSnapshotLookup | undefined,
+  identity: {
+    fileName?: unknown;
+    authIndex?: unknown;
+    account?: unknown;
+    source?: unknown;
+  }
+): UsageHeaderSnapshotMatch => {
+  if (!lookup) return { confidence: 'none' };
+  const fileName = readString(identity.fileName);
+  const authIndex = normalizeAuthIndex(identity.authIndex);
+  const account = readString(identity.account);
+  const source = readString(identity.source);
+  const candidates = [
+    matchOf(lookup.byFileAuthIndex.get(fileAuthKey(fileName, authIndex ?? '')), 'high'),
+    matchOf(lookup.byFileName.get(normalizeKey(fileName)), 'high'),
+    matchOf(lookup.byAccount.get(normalizeKey(account)), 'high'),
+    matchOf(lookup.byAuthIndex.get(normalizeKey(authIndex)), 'low'),
+    matchOf(lookup.bySource.get(normalizeKey(source)), 'low'),
+  ];
+
+  return candidates.reduce<UsageHeaderSnapshotMatch>((current, next) => newerMatch(current, next), {
+    confidence: 'none',
+  });
 };
 
 export const getUsageHeaderSnapshotForIdentity = (
@@ -95,23 +154,10 @@ export const getUsageHeaderSnapshotForIdentity = (
     fileName?: unknown;
     authIndex?: unknown;
     account?: unknown;
+    source?: unknown;
   }
 ): UsageHeaderSnapshot | undefined => {
-  if (!lookup) return undefined;
-  const fileName = readString(identity.fileName);
-  const authIndex = normalizeAuthIndex(identity.authIndex);
-  const account = readString(identity.account);
-  const candidates = [
-    lookup.byFileAuthIndex.get(fileAuthKey(fileName, authIndex ?? '')),
-    lookup.byFileName.get(normalizeKey(fileName)),
-    lookup.byAuthIndex.get(normalizeKey(authIndex)),
-    lookup.byAccount.get(normalizeKey(account)),
-  ].filter((item): item is UsageHeaderSnapshot => Boolean(item));
-
-  return candidates.reduce<UsageHeaderSnapshot | undefined>(
-    (current, next) => newerSnapshot(current, next),
-    undefined
-  );
+  return getUsageHeaderSnapshotMatchForIdentity(lookup, identity).snapshot;
 };
 
 export const getUsageHeaderSnapshotForAuthFile = (
@@ -124,14 +170,25 @@ export const getUsageHeaderSnapshotForAuthFile = (
     account: file.account ?? file.email ?? file.label,
   });
 
+export const getHighConfidenceUsageHeaderSnapshotForAuthFile = (
+  lookup: UsageHeaderSnapshotLookup | undefined,
+  file: AuthFileItem
+): UsageHeaderSnapshot | undefined => {
+  const match = getUsageHeaderSnapshotMatchForIdentity(lookup, {
+    fileName: file.name,
+    authIndex: file['auth_index'] ?? file.authIndex,
+    account: file.account ?? file.email ?? file.label,
+  });
+  return match.confidence === 'high' ? match.snapshot : undefined;
+};
+
 export const getHeaderSnapshotPlanType = (
   snapshot: UsageHeaderSnapshot | null | undefined
 ): string => {
   if (!snapshot) return '';
   return (
     readString(snapshot.header_quota_plan_type) ||
-    readString(snapshot.response_metadata?.quota?.plan_type) ||
-    readString(snapshot.response_metadata?.quota?.active_limit)
+    readString(snapshot.response_metadata?.quota?.plan_type)
   );
 };
 
@@ -279,15 +336,24 @@ export const buildObservedCodexQuotaFromHeaderSnapshot = (
   };
 };
 
-export const hasUsageHeaderSnapshotSignal = (
+export const hasUsageHeaderQuotaSignal = (
   snapshot: UsageHeaderSnapshot | null | undefined
 ): boolean =>
   Boolean(
     getHeaderSnapshotPlanType(snapshot) ||
     buildObservedCodexQuotaFromHeaderSnapshot(snapshot) ||
     getHeaderSnapshotUsedPercent(snapshot) !== null ||
-    getHeaderSnapshotRecoverAtMs(snapshot) !== null ||
+    getHeaderSnapshotRecoverAtMs(snapshot) !== null
+  );
+
+export const hasUsageHeaderDiagnosticSignal = (
+  snapshot: UsageHeaderSnapshot | null | undefined
+): boolean =>
+  Boolean(
+    hasUsageHeaderQuotaSignal(snapshot) ||
     getHeaderSnapshotErrorKind(snapshot) ||
     getHeaderSnapshotErrorCode(snapshot) ||
     getHeaderSnapshotTraceId(snapshot)
   );
+
+export const hasUsageHeaderSnapshotSignal = hasUsageHeaderDiagnosticSignal;
