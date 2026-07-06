@@ -1127,9 +1127,12 @@
     "refresh_button": "刷新额度",
     "fetch_all": "获取全部",
     "monthly_limit": "月度账单限额",
+    "monthly_credits": "月度额度",
     "plan_label": "套餐",
     "plan_supergrok": "SuperGrok",
     "plan_supergrok_heavy": "SuperGrok Heavy",
+    "pay_as_you_go_label": "按量付费",
+    "pay_as_you_go_disabled": "未启用",
     "on_demand_cap": "按需上限",
     "usage_amount": "剩余 {{remaining}} / {{limit}}",
     "reset_unknown": "重置时间未知"

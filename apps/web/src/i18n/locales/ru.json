@@ -1127,9 +1127,12 @@
     "refresh_button": "Обновить квоту",
     "fetch_all": "Получить все",
     "monthly_limit": "Месячный лимит биллинга",
+    "monthly_credits": "Месячные кредиты",
     "plan_label": "План",
     "plan_supergrok": "SuperGrok",
     "plan_supergrok_heavy": "SuperGrok Heavy",
+    "pay_as_you_go_label": "Pay-as-you-go",
+    "pay_as_you_go_disabled": "Отключено",
     "on_demand_cap": "Лимит on-demand",
     "usage_amount": "Осталось {{remaining}} / {{limit}}",
     "reset_unknown": "сброс неизвестен"

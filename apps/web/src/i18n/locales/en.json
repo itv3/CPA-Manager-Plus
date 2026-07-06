@@ -1127,9 +1127,12 @@
     "refresh_button": "Refresh Quota",
     "fetch_all": "Fetch All",
     "monthly_limit": "Monthly billing limit",
+    "monthly_credits": "Monthly credits",
     "plan_label": "Plan",
     "plan_supergrok": "SuperGrok",
     "plan_supergrok_heavy": "SuperGrok Heavy",
+    "pay_as_you_go_label": "Pay-as-you-go",
+    "pay_as_you_go_disabled": "Disabled",
     "on_demand_cap": "On-demand cap",
     "usage_amount": "{{remaining}} / {{limit}} remaining",
     "reset_unknown": "reset unknown"

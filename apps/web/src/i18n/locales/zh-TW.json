@@ -1127,9 +1127,12 @@
     "refresh_button": "重新整理配額",
     "fetch_all": "取得全部",
     "monthly_limit": "月度帳單限額",
+    "monthly_credits": "月度配額",
     "plan_label": "方案",
     "plan_supergrok": "SuperGrok",
     "plan_supergrok_heavy": "SuperGrok Heavy",
+    "pay_as_you_go_label": "按量付費",
+    "pay_as_you_go_disabled": "未啟用",
     "on_demand_cap": "按需上限",
     "usage_amount": "剩餘 {{remaining}} / {{limit}}",
     "reset_unknown": "重置時間未知"
