@@ -636,6 +636,7 @@ export interface MonitoringAnalyticsInclude {
   credential_timeline?: boolean;
   api_key_stats?: boolean;
   filter_options?: boolean;
+  filter_selectors?: boolean;
   heatmap?: boolean;
   anomaly_points?: boolean;
   task_buckets?: boolean;
@@ -965,6 +966,8 @@ export interface MonitoringAnalyticsFilterOptions {
   api_key_stats?: MonitoringAnalyticsApiKeyStatRow[];
   channel_share?: MonitoringAnalyticsChannelShareRow[];
   model_stats?: MonitoringAnalyticsModelStat[];
+  models?: string[];
+  api_key_hashes?: string[];
   providers?: string[];
   auth_files?: string[];
   project_ids?: string[];
