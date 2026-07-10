@@ -69,9 +69,10 @@ func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
   "queue": "custom-usage",
   "popSide": "left",
   "batchSize": 7,
-  "pollIntervalMs": 250,
-  "queryLimit": 900,
-  "panelPath": "panel.html",
+	  "pollIntervalMs": 250,
+	  "queryLimit": 900,
+	  "pprofAddr": "127.0.0.1:6060",
+	  "panelPath": "panel.html",
   "corsOrigins": ["http://panel.local"],
   "tlsSkipVerify": true,
   "quotaCooldownEnabled": true,
@@ -103,6 +104,9 @@ func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
 	}
 	if cfg.BatchSize != 7 || cfg.PollInterval != 250*time.Millisecond || cfg.QueryLimit != 900 {
 		t.Fatalf("numeric config = %#v", cfg)
+	}
+	if cfg.PprofAddr != "127.0.0.1:6060" {
+		t.Fatalf("PprofAddr = %q", cfg.PprofAddr)
 	}
 	if want := filepath.Join(dir, "panel.html"); cfg.PanelPath != want {
 		t.Fatalf("PanelPath = %q, want %q", cfg.PanelPath, want)
@@ -141,6 +145,7 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	t.Setenv("USAGE_DATA_DIR", filepath.Join(dir, "env-data"))
 	t.Setenv("CPA_MANAGEMENT_KEY", "env-secret")
 	t.Setenv("USAGE_BATCH_SIZE", "12")
+	t.Setenv("CPA_MANAGER_PPROF_ADDR", "[::1]:6061")
 
 	cfg, err := Load()
 	if err != nil {
@@ -157,6 +162,9 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	}
 	if cfg.BatchSize != 12 {
 		t.Fatalf("BatchSize = %d", cfg.BatchSize)
+	}
+	if cfg.PprofAddr != "[::1]:6061" {
+		t.Fatalf("PprofAddr = %q", cfg.PprofAddr)
 	}
 }
 
@@ -197,6 +205,7 @@ func clearConfigEnv(t *testing.T) {
 		"USAGE_BATCH_SIZE",
 		"USAGE_POLL_INTERVAL_MS",
 		"USAGE_QUERY_LIMIT",
+		"CPA_MANAGER_PPROF_ADDR",
 		"USAGE_CORS_ORIGINS",
 		"USAGE_RESP_TLS_SKIP_VERIFY",
 		"USAGE_QUOTA_COOLDOWN_ENABLED",

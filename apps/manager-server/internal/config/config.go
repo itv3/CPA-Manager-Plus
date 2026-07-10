@@ -33,6 +33,7 @@ type Config struct {
 	BatchSize                 int
 	PollInterval              time.Duration
 	QueryLimit                int
+	PprofAddr                 string
 	PanelPath                 string
 	CORSOrigins               []string
 	TLSSkipVerify             bool
@@ -63,6 +64,7 @@ type fileConfig struct {
 	BatchSize                 int      `json:"batchSize,omitempty"`
 	PollIntervalMS            int      `json:"pollIntervalMs,omitempty"`
 	QueryLimit                int      `json:"queryLimit,omitempty"`
+	PprofAddr                 string   `json:"pprofAddr,omitempty"`
 	PanelPath                 string   `json:"panelPath,omitempty"`
 	CORSOrigins               []string `json:"corsOrigins,omitempty"`
 	TLSSkipVerify             bool     `json:"tlsSkipVerify,omitempty"`
@@ -132,6 +134,7 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		BatchSize:                 envInt("USAGE_BATCH_SIZE", intFallback(cfgFile.BatchSize, 100)),
 		PollInterval:              time.Duration(envInt("USAGE_POLL_INTERVAL_MS", intFallback(cfgFile.PollIntervalMS, 500))) * time.Millisecond,
 		QueryLimit:                envInt("USAGE_QUERY_LIMIT", intFallback(cfgFile.QueryLimit, 50000)),
+		PprofAddr:                 env("CPA_MANAGER_PPROF_ADDR", cfgFile.PprofAddr),
 		PanelPath:                 env("PANEL_PATH", resolveConfigPath(cfgFile.PanelPath, cfgDir)),
 		CORSOrigins:               splitCSV(env("USAGE_CORS_ORIGINS", strings.Join(sliceFallback(cfgFile.CORSOrigins, []string{"*"}), ","))),
 		TLSSkipVerify:             envBool("USAGE_RESP_TLS_SKIP_VERIFY", cfgFile.TLSSkipVerify),
