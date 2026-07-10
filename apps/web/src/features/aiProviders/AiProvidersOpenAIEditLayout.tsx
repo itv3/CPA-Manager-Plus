@@ -70,14 +70,14 @@ const getErrorMessage = (err: unknown) => {
 };
 
 const normalizeModelEntries = (entries: ModelEntry[]) =>
-  (entries ?? []).reduce<Array<{ name: string; alias: string }>>((acc, entry) => {
+  (entries ?? []).reduce<ModelEntry[]>((acc, entry) => {
     const name = String(entry?.name ?? '').trim();
     let alias = String(entry?.alias ?? '').trim();
     if (name && (alias === '' || alias === name)) {
       alias = '';
     }
     if (!name && !alias) return acc;
-    acc.push({ name, alias });
+    acc.push({ ...entry, name, alias });
     return acc;
   }, []);
 

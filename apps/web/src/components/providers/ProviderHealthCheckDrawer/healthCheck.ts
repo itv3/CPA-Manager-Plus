@@ -43,7 +43,7 @@ export interface ProviderHealthCheckSummary {
 }
 
 type ProviderHealthCheckTarget =
-  | { kind: 'gemini'; config: GeminiKeyConfig }
+  | { kind: 'gemini' | 'interactions'; config: GeminiKeyConfig }
   | { kind: 'codex' | 'claude' | 'vertex'; config: ProviderKeyConfig }
   | { kind: 'openai'; config: OpenAIProviderConfig; keyIndex: number };
 
@@ -141,7 +141,10 @@ const joinProviderLabel = (kindLabel: string, identity: string): string => {
 };
 
 const getKeyProviderDisplay = (
-  row: Extract<ProviderRow, { kind: 'gemini' | 'codex' | 'claude' | 'vertex' }>
+  row: Extract<
+    ProviderRow,
+    { kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' }
+  >
 ): Pick<ProviderHealthCheckItem, 'providerLabel' | 'providerSubtitle'> => {
   const kindLabel = PROVIDER_KIND_LABELS[row.kind];
   const identity =
@@ -184,7 +187,10 @@ const requireCredential = (apiKey?: string, authIndex?: string, headers?: Record
 };
 
 const buildKeyProviderItem = (
-  row: Extract<ProviderRow, { kind: 'gemini' | 'codex' | 'claude' | 'vertex' }>
+  row: Extract<
+    ProviderRow,
+    { kind: 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' }
+  >
 ): ProviderHealthCheckItem => {
   const providerDisplay = getKeyProviderDisplay(row);
   const keyLabel = getKeyLabel(row.raw.apiKey, row.raw.authIndex);
@@ -383,7 +389,7 @@ export const runProviderHealthCheckItem = async (
 
   try {
     let modelCount = 0;
-    if (target.kind === 'gemini') {
+    if (target.kind === 'gemini' || target.kind === 'interactions') {
       requireCredential(target.config.apiKey, target.config.authIndex, target.config.headers);
       const models = await modelsApi.fetchGeminiModelsViaApiCall(
         target.config.baseUrl ?? '',

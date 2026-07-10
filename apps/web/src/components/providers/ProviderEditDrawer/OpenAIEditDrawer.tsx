@@ -49,13 +49,13 @@ const buildEmptyForm = (): OpenAIFormState => ({
   testModel: undefined,
 });
 
-const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) =>
-  (entries ?? []).reduce<Array<{ name: string; alias: string }>>((acc, entry) => {
+const normalizeModelEntries = (entries: OpenAIFormState['modelEntries']) =>
+  (entries ?? []).reduce<OpenAIFormState['modelEntries']>((acc, entry) => {
     const name = String(entry?.name ?? '').trim();
     let alias = String(entry?.alias ?? '').trim();
     if (name && (alias === '' || alias === name)) alias = '';
     if (!name && !alias) return acc;
-    acc.push({ name, alias });
+    acc.push({ ...entry, name, alias });
     return acc;
   }, []);
 
@@ -950,6 +950,11 @@ export function OpenAIEditDrawer({
                 removeButtonClassName={styles.modelRowRemoveButton}
                 removeButtonTitle={t('common.delete')}
                 removeButtonAriaLabel={t('common.delete')}
+                showForceMapping
+                showModalities
+                forceMappingLabel={t('ai_providers.force_mapping_label')}
+                inputModalitiesPlaceholder={t('ai_providers.input_modalities_placeholder')}
+                outputModalitiesPlaceholder={t('ai_providers.output_modalities_placeholder')}
               />
               <div className={styles.modelTestPanel}>
                 <div className={styles.modelTestMeta}>

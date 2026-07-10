@@ -64,6 +64,9 @@ export function AiProvidersPage() {
   const [geminiKeys, setGeminiKeys] = useState<GeminiKeyConfig[]>(
     () => config?.geminiApiKeys || []
   );
+  const [interactionsKeys, setInteractionsKeys] = useState<GeminiKeyConfig[]>(
+    () => config?.interactionsApiKeys || []
+  );
   const [codexConfigs, setCodexConfigs] = useState<ProviderKeyConfig[]>(
     () => config?.codexApiKeys || []
   );
@@ -128,6 +131,7 @@ export function AiProvidersPage() {
 
       const data = configResult.value;
       setGeminiKeys(data?.geminiApiKeys || []);
+      setInteractionsKeys(data?.interactionsApiKeys || []);
       setCodexConfigs(data?.codexApiKeys || []);
       setClaudeConfigs(data?.claudeApiKeys || []);
       setVertexConfigs(data?.vertexApiKeys || []);
@@ -165,12 +169,14 @@ export function AiProvidersPage() {
 
   useEffect(() => {
     if (config?.geminiApiKeys) setGeminiKeys(config.geminiApiKeys);
+    if (config?.interactionsApiKeys) setInteractionsKeys(config.interactionsApiKeys);
     if (config?.codexApiKeys) setCodexConfigs(config.codexApiKeys);
     if (config?.claudeApiKeys) setClaudeConfigs(config.claudeApiKeys);
     if (config?.vertexApiKeys) setVertexConfigs(config.vertexApiKeys);
     if (config?.openaiCompatibility) setOpenaiProviders(config.openaiCompatibility);
   }, [
     config?.geminiApiKeys,
+    config?.interactionsApiKeys,
     config?.codexApiKeys,
     config?.claudeApiKeys,
     config?.vertexApiKeys,
@@ -203,13 +209,22 @@ export function AiProvidersPage() {
     () =>
       buildProviderRows({
         gemini: geminiKeys,
+        interactions: interactionsKeys,
         codex: codexConfigs,
         claude: claudeConfigs,
         vertex: vertexConfigs,
         openai: openaiProviders,
         usageByProvider,
       }),
-    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, usageByProvider, vertexConfigs]
+    [
+      claudeConfigs,
+      codexConfigs,
+      geminiKeys,
+      interactionsKeys,
+      openaiProviders,
+      usageByProvider,
+      vertexConfigs,
+    ]
   );
 
   const allModelNames = useMemo(() => {
@@ -263,6 +278,7 @@ export function AiProvidersPage() {
     const counts: Record<ProviderKindFilter, number> = {
       all: rows.length,
       gemini: 0,
+      interactions: 0,
       codex: 0,
       claude: 0,
       vertex: 0,
@@ -296,18 +312,21 @@ export function AiProvidersPage() {
     const rowByKey = new Map(rows.map((row) => [row.key, row]));
     const previous = {
       gemini: geminiKeys,
+      interactions: interactionsKeys,
       codex: codexConfigs,
       claude: claudeConfigs,
       vertex: vertexConfigs,
       openai: openaiProviders,
     };
     let nextGemini = geminiKeys;
+    let nextInteractions = interactionsKeys;
     let nextCodex = codexConfigs;
     let nextClaude = claudeConfigs;
     let nextVertex = vertexConfigs;
     let nextOpenai = openaiProviders;
     const changed = {
       gemini: false,
+      interactions: false,
       codex: false,
       claude: false,
       vertex: false,
@@ -330,6 +349,16 @@ export function AiProvidersPage() {
           index === row.originalIndex ? { ...item, excludedModels } : item
         );
         changed.gemini = true;
+      } else if (row.kind === 'interactions') {
+        const current = nextInteractions[row.originalIndex];
+        if (!current) return;
+        const excludedModels = enabled
+          ? withoutDisableAllModelsRule(current.excludedModels)
+          : withDisableAllModelsRule(current.excludedModels);
+        nextInteractions = nextInteractions.map((item, index) =>
+          index === row.originalIndex ? { ...item, excludedModels } : item
+        );
+        changed.interactions = true;
       } else if (row.kind === 'codex') {
         const current = nextCodex[row.originalIndex];
         if (!current) return;
@@ -379,6 +408,7 @@ export function AiProvidersPage() {
 
     const applyLocalState = (
       gemini: GeminiKeyConfig[],
+      interactions: GeminiKeyConfig[],
       codex: ProviderKeyConfig[],
       claude: ProviderKeyConfig[],
       vertex: ProviderKeyConfig[],
@@ -388,6 +418,11 @@ export function AiProvidersPage() {
         setGeminiKeys(gemini);
         updateConfigValue('gemini-api-key', gemini);
         clearCache('gemini-api-key');
+      }
+      if (changed.interactions) {
+        setInteractionsKeys(interactions);
+        updateConfigValue('interactions-api-key', interactions);
+        clearCache('interactions-api-key');
       }
       if (changed.codex) {
         setCodexConfigs(codex);
@@ -411,11 +446,21 @@ export function AiProvidersPage() {
       }
     };
 
-    applyLocalState(nextGemini, nextCodex, nextClaude, nextVertex, nextOpenai);
+    applyLocalState(
+      nextGemini,
+      nextInteractions,
+      nextCodex,
+      nextClaude,
+      nextVertex,
+      nextOpenai
+    );
 
     try {
       await Promise.all([
         changed.gemini ? providersApi.saveGeminiKeys(nextGemini) : Promise.resolve(),
+        changed.interactions
+          ? providersApi.saveInteractionsKeys(nextInteractions)
+          : Promise.resolve(),
         changed.codex ? providersApi.saveCodexConfigs(nextCodex) : Promise.resolve(),
         changed.claude ? providersApi.saveClaudeConfigs(nextClaude) : Promise.resolve(),
         changed.vertex ? providersApi.saveVertexConfigs(nextVertex) : Promise.resolve(),
@@ -426,6 +471,7 @@ export function AiProvidersPage() {
       const message = getErrorMessage(err);
       applyLocalState(
         previous.gemini,
+        previous.interactions,
         previous.codex,
         previous.claude,
         previous.vertex,
@@ -444,41 +490,58 @@ export function AiProvidersPage() {
     );
   };
 
-  // 启停（gemini/codex/claude/vertex 走 excludedModels 规则）
+  // 启停（key-based providers 走 excludedModels 规则）
   const setConfigEnabled = async (
     provider: Exclude<ProviderKind, 'openai'>,
     index: number,
     enabled: boolean
   ) => {
-    if (provider === 'gemini') {
-      const current = geminiKeys[index];
+    if (provider === 'gemini' || provider === 'interactions') {
+      const source = provider === 'gemini' ? geminiKeys : interactionsKeys;
+      const current = source[index];
       if (!current) return;
 
       const switchingKey = `${provider}:${current.apiKey}`;
       setConfigSwitchingKey(switchingKey);
 
-      const previousList = geminiKeys;
+      const previousList = source;
       const nextExcluded = enabled
         ? withoutDisableAllModelsRule(current.excludedModels)
         : withDisableAllModelsRule(current.excludedModels);
       const nextItem: GeminiKeyConfig = { ...current, excludedModels: nextExcluded };
       const nextList = previousList.map((item, idx) => (idx === index ? nextItem : item));
 
-      setGeminiKeys(nextList);
-      updateConfigValue('gemini-api-key', nextList);
-      clearCache('gemini-api-key');
+      if (provider === 'gemini') {
+        setGeminiKeys(nextList);
+        updateConfigValue('gemini-api-key', nextList);
+        clearCache('gemini-api-key');
+      } else {
+        setInteractionsKeys(nextList);
+        updateConfigValue('interactions-api-key', nextList);
+        clearCache('interactions-api-key');
+      }
 
       try {
-        await providersApi.saveGeminiKeys(nextList);
+        if (provider === 'gemini') {
+          await providersApi.saveGeminiKeys(nextList);
+        } else {
+          await providersApi.saveInteractionsKeys(nextList);
+        }
         showNotification(
           enabled ? t('notification.config_enabled') : t('notification.config_disabled'),
           'success'
         );
       } catch (err: unknown) {
         const message = getErrorMessage(err);
-        setGeminiKeys(previousList);
-        updateConfigValue('gemini-api-key', previousList);
-        clearCache('gemini-api-key');
+        if (provider === 'gemini') {
+          setGeminiKeys(previousList);
+          updateConfigValue('gemini-api-key', previousList);
+          clearCache('gemini-api-key');
+        } else {
+          setInteractionsKeys(previousList);
+          updateConfigValue('interactions-api-key', previousList);
+          clearCache('interactions-api-key');
+        }
         showNotification(`${t('notification.update_failed')}: ${message}`, 'error');
       } finally {
         setConfigSwitchingKey(null);
@@ -692,33 +755,57 @@ export function AiProvidersPage() {
   };
 
   const setProviderDisableCoolingEnabled = async (
-    provider: 'gemini' | 'codex' | 'claude' | 'openai',
+    provider: 'gemini' | 'interactions' | 'codex' | 'claude' | 'openai',
     index: number,
     enabled: boolean
   ) => {
-    if (provider === 'gemini') {
-      const current = geminiKeys[index];
+    if (provider === 'gemini' || provider === 'interactions') {
+      const source = provider === 'gemini' ? geminiKeys : interactionsKeys;
+      const current = source[index];
       if (!current) return;
 
       const switchingKey = `${provider}:${current.apiKey}:disable-cooling`;
       setConfigSwitchingKey(switchingKey);
 
-      const previousList = geminiKeys;
+      const previousList = source;
       const nextItem: GeminiKeyConfig = { ...current, disableCooling: enabled };
       const nextList = previousList.map((item, idx) => (idx === index ? nextItem : item));
 
-      setGeminiKeys(nextList);
-      updateConfigValue('gemini-api-key', nextList);
-      clearCache('gemini-api-key');
+      if (provider === 'gemini') {
+        setGeminiKeys(nextList);
+        updateConfigValue('gemini-api-key', nextList);
+        clearCache('gemini-api-key');
+      } else {
+        setInteractionsKeys(nextList);
+        updateConfigValue('interactions-api-key', nextList);
+        clearCache('interactions-api-key');
+      }
 
       try {
-        await providersApi.saveGeminiKeys(nextList);
-        showNotification(t('notification.gemini_key_updated'), 'success');
+        if (provider === 'gemini') {
+          await providersApi.saveGeminiKeys(nextList);
+        } else {
+          await providersApi.saveInteractionsKeys(nextList);
+        }
+        showNotification(
+          t(
+            provider === 'gemini'
+              ? 'notification.gemini_key_updated'
+              : 'notification.interactions_key_updated'
+          ),
+          'success'
+        );
       } catch (err: unknown) {
         const message = getErrorMessage(err);
-        setGeminiKeys(previousList);
-        updateConfigValue('gemini-api-key', previousList);
-        clearCache('gemini-api-key');
+        if (provider === 'gemini') {
+          setGeminiKeys(previousList);
+          updateConfigValue('gemini-api-key', previousList);
+          clearCache('gemini-api-key');
+        } else {
+          setInteractionsKeys(previousList);
+          updateConfigValue('interactions-api-key', previousList);
+          clearCache('interactions-api-key');
+        }
         showNotification(`${t('notification.update_failed')}: ${message}`, 'error');
       } finally {
         setConfigSwitchingKey(null);
@@ -807,28 +894,52 @@ export function AiProvidersPage() {
     const switchingKey = `${row.key}:priority`;
 
     // 复用页面级切换锁，避免外层快捷优先级与抽屉保存、开关切换并发写入。
-    if (row.kind === 'gemini') {
-      const current = geminiKeys[row.originalIndex];
+    if (row.kind === 'gemini' || row.kind === 'interactions') {
+      const source = row.kind === 'gemini' ? geminiKeys : interactionsKeys;
+      const current = source[row.originalIndex];
       if (!current || current.priority === nextPriority) return;
 
       setConfigSwitchingKey(switchingKey);
-      const previousList = geminiKeys;
+      const previousList = source;
       const nextList = previousList.map((item, idx) =>
         idx === row.originalIndex ? { ...item, priority: nextPriority } : item
       );
 
-      setGeminiKeys(nextList);
-      updateConfigValue('gemini-api-key', nextList);
-      clearCache('gemini-api-key');
+      if (row.kind === 'gemini') {
+        setGeminiKeys(nextList);
+        updateConfigValue('gemini-api-key', nextList);
+        clearCache('gemini-api-key');
+      } else {
+        setInteractionsKeys(nextList);
+        updateConfigValue('interactions-api-key', nextList);
+        clearCache('interactions-api-key');
+      }
 
       try {
-        await providersApi.saveGeminiKeys(nextList);
-        showNotification(t('notification.gemini_key_updated'), 'success');
+        if (row.kind === 'gemini') {
+          await providersApi.saveGeminiKeys(nextList);
+        } else {
+          await providersApi.saveInteractionsKeys(nextList);
+        }
+        showNotification(
+          t(
+            row.kind === 'gemini'
+              ? 'notification.gemini_key_updated'
+              : 'notification.interactions_key_updated'
+          ),
+          'success'
+        );
       } catch (err: unknown) {
         const message = getErrorMessage(err);
-        setGeminiKeys(previousList);
-        updateConfigValue('gemini-api-key', previousList);
-        clearCache('gemini-api-key');
+        if (row.kind === 'gemini') {
+          setGeminiKeys(previousList);
+          updateConfigValue('gemini-api-key', previousList);
+          clearCache('gemini-api-key');
+        } else {
+          setInteractionsKeys(previousList);
+          updateConfigValue('interactions-api-key', previousList);
+          clearCache('interactions-api-key');
+        }
         showNotification(`${t('notification.update_failed')}: ${message}`, 'error');
       } finally {
         setConfigSwitchingKey(null);
@@ -951,6 +1062,30 @@ export function AiProvidersPage() {
     });
   };
 
+  const deleteInteractions = (index: number) => {
+    const entry = interactionsKeys[index];
+    if (!entry) return;
+    showConfirmation({
+      title: t('ai_providers.interactions_delete_title'),
+      message: t('ai_providers.interactions_delete_confirm'),
+      variant: 'danger',
+      confirmText: t('common.confirm'),
+      onConfirm: async () => {
+        try {
+          await providersApi.deleteInteractionsKey(entry.apiKey, entry.baseUrl);
+          const next = interactionsKeys.filter((_, idx) => idx !== index);
+          setInteractionsKeys(next);
+          updateConfigValue('interactions-api-key', next);
+          clearCache('interactions-api-key');
+          showNotification(t('notification.interactions_key_deleted'), 'success');
+        } catch (err: unknown) {
+          const message = getErrorMessage(err);
+          showNotification(`${t('notification.delete_failed')}: ${message}`, 'error');
+        }
+      },
+    });
+  };
+
   const deleteProviderEntry = (type: 'codex' | 'claude', index: number) => {
     const source = type === 'codex' ? codexConfigs : claudeConfigs;
     const entry = source[index];
@@ -1057,6 +1192,7 @@ export function AiProvidersPage() {
   const handleRowDisableCoolingToggle = (row: ProviderRow, enabled: boolean) => {
     if (
       row.kind !== 'gemini' &&
+      row.kind !== 'interactions' &&
       row.kind !== 'codex' &&
       row.kind !== 'claude' &&
       row.kind !== 'openai'
@@ -1079,6 +1215,8 @@ export function AiProvidersPage() {
     setDetailRowKey(null);
     if (row.kind === 'gemini') {
       deleteGemini(row.originalIndex);
+    } else if (row.kind === 'interactions') {
+      deleteInteractions(row.originalIndex);
     } else if (row.kind === 'codex' || row.kind === 'claude') {
       deleteProviderEntry(row.kind, row.originalIndex);
     } else if (row.kind === 'vertex') {
@@ -1253,6 +1391,14 @@ export function AiProvidersPage() {
         disabled={actionsDisabled}
         onClose={closeEditorDrawer}
         onSaved={handleDrawerSaved}
+      />
+      <GeminiEditDrawer
+        open={editDrawerKind === 'interactions'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+        providerKind="interactions"
       />
       <CodexEditDrawer
         open={editDrawerKind === 'codex'}

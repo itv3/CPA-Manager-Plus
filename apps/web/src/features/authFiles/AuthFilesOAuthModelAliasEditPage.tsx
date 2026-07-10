@@ -41,6 +41,7 @@ const buildEmptyMappingEntry = (): OAuthModelMappingFormEntry => ({
   name: '',
   alias: '',
   fork: true,
+  forceMapping: false,
 });
 
 const normalizeMappingEntries = (
@@ -54,6 +55,7 @@ const normalizeMappingEntries = (
     name: entry.name ?? '',
     alias: entry.alias ?? '',
     fork: Boolean(entry.fork),
+    forceMapping: Boolean(entry.forceMapping),
   }));
 };
 
@@ -314,10 +316,15 @@ export function AuthFilesOAuthModelAliasEditPage() {
         const name = String(entry.name ?? '').trim();
         const alias = String(entry.alias ?? '').trim();
         if (!name || !alias) return null;
-        const key = `${name.toLowerCase()}::${alias.toLowerCase()}::${entry.fork ? '1' : '0'}`;
+        const key = `${name.toLowerCase()}::${alias.toLowerCase()}::${entry.fork ? '1' : '0'}::${entry.forceMapping ? '1' : '0'}`;
         if (seen.has(key)) return null;
         seen.add(key);
-        return entry.fork ? { name, alias, fork: true } : { name, alias };
+        return {
+          name,
+          alias,
+          ...(entry.fork ? { fork: true } : {}),
+          ...(entry.forceMapping ? { forceMapping: true } : {}),
+        };
       })
       .filter(Boolean) as OAuthModelAliasEntry[];
 
@@ -458,6 +465,15 @@ export function AuthFilesOAuthModelAliasEditPage() {
                       labelPosition="left"
                       checked={Boolean(entry.fork)}
                       onChange={(value) => updateMappingEntry(index, 'fork', value)}
+                      disabled={disableControls || saving}
+                    />
+                  </div>
+                  <div className={styles.mappingFork}>
+                    <ToggleSwitch
+                      label={t('oauth_model_alias.alias_force_mapping_label')}
+                      labelPosition="left"
+                      checked={Boolean(entry.forceMapping)}
+                      onChange={(value) => updateMappingEntry(index, 'forceMapping', value)}
                       disabled={disableControls || saving}
                     />
                   </div>
