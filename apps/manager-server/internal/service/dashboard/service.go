@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/pricing"
@@ -236,40 +237,84 @@ func (s *Service) Summary(ctx context.Context, p SummaryParams) (SummaryResponse
 		recentLimit = defaultRecentFailures
 	}
 
-	todayAgg, modelStats, topStats, timeline, err := s.loadTodayMetrics(ctx, p.TodayStartMS, nowMS, topLimit)
-	if err != nil {
-		return SummaryResponse{}, err
-	}
 	rollingStartMS := nowMS - rollingWindowMs
-	rollingAgg, err := s.store.AggregateBetween(ctx, rollingStartMS, nowMS)
-	if err != nil {
-		return SummaryResponse{}, err
-	}
-	recentFailures, err := s.store.RecentFailuresBetween(ctx, p.TodayStartMS, nowMS, recentLimit)
-	if err != nil {
-		return SummaryResponse{}, err
-	}
-	prices, err := s.store.LoadModelPrices(ctx)
-	if err != nil {
-		return SummaryResponse{}, err
-	}
 	filter := store.AnalyticsFilter{
 		FromMS:        p.TodayStartMS,
 		ToMS:          nowMS,
 		IncludeFailed: true,
 	}
 	healthTimelineToMS := p.TodayStartMS + int64(healthTimelineBuckets)*healthTimelineBucketMs
-	healthTimelinePoints, err := s.store.BucketTimelineBetween(ctx, p.TodayStartMS, nowMS, healthTimelineBucketMs)
-	if err != nil {
-		return SummaryResponse{}, err
+
+	queryCtx, cancelQueries := context.WithCancel(ctx)
+	defer cancelQueries()
+
+	var (
+		todayAgg             store.Aggregate
+		modelStats           []store.ModelStat
+		topStats             []store.ModelStat
+		timeline             []store.TimelinePoint
+		rollingAgg           store.Aggregate
+		recentFailures       []store.RecentFailure
+		prices               map[string]store.ModelPrice
+		healthTimelinePoints []store.TimelinePoint
+		channelStats         []store.ChannelModelStat
+		failureSources       []store.FailureSourceStat
+	)
+	var waitGroup sync.WaitGroup
+	var firstError error
+	var errorOnce sync.Once
+	runQuery := func(query func() error) {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			if err := query(); err != nil {
+				errorOnce.Do(func() {
+					firstError = err
+					cancelQueries()
+				})
+			}
+		}()
 	}
-	channelStats, err := s.store.ChannelModelStatsWithFilter(ctx, filter)
-	if err != nil {
-		return SummaryResponse{}, err
-	}
-	failureSources, err := s.store.FailureSourcesWithFilter(ctx, filter)
-	if err != nil {
-		return SummaryResponse{}, err
+
+	runQuery(func() error {
+		var err error
+		todayAgg, modelStats, topStats, timeline, err = s.loadTodayMetrics(queryCtx, p.TodayStartMS, nowMS, topLimit)
+		return err
+	})
+	runQuery(func() error {
+		var err error
+		rollingAgg, err = s.store.AggregateBetween(queryCtx, rollingStartMS, nowMS)
+		return err
+	})
+	runQuery(func() error {
+		var err error
+		recentFailures, err = s.store.RecentFailuresBetween(queryCtx, p.TodayStartMS, nowMS, recentLimit)
+		return err
+	})
+	runQuery(func() error {
+		var err error
+		prices, err = s.store.LoadModelPrices(queryCtx)
+		return err
+	})
+	runQuery(func() error {
+		var err error
+		healthTimelinePoints, err = s.store.BucketTimelineBetween(queryCtx, p.TodayStartMS, nowMS, healthTimelineBucketMs)
+		return err
+	})
+	runQuery(func() error {
+		var err error
+		channelStats, err = s.store.ChannelModelStatsWithFilter(queryCtx, filter)
+		return err
+	})
+	runQuery(func() error {
+		var err error
+		failureSources, err = s.store.FailureSourcesWithFilter(queryCtx, filter)
+		return err
+	})
+
+	waitGroup.Wait()
+	if firstError != nil {
+		return SummaryResponse{}, firstError
 	}
 	today := buildTodaySummary(todayAgg, modelStats, prices)
 	trafficTimeline := buildTrafficTimeline(p.TodayStartMS, nowMS, timeline)

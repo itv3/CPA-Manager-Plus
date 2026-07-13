@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,20 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
+
+func TestSummaryReturnsContextCancellation(t *testing.T) {
+	db := newDashboardTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := New(db).Summary(ctx, SummaryParams{
+		TodayStartMS: 1_778_000_000_000,
+		NowMS:        1_778_000_060_000,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("summary error = %v, want context canceled", err)
+	}
+}
 
 func TestSummaryEmptyStore(t *testing.T) {
 	db := newDashboardTestStore(t)
