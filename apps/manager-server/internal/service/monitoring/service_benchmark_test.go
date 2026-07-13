@@ -45,6 +45,11 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 		}
 	}
 	selectors := request(Include{FilterOptions: true, FilterSelectors: true})
+	selectedCredentialTimeline := request(Include{
+		CredentialTimeline: true,
+		Granularity:        "day",
+	})
+	selectedCredentialTimeline.Filters.CredentialIDs = []string{"account-000.json"}
 	profiles := []struct {
 		name     string
 		service  *Service
@@ -244,12 +249,29 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 			name:    "credentials_tab_request",
 			service: rollupService,
 			requests: []Request{request(Include{
-				Summary:            true,
-				SummaryProfile:     "compact",
-				CredentialStats:    true,
-				CredentialTimeline: true,
-				Granularity:        "day",
+				Summary:         true,
+				SummaryProfile:  "compact",
+				CredentialStats: true,
+				Granularity:     "day",
 			})},
+		},
+		{
+			name:     "selected_credential_timeline_request",
+			service:  rollupService,
+			requests: []Request{selectedCredentialTimeline},
+		},
+		{
+			name:    "credentials_tab_two_stage",
+			service: rollupService,
+			requests: []Request{
+				request(Include{
+					Summary:         true,
+					SummaryProfile:  "compact",
+					CredentialStats: true,
+					Granularity:     "day",
+				}),
+				selectedCredentialTimeline,
+			},
 		},
 		{
 			name:    "heatmap_tab_request",

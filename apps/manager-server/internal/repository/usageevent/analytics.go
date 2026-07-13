@@ -28,6 +28,7 @@ var (
 	longCachedFExpr         = "case when " + normalizedInputFExpr + " > " + longContextThresholdSQL + " then " + compatCachedFExpr + " else 0 end"
 	longCacheReadFExpr      = "case when " + normalizedInputFExpr + " > " + longContextThresholdSQL + " then f.cache_read_tokens else 0 end"
 	longCacheCreationFExpr  = "case when " + normalizedInputFExpr + " > " + longContextThresholdSQL + " then f.cache_creation_tokens else 0 end"
+	credentialIDExpr        = "coalesce(nullif(auth_file_snapshot, ''), nullif(auth_index, ''), nullif(source_hash, ''), nullif(source, ''), '-')"
 )
 
 type AnalyticsFilter struct {
@@ -38,6 +39,7 @@ type AnalyticsFilter struct {
 	Models           []string
 	Providers        []string
 	Accounts         []string
+	CredentialIDs    []string
 	AuthFiles        []string
 	AuthIndices      []string
 	APIKeyHashes     []string
@@ -1211,7 +1213,7 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 func (r *repository) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {
 	where, args := analyticsWhere(filter)
 	rows, err := r.db.QueryContext(ctx, `select
-	coalesce(nullif(auth_file_snapshot, ''), nullif(auth_index, ''), nullif(source_hash, ''), nullif(source, ''), '-') as credential_id,
+	`+credentialIDExpr+` as credential_id,
 	coalesce(auth_file_snapshot, ''),
 	coalesce(auth_index, ''),
 	coalesce(max(source), ''),
@@ -1329,7 +1331,7 @@ func (r *repository) credentialTimelineRawWithFilter(ctx context.Context, filter
 	where, args := analyticsWhere(filter)
 	query := fmt.Sprintf(`select
 	timestamp_ms,
-	coalesce(nullif(auth_file_snapshot, ''), nullif(auth_index, ''), nullif(source_hash, ''), nullif(source, ''), '-') as credential_id,
+	`+credentialIDExpr+` as credential_id,
 	coalesce(auth_file_snapshot, ''),
 	coalesce(auth_index, ''),
 	coalesce(source, ''),
@@ -1470,7 +1472,6 @@ order by timestamp_ms, credential_id, model`, where)
 func (r *repository) credentialTimelineHourlyWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]CredentialTimelinePoint, error) {
 	where, args := analyticsWhere(filter)
 	const hourBucketExpr = "(timestamp_ms / 3600000) * 3600000"
-	const credentialIDExpr = "coalesce(nullif(auth_file_snapshot, ''), nullif(auth_index, ''), nullif(source_hash, ''), nullif(source, ''), '-')"
 	queryPrefix := ""
 	queryFrom := "from usage_events\n"
 	bucketExpr := "bucket_map.bucket_ms"
@@ -2249,6 +2250,7 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	addInCondition("model", filter.Models)
 	addProviderCondition(filter.Providers, &conditions, &args)
 	addAccountCondition(filter.Accounts, &conditions, &args)
+	addInCondition(credentialIDExpr, filter.CredentialIDs)
 	addInCondition("auth_file_snapshot", filter.AuthFiles)
 	addInCondition("auth_index", filter.AuthIndices)
 	addInCondition("api_key_hash", filter.APIKeyHashes)

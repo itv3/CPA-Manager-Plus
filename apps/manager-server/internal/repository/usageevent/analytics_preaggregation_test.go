@@ -70,6 +70,71 @@ func TestCredentialTimelinePreaggregationFallsBackForFractionalOffset(t *testing
 	}
 }
 
+func TestCredentialIDFilterMatchesAllIdentityFallbacks(t *testing.T) {
+	repo := newAnalyticsPreaggregationRepo(t)
+	ctx := context.Background()
+	base := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	identities := []struct {
+		name       string
+		id         string
+		authFile   string
+		authIndex  string
+		sourceHash string
+		source     string
+	}{
+		{name: "auth file", id: "credential.json", authFile: "credential.json", authIndex: "auth-file", sourceHash: "hash-file", source: "source-file"},
+		{name: "auth index", id: "auth-index", authIndex: "auth-index", sourceHash: "hash-index", source: "source-index"},
+		{name: "source hash", id: "hash-only", sourceHash: "hash-only", source: "source-hash"},
+		{name: "source", id: "source-only", source: "source-only"},
+	}
+	events := make([]usage.Event, 0, len(identities))
+	for index, identity := range identities {
+		timestamp := base.Add(time.Duration(index) * time.Hour)
+		events = append(events, usage.Event{
+			EventHash:        "credential-filter-" + identity.name,
+			TimestampMS:      timestamp.UnixMilli(),
+			Timestamp:        timestamp.Format(time.RFC3339Nano),
+			Model:            "gpt-test",
+			AuthFileSnapshot: identity.authFile,
+			AuthIndex:        identity.authIndex,
+			SourceHash:       identity.sourceHash,
+			Source:           identity.source,
+			InputTokens:      10,
+			OutputTokens:     5,
+			TotalTokens:      15,
+			CreatedAtMS:      timestamp.UnixMilli(),
+		})
+	}
+	if _, err := repo.InsertBatch(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	for _, identity := range identities {
+		t.Run(identity.name, func(t *testing.T) {
+			filter := AnalyticsFilter{
+				FromMS:        base.UnixMilli(),
+				ToMS:          base.Add(5 * time.Hour).UnixMilli(),
+				CredentialIDs: []string{identity.id},
+				IncludeFailed: true,
+			}
+			stats, err := repo.CredentialModelStatsWithFilter(ctx, filter)
+			if err != nil {
+				t.Fatalf("credential stats: %v", err)
+			}
+			if len(stats) != 1 || stats[0].ID != identity.id {
+				t.Fatalf("credential stats = %#v", stats)
+			}
+			points, err := repo.CredentialTimelineWithFilter(ctx, filter, "hour", time.UTC)
+			if err != nil {
+				t.Fatalf("credential timeline: %v", err)
+			}
+			if len(points) != 1 || points[0].ID != identity.id {
+				t.Fatalf("credential timeline = %#v", points)
+			}
+		})
+	}
+}
+
 func newAnalyticsPreaggregationRepo(t *testing.T) *repository {
 	t.Helper()
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))

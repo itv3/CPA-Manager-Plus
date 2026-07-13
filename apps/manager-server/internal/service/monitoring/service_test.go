@@ -942,6 +942,19 @@ func TestAnalyticsAppliesFilters(t *testing.T) {
 	}
 }
 
+func TestBuildFilterIncludesCredentialIDs(t *testing.T) {
+	filter := buildFilter(Request{
+		FromMS: 100,
+		ToMS:   200,
+		Filters: Filters{
+			CredentialIDs: []string{"credential-a"},
+		},
+	})
+	if !reflect.DeepEqual(filter.CredentialIDs, []string{"credential-a"}) {
+		t.Fatalf("credential ids = %#v", filter.CredentialIDs)
+	}
+}
+
 func TestAnalyticsAccountAndAPIKeyStatsUseFullFilteredScope(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()
@@ -1958,6 +1971,7 @@ func TestAnalyticsHourlyRollupEligibilityIsStrict(t *testing.T) {
 		{name: "models", mutate: func(filter *store.AnalyticsFilter) { filter.Models = []string{"model-a"} }},
 		{name: "providers", mutate: func(filter *store.AnalyticsFilter) { filter.Providers = []string{"codex"} }},
 		{name: "accounts", mutate: func(filter *store.AnalyticsFilter) { filter.Accounts = []string{"account"} }},
+		{name: "credential ids", mutate: func(filter *store.AnalyticsFilter) { filter.CredentialIDs = []string{"credential"} }},
 		{name: "auth files", mutate: func(filter *store.AnalyticsFilter) { filter.AuthFiles = []string{"account.json"} }},
 		{name: "auth indices", mutate: func(filter *store.AnalyticsFilter) { filter.AuthIndices = []string{"auth-a"} }},
 		{name: "api keys", mutate: func(filter *store.AnalyticsFilter) { filter.APIKeyHashes = []string{"key"} }},

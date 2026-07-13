@@ -59,6 +59,7 @@ type Filters struct {
 	Models           []string `json:"models"`
 	Providers        []string `json:"providers"`
 	Accounts         []string `json:"accounts"`
+	CredentialIDs    []string `json:"credential_ids"`
 	AuthFiles        []string `json:"auth_files"`
 	AuthIndices      []string `json:"auth_indices"`
 	APIKeyHashes     []string `json:"api_key_hashes"`
@@ -1095,6 +1096,7 @@ func buildFilter(req Request) store.AnalyticsFilter {
 		Models:           req.Filters.Models,
 		Providers:        req.Filters.Providers,
 		Accounts:         req.Filters.Accounts,
+		CredentialIDs:    req.Filters.CredentialIDs,
 		AuthFiles:        req.Filters.AuthFiles,
 		AuthIndices:      req.Filters.AuthIndices,
 		APIKeyHashes:     req.Filters.APIKeyHashes,
@@ -1118,6 +1120,7 @@ func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
 		len(filter.Models) == 0 &&
 		len(filter.Providers) == 0 &&
 		len(filter.Accounts) == 0 &&
+		len(filter.CredentialIDs) == 0 &&
 		len(filter.AuthFiles) == 0 &&
 		len(filter.AuthIndices) == 0 &&
 		len(filter.APIKeyHashes) == 0 &&
@@ -1192,6 +1195,7 @@ func filterOptionsBaseFilter(filter store.AnalyticsFilter) store.AnalyticsFilter
 	optionFilter.Models = nil
 	optionFilter.Providers = nil
 	optionFilter.Accounts = nil
+	optionFilter.CredentialIDs = nil
 	optionFilter.AuthFiles = nil
 	optionFilter.AuthIndices = nil
 	optionFilter.APIKeyHashes = nil
