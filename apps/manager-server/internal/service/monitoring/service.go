@@ -77,6 +77,8 @@ type Filters struct {
 
 type Include struct {
 	Summary            bool              `json:"summary"`
+	SummaryProfile     string            `json:"summary_profile"`
+	SummaryPercentiles bool              `json:"summary_percentiles"`
 	SummaryComparison  bool              `json:"summary_comparison"`
 	Timeline           bool              `json:"timeline"`
 	HourlyDistribution bool              `json:"hourly_distribution"`
@@ -662,6 +664,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 	// (summary and events use the exact same filter).
 	var summaryTotalCalls int64
 	summaryComputed := false
+	compactSummary := req.Include.Summary && req.Include.SummaryProfile == "compact"
 	rollupEligible := analyticsHourlyRollupEligible(filter)
 	needsHourlyAggregates := req.Include.Summary || req.Include.ModelShare || req.Include.ModelStats
 	needsHourlyTimeline := req.Include.Timeline || req.Include.AnomalyPoints
@@ -687,7 +690,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 	}
 
 	var taskBuckets []store.TaskBucket
-	if req.Include.Summary || req.Include.TaskBuckets {
+	if req.Include.TaskBuckets || (req.Include.Summary && !compactSummary) {
 		taskBuckets, err = s.store.TaskBucketsWithFilter(ctx, filter)
 		if err != nil {
 			return Response{}, err
@@ -704,26 +707,41 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 				return Response{}, err
 			}
 		}
-		latencySummary, err := s.store.LatencySummaryWithFilter(ctx, filter)
-		if err != nil {
-			return Response{}, err
+		var latencySummary store.LatencySummary
+		if !compactSummary || req.Include.SummaryPercentiles {
+			latencySummary, err = s.store.LatencySummaryWithFilter(ctx, filter)
+			if err != nil {
+				return Response{}, err
+			}
 		}
-		rollingFilter := filter
-		rollingFilter.FromMS = nowMS - recentWindowMS
-		rollingFilter.ToMS = nowMS
-		rollingAgg, err := s.store.AggregateWithFilter(ctx, rollingFilter)
-		if err != nil {
-			return Response{}, err
+		var rollingAgg store.Aggregate
+		var activeDays int64
+		var zeroTokenModels []string
+		if !compactSummary {
+			rollingFilter := filter
+			rollingFilter.FromMS = nowMS - recentWindowMS
+			rollingFilter.ToMS = nowMS
+			rollingAgg, err = s.store.AggregateWithFilter(ctx, rollingFilter)
+			if err != nil {
+				return Response{}, err
+			}
+			activeDays, err = s.store.ActiveDaysWithFilter(ctx, filter, location)
+			if err != nil {
+				return Response{}, err
+			}
+			zeroTokenModels, err = s.store.ZeroTokenModelsWithFilter(ctx, filter)
+			if err != nil {
+				return Response{}, err
+			}
 		}
-		activeDays, err := s.store.ActiveDaysWithFilter(ctx, filter, location)
-		if err != nil {
-			return Response{}, err
+		summaryTaskBuckets := taskBuckets
+		if compactSummary {
+			summaryTaskBuckets = nil
 		}
-		zeroTokenModels, err := s.store.ZeroTokenModelsWithFilter(ctx, filter)
-		if err != nil {
-			return Response{}, err
+		response.Summary = buildSummary(agg, latencySummary, rollingAgg, activeDays, modelStats, summaryTaskBuckets, prices, zeroTokenModels)
+		if compactSummary {
+			clearFullSummaryMetrics(response.Summary)
 		}
-		response.Summary = buildSummary(agg, latencySummary, rollingAgg, activeDays, modelStats, taskBuckets, prices, zeroTokenModels)
 		summaryTotalCalls = agg.TotalCalls
 		summaryComputed = true
 
@@ -1254,6 +1272,20 @@ func buildSummary(agg store.Aggregate, latencySummary store.LatencySummary, roll
 		ApproxTaskSuccessRate: ratio(approxTasks-taskFailures, approxTasks),
 		ZeroTokenModels:       zeroTokenModels,
 	}
+}
+
+func clearFullSummaryMetrics(summary *Summary) {
+	if summary == nil {
+		return
+	}
+	summary.RPM30M = 0
+	summary.TPM30M = 0
+	summary.AvgDailyRequests = 0
+	summary.AvgDailyTokens = 0
+	summary.ApproxTasks = 0
+	summary.ApproxTaskFailures = 0
+	summary.ApproxTaskSuccessRate = 0
+	summary.ZeroTokenModels = nil
 }
 
 func buildTimeline(points []store.TimelinePoint, percentiles []store.LatencyPercentiles, granularity string, location *time.Location, prices map[string]store.ModelPrice) []TimelinePoint {

@@ -288,6 +288,112 @@ func TestAnalyticsSummaryComparisonReturnsPreviousPeriod(t *testing.T) {
 	}
 }
 
+func TestAnalyticsCompactSummaryPreservesCoreAndSkipsFullMetrics(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"gpt-a":    {Prompt: 1, Completion: 2, Cache: 0.5},
+		"gpt-zero": {Prompt: 1, Completion: 2, Cache: 0.5},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+	fromMS := int64(1_778_000_000_000)
+	toMS := fromMS + 48*60*60*1000
+	prevFromMS := fromMS - (toMS - fromMS)
+	latency100 := int64(100)
+	latency300 := int64(300)
+	first := monitoringEvent("compact-first", fromMS+1_000, "gpt-a", "auth-1", "src-a", false, 100, 50, 0, 0, 150, &latency100)
+	first.TTFTMS = &latency100
+	first.CacheReadTokens = 20
+	first.CacheCreationTokens = 5
+	second := monitoringEvent("compact-second", toMS-60_000, "gpt-zero", "auth-2", "src-b", false, 0, 0, 0, 0, 0, &latency300)
+	second.TTFTMS = &latency300
+	previous := monitoringEvent("compact-previous", prevFromMS+1_000, "gpt-a", "auth-1", "src-a", false, 200, 100, 10, 0, 310, &latency300)
+	previous.TTFTMS = &latency300
+	if _, err := db.InsertEvents(ctx, []usage.Event{first, second, previous}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	service := New(db, false)
+	request := func(profile string, percentiles bool, taskBuckets bool) Response {
+		t.Helper()
+		resp, err := service.Analytics(ctx, Request{
+			FromMS: fromMS,
+			ToMS:   toMS,
+			NowMS:  toMS,
+			Include: Include{
+				Summary:            true,
+				SummaryProfile:     profile,
+				SummaryPercentiles: percentiles,
+				SummaryComparison:  true,
+				TaskBuckets:        taskBuckets,
+			},
+		})
+		if err != nil {
+			t.Fatalf("analytics profile %q: %v", profile, err)
+		}
+		return resp
+	}
+
+	full := request("", false, false)
+	compact := request("compact", true, false)
+	compactWithoutPercentiles := request("compact", false, false)
+	unknown := request("future-profile", false, false)
+	if full.Summary == nil || compact.Summary == nil || unknown.Summary == nil {
+		t.Fatalf("missing summary: full=%#v compact=%#v unknown=%#v", full.Summary, compact.Summary, unknown.Summary)
+	}
+	coreSummary := func(summary *Summary) Summary {
+		core := *summary
+		core.RPM30M = 0
+		core.TPM30M = 0
+		core.AvgDailyRequests = 0
+		core.AvgDailyTokens = 0
+		core.ApproxTasks = 0
+		core.ApproxTaskFailures = 0
+		core.ApproxTaskSuccessRate = 0
+		core.ZeroTokenModels = nil
+		return core
+	}
+	if !reflect.DeepEqual(coreSummary(full.Summary), coreSummary(compact.Summary)) {
+		t.Fatalf("compact core mismatch: full=%#v compact=%#v", full.Summary, compact.Summary)
+	}
+	if full.Summary.TotalCost <= 0 || full.Summary.AverageCostPerCall <= 0 || full.Summary.AverageLatencyMS == nil || full.Summary.CacheHitRate <= 0 {
+		t.Fatalf("full core fixture is not meaningful: %#v", full.Summary)
+	}
+	if full.SummaryComparison == nil || compact.SummaryComparison == nil {
+		t.Fatalf("missing comparison: full=%#v compact=%#v", full.SummaryComparison, compact.SummaryComparison)
+	}
+	if !reflect.DeepEqual(full.SummaryComparison, compact.SummaryComparison) {
+		t.Fatalf("compact comparison mismatch: full=%#v compact=%#v", full.SummaryComparison, compact.SummaryComparison)
+	}
+	if full.SummaryComparison.TotalCost <= 0 {
+		t.Fatalf("comparison fixture has no cost: %#v", full.SummaryComparison)
+	}
+	if full.Summary.RPM30M <= 0 || full.Summary.AvgDailyRequests <= 0 || full.Summary.ApproxTasks <= 0 || len(full.Summary.ZeroTokenModels) != 1 {
+		t.Fatalf("full summary metrics = %#v", full.Summary)
+	}
+	if compact.Summary.RPM30M != 0 || compact.Summary.TPM30M != 0 || compact.Summary.AvgDailyRequests != 0 ||
+		compact.Summary.AvgDailyTokens != 0 || compact.Summary.ApproxTasks != 0 ||
+		compact.Summary.ApproxTaskFailures != 0 || compact.Summary.ApproxTaskSuccessRate != 0 ||
+		compact.Summary.ZeroTokenModels != nil {
+		t.Fatalf("compact full-only metrics = %#v", compact.Summary)
+	}
+	if !reflect.DeepEqual(unknown.Summary, full.Summary) {
+		t.Fatalf("unknown profile did not preserve full behavior: unknown=%#v full=%#v", unknown.Summary, full.Summary)
+	}
+	if compactWithoutPercentiles.Summary == nil || compactWithoutPercentiles.Summary.P95LatencyMS != nil || compactWithoutPercentiles.Summary.P95TTFTMS != nil {
+		t.Fatalf("compact summary unexpectedly computed percentiles: %#v", compactWithoutPercentiles.Summary)
+	}
+
+	compactWithTasks := request("compact", false, true)
+	if len(compactWithTasks.TaskBuckets) == 0 {
+		t.Fatal("compact summary dropped explicitly requested task buckets")
+	}
+	if compactWithTasks.Summary == nil || compactWithTasks.Summary.ApproxTasks != 0 {
+		t.Fatalf("compact summary leaked task diagnostics: %#v", compactWithTasks.Summary)
+	}
+}
+
 func TestCacheHitRateMatchesWebClient(t *testing.T) {
 	// Repository aggregates expose normalized total input for Anthropic-style usage.
 	anthropic := cacheHitRate(TimelinePoint{
