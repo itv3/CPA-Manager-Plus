@@ -118,6 +118,8 @@ describe('useUsageAnalytics request orchestration', () => {
     const selectors = lastParams((params) => Boolean(params.include?.filter_selectors));
     expect(overview?.include).toEqual({
       summary: true,
+      summary_profile: 'compact',
+      summary_percentiles: true,
       summary_comparison: true,
       timeline: true,
       model_stats: true,
@@ -143,6 +145,7 @@ describe('useUsageAnalytics request orchestration', () => {
     const selectorsAfterTab = lastParams((params) => Boolean(params.include?.filter_selectors));
     expect(heatmap?.include).toEqual({
       summary: true,
+      summary_profile: 'compact',
       heatmap: true,
       granularity: 'hour',
     });

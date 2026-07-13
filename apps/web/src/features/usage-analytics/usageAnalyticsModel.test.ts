@@ -97,6 +97,8 @@ describe('usage analytics request model', () => {
   it('builds the minimum analytics include for each active tab', () => {
     expect(buildUsageAnalyticsInclude('overview', 'day')).toEqual({
       summary: true,
+      summary_profile: 'compact',
+      summary_percentiles: true,
       summary_comparison: true,
       timeline: true,
       model_stats: true,
@@ -113,6 +115,7 @@ describe('usage analytics request model', () => {
       })
     ).toEqual({
       summary: true,
+      summary_profile: 'compact',
       summary_comparison: true,
       timeline: true,
       model_stats: true,
@@ -123,6 +126,7 @@ describe('usage analytics request model', () => {
     });
     expect(buildUsageAnalyticsInclude('models', 'day')).toEqual({
       summary: true,
+      summary_profile: 'compact',
       timeline: true,
       model_stats: true,
       api_key_stats: true,
@@ -130,11 +134,13 @@ describe('usage analytics request model', () => {
     });
     expect(buildUsageAnalyticsInclude('apiKeys', 'day')).toEqual({
       summary: true,
+      summary_profile: 'compact',
       api_key_stats: true,
       granularity: 'day',
     });
     expect(buildUsageAnalyticsInclude('credentials', 'day')).toEqual({
       summary: true,
+      summary_profile: 'compact',
       credential_stats: true,
       credential_timeline: true,
       granularity: 'day',
@@ -146,6 +152,7 @@ describe('usage analytics request model', () => {
       })
     ).toEqual({
       summary: true,
+      summary_profile: 'compact',
       heatmap: true,
       granularity: 'day',
     });

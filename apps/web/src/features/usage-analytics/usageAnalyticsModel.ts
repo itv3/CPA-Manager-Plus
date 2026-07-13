@@ -719,12 +719,14 @@ export const buildUsageAnalyticsInclude = (
 ): MonitoringAnalyticsInclude => {
   const include: MonitoringAnalyticsInclude = {
     summary: true,
+    summary_profile: 'compact',
     granularity,
   };
 
   switch (activeTab) {
     case 'overview':
       Object.assign(include, {
+        summary_percentiles: true,
         summary_comparison: true,
         timeline: true,
         model_stats: true,
