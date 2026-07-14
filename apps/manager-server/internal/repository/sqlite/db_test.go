@@ -51,7 +51,7 @@ func TestOpenWithOptionsSupportsRelativePath(t *testing.T) {
 }
 
 func TestOpenWithOptionsAppliesConnectionDefaults(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "usage ? #.sqlite")
+	dbPath := filepath.Join(t.TempDir(), "usage #.sqlite")
 	db, err := OpenWithOptions(Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
