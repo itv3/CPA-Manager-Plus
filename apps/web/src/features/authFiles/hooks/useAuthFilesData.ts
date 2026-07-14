@@ -25,6 +25,7 @@ import {
   getAuthFileSelectionKey,
   type AuthFilePatchTarget,
 } from '@/features/authFiles/model/authFilesPageModel';
+import { clearCodexInspectionDisableOwnership } from '@/features/monitoring/model/codexInspectionOwnership';
 
 type DeleteAllOptions = {
   filter: string;
@@ -244,7 +245,11 @@ export const prepareAuthFilesForUpload = async (files: File[]): Promise<Prepared
   };
 };
 
-export function useAuthFilesData(): UseAuthFilesDataResult {
+type UseAuthFilesDataOptions = {
+  connectionFingerprint?: string | null;
+};
+
+export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuthFilesDataResult {
   const { t } = useTranslation();
   const { showNotification, showConfirmation } = useNotificationStore();
 
@@ -265,6 +270,14 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
   const batchStatusPendingRef = useRef(false);
   const batchFieldsPendingRef = useRef(false);
   const selectionCount = selectedFiles.size;
+  const clearInspectionOwnershipForFile = useCallback(
+    (fileName: string) => {
+      const scope = options.connectionFingerprint?.trim();
+      if (!scope) return;
+      clearCodexInspectionDisableOwnership(scope, fileName);
+    },
+    [options.connectionFingerprint]
+  );
   const toggleSelect = useCallback((key: string) => {
     setSelectedFiles((prev) => {
       const next = new Set(prev);
@@ -312,27 +325,31 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
     setSelectedFiles(new Set());
   }, []);
 
-  const applyDeletedFiles = useCallback((names: string[]) => {
-    const deletedNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
-    if (deletedNames.length === 0) return;
+  const applyDeletedFiles = useCallback(
+    (names: string[]) => {
+      const deletedNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+      if (deletedNames.length === 0) return;
 
-    const deletedSet = new Set(deletedNames);
-    setFiles((prev) => prev.filter((file) => !deletedSet.has(file.name)));
-    setSelectedFiles((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Set<string>();
-      prev.forEach((key) => {
-        const name = getAuthFileNameFromSelectionKey(key);
-        if (deletedSet.has(name)) {
-          changed = true;
-        } else {
-          next.add(key);
-        }
+      const deletedSet = new Set(deletedNames);
+      deletedNames.forEach(clearInspectionOwnershipForFile);
+      setFiles((prev) => prev.filter((file) => !deletedSet.has(file.name)));
+      setSelectedFiles((prev) => {
+        if (prev.size === 0) return prev;
+        let changed = false;
+        const next = new Set<string>();
+        prev.forEach((key) => {
+          const name = getAuthFileNameFromSelectionKey(key);
+          if (deletedSet.has(name)) {
+            changed = true;
+          } else {
+            next.add(key);
+          }
+        });
+        return changed ? next : prev;
       });
-      return changed ? next : prev;
-    });
-  }, []);
+    },
+    [clearInspectionOwnershipForFile]
+  );
 
   useEffect(() => {
     if (selectedFiles.size === 0) return;
@@ -424,6 +441,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         const hasFailureStatus = hasAuthFileUploadFailureStatus(result.status);
 
         if (successCount > 0) {
+          result.files.forEach(clearInspectionOwnershipForFile);
           if (!hasFailureStatus || failures.length > 0) {
             const suffix =
               prepared.files.length > 1 ? ` (${successCount}/${prepared.files.length})` : '';
@@ -452,7 +470,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         event.target.value = '';
       }
     },
-    [loadFiles, showNotification, t]
+    [clearInspectionOwnershipForFile, loadFiles, showNotification, t]
   );
 
   const savePastedAuthJson = useCallback(
@@ -468,6 +486,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         if (payloads.length === 1) {
           try {
             await authFilesApi.saveJsonObject(payloads[0].fileName, payloads[0].authJson);
+            clearInspectionOwnershipForFile(payloads[0].fileName);
           } catch {
             throw new Error(t('notification.save_failed'));
           }
@@ -479,6 +498,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
           } catch {
             throw new Error(t('notification.save_failed'));
           }
+          result.files.forEach(clearInspectionOwnershipForFile);
           if (
             hasAuthFileUploadFailureStatus(result.status) ||
             result.failed.length > 0 ||
@@ -547,7 +567,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         setAuthJsonPasteSaving(false);
       }
     },
-    [loadFiles, showNotification, t]
+    [clearInspectionOwnershipForFile, loadFiles, showNotification, t]
   );
 
   const handleDelete = useCallback(
@@ -561,8 +581,16 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
           setDeleting(name);
           try {
             const result = await authFilesApi.deleteFile(name);
+            if (result.deleted <= 0 || result.files.length === 0) {
+              const failure = result.failed.find((item) => item.name === name) ?? result.failed[0];
+              const message = failure?.error
+                ? `${t('notification.delete_failed')}: ${failure.error}`
+                : t('notification.delete_failed');
+              showNotification(message, 'error');
+              return;
+            }
             showNotification(t('auth_files.delete_success'), 'success');
-            applyDeletedFiles(result.files.length > 0 ? result.files : [name]);
+            applyDeletedFiles(result.files);
           } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : '';
             showNotification(`${t('notification.delete_failed')}: ${errorMessage}`, 'error');
@@ -769,6 +797,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         setFiles((prev) =>
           prev.map((f) => (f.name === name ? { ...f, disabled: res.disabled } : f))
         );
+        clearInspectionOwnershipForFile(name);
         showNotification(
           enabled
             ? t('auth_files.status_enabled_success', { name })
@@ -790,7 +819,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         });
       }
     },
-    [showNotification, t]
+    [clearInspectionOwnershipForFile, showNotification, t]
   );
 
   const batchSetStatus = useCallback(
@@ -842,6 +871,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
           if (result.status === 'fulfilled') {
             successCount++;
             confirmedDisabled.set(name, result.value.disabled);
+            clearInspectionOwnershipForFile(name);
           } else {
             failCount++;
             failedNames.add(name);
@@ -885,7 +915,7 @@ export function useAuthFilesData(): UseAuthFilesDataResult {
         });
       }
     },
-    [deselectAll, files, showNotification, statusUpdating, t]
+    [clearInspectionOwnershipForFile, deselectAll, files, showNotification, statusUpdating, t]
   );
 
   const batchPatchFields = useCallback(
