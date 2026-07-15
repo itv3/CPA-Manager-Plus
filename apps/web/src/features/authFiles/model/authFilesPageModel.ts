@@ -297,6 +297,38 @@ export const hasPartialSharedAuthFileSelection = (
   });
 };
 
+export const getWholeAuthFileDeleteCandidates = (
+  files: AuthFileItem[],
+  eligibleRows: AuthFileItem[]
+): AuthFileItem[] => {
+  const allRowCountByName = new Map<string, number>();
+  files.forEach((file) => {
+    if (isRuntimeOnlyAuthFile(file)) return;
+    const name = String(file.name ?? '').trim();
+    if (!name) return;
+    allRowCountByName.set(name, (allRowCountByName.get(name) ?? 0) + 1);
+  });
+
+  const eligibleRowCountByName = new Map<string, number>();
+  eligibleRows.forEach((file) => {
+    if (isRuntimeOnlyAuthFile(file)) return;
+    const name = String(file.name ?? '').trim();
+    if (!name) return;
+    eligibleRowCountByName.set(name, (eligibleRowCountByName.get(name) ?? 0) + 1);
+  });
+
+  const emittedNames = new Set<string>();
+  return eligibleRows.filter((file) => {
+    const name = String(file.name ?? '').trim();
+    if (!name || emittedNames.has(name)) return false;
+    const allCount = allRowCountByName.get(name) ?? 0;
+    const eligibleCount = eligibleRowCountByName.get(name) ?? 0;
+    if (allCount === 0 || eligibleCount !== allCount) return false;
+    emittedNames.add(name);
+    return true;
+  });
+};
+
 export const buildAuthFileCodexInspectionMap = (
   items: AuthFileCodexInspectionSnapshot[]
 ): Map<string, AuthFileCodexInspectionSnapshot> => {
@@ -424,9 +456,7 @@ export const getAuthFileCodexStatus = (
     isObservedQuotaLimitError(observedErrorKind, observedErrorCode);
   const observedLimitWindowKind =
     observedReachedWindowKind ??
-    (observedUsedPercent !== null && observedUsedPercent >= 100
-      ? observedSummaryWindowKind
-      : null);
+    (observedUsedPercent !== null && observedUsedPercent >= 100 ? observedSummaryWindowKind : null);
   const getObservedWindowUsedPercent = (windowKind: 'five_hour' | 'weekly' | 'monthly') =>
     getHeaderSnapshotWindowUsedPercent(headerSnapshot, windowKind) ??
     (observedLimitWindowKind === windowKind ? observedUsedPercent : null);
@@ -487,10 +517,7 @@ export const getAuthFileCodexStatus = (
   const isFiveHourLimited =
     (fiveHourUsedPercent !== null && fiveHourUsedPercent >= 100) || observedFiveHourLimited;
   const isUnknownQuotaLimited =
-    observedQuotaLimitedStatus &&
-    !isFiveHourLimited &&
-    !isWeeklyLimited &&
-    !isMonthlyLimited;
+    observedQuotaLimitedStatus && !isFiveHourLimited && !isWeeklyLimited && !isMonthlyLimited;
   const isQuotaLimited =
     isFiveHourLimited || isWeeklyLimited || isMonthlyLimited || isUnknownQuotaLimited;
   const recoveryResetLabel =

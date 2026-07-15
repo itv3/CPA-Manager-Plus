@@ -1169,6 +1169,81 @@ describe('useAuthFilesData handleDeleteAll', () => {
     );
     hook.unmount();
   });
+
+  it('does not delete a shared auth file when only one auth index is eligible', async () => {
+    const hook = mountUseAuthFilesData();
+    const first = { name: 'shared-xai.json', type: 'xai', authIndex: '0' };
+    const second = { name: 'shared-xai.json', type: 'xai', authIndex: '1' };
+    mocks.list.mockResolvedValueOnce({ files: [first, second] });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    act(() => {
+      hook.getCurrent().handleDeleteAll({
+        filter: 'all',
+        problemOnly: true,
+        disabledOnly: false,
+        healthyOnly: false,
+        filteredFiles: [first],
+        onResetFilterToAll: vi.fn(),
+        onResetProblemOnly: vi.fn(),
+        onResetDisabledOnly: vi.fn(),
+        onResetHealthyOnly: vi.fn(),
+      });
+    });
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void> }
+      | undefined;
+    await act(async () => {
+      await confirmation?.onConfirm?.();
+    });
+
+    expect(mocks.deleteFiles).not.toHaveBeenCalled();
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.delete_filtered_result_none',
+      'info'
+    );
+    hook.unmount();
+  });
+
+  it('deletes a shared auth file once when all auth indexes are eligible', async () => {
+    const hook = mountUseAuthFilesData();
+    const first = { name: 'shared-xai.json', type: 'xai', authIndex: '0' };
+    const second = { name: 'shared-xai.json', type: 'xai', authIndex: '1' };
+    mocks.list.mockResolvedValueOnce({ files: [first, second] });
+    mocks.deleteFiles.mockResolvedValueOnce({
+      deleted: 1,
+      failed: [],
+      files: ['shared-xai.json'],
+    });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    act(() => {
+      hook.getCurrent().handleDeleteAll({
+        filter: 'all',
+        problemOnly: true,
+        disabledOnly: false,
+        healthyOnly: false,
+        filteredFiles: [first, second],
+        onResetFilterToAll: vi.fn(),
+        onResetProblemOnly: vi.fn(),
+        onResetDisabledOnly: vi.fn(),
+        onResetHealthyOnly: vi.fn(),
+      });
+    });
+    const confirmation = mocks.showConfirmation.mock.calls[0]?.[0] as
+      | { onConfirm?: () => Promise<void> }
+      | undefined;
+    await act(async () => {
+      await confirmation?.onConfirm?.();
+    });
+
+    expect(mocks.deleteFiles).toHaveBeenCalledWith(['shared-xai.json']);
+    hook.unmount();
+  });
 });
 
 describe('useAuthFilesData batchPatchFields', () => {

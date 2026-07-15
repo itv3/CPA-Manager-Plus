@@ -23,6 +23,7 @@ import {
 import {
   getAuthFileNameFromSelectionKey,
   getAuthFileSelectionKey,
+  getWholeAuthFileDeleteCandidates,
   type AuthFilePatchTarget,
 } from '@/features/authFiles/model/authFilesPageModel';
 import { clearCodexInspectionDisableOwnership } from '@/features/monitoring/model/codexInspectionOwnership';
@@ -656,7 +657,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
               setFiles((prev) => prev.filter((file) => isRuntimeOnlyAuthFile(file)));
               deselectAll();
             } else {
-              const filesToDelete = (
+              const eligibleRows = (
                 usesProvidedFilteredFiles
                   ? filteredFiles
                   : files.filter((file) => {
@@ -673,6 +674,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
                       return true;
                     })
               ).filter((file) => !isRuntimeOnlyAuthFile(file));
+              const filesToDelete = getWholeAuthFileDeleteCandidates(files, eligibleRows);
 
               if (filesToDelete.length === 0) {
                 let emptyMessage = t('auth_files.delete_filtered_none', { type: typeLabel });

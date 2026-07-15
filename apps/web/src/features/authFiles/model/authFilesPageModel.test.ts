@@ -13,6 +13,7 @@ import {
   getAuthFileSearchValues,
   getAuthFileSelectionKey,
   getFreshAuthFileCodexStatusSources,
+  getWholeAuthFileDeleteCandidates,
   hasPartialSharedAuthFileSelection,
   normalizeAuthFilesCodexStatusFilter,
   stringifySearchValue,
@@ -510,12 +511,7 @@ describe('auth file Codex status helpers', () => {
     };
 
     const sources = getFreshAuthFileCodexStatusSources(file, quota, inspection, headerSnapshot);
-    const status = getAuthFileCodexStatus(
-      file,
-      quota,
-      sources.inspection,
-      sources.headerSnapshot
-    );
+    const status = getAuthFileCodexStatus(file, quota, sources.inspection, sources.headerSnapshot);
 
     expect(sources.inspection).toBeUndefined();
     expect(sources.headerSnapshot).toBeUndefined();
@@ -547,12 +543,7 @@ describe('auth file Codex status helpers', () => {
     };
 
     const sources = getFreshAuthFileCodexStatusSources(file, quota, inspection, headerSnapshot);
-    const status = getAuthFileCodexStatus(
-      file,
-      quota,
-      sources.inspection,
-      sources.headerSnapshot
-    );
+    const status = getAuthFileCodexStatus(file, quota, sources.inspection, sources.headerSnapshot);
 
     expect(sources.inspection).toBe(inspection);
     expect(sources.headerSnapshot).toBe(headerSnapshot);
@@ -577,12 +568,7 @@ describe('auth file Codex status helpers', () => {
       header_trace_id: 'trace-new',
     };
 
-    const sources = getFreshAuthFileCodexStatusSources(
-      file,
-      undefined,
-      inspection,
-      headerSnapshot
-    );
+    const sources = getFreshAuthFileCodexStatusSources(file, undefined, inspection, headerSnapshot);
     const status = getAuthFileCodexStatus(
       file,
       undefined,
@@ -613,12 +599,7 @@ describe('auth file Codex status helpers', () => {
       header_error_code: 'invalid_api_key',
     };
 
-    const sources = getFreshAuthFileCodexStatusSources(
-      file,
-      undefined,
-      inspection,
-      headerSnapshot
-    );
+    const sources = getFreshAuthFileCodexStatusSources(file, undefined, inspection, headerSnapshot);
     const status = getAuthFileCodexStatus(
       file,
       undefined,
@@ -794,5 +775,26 @@ describe('auth file Codex plan helpers', () => {
     expect(
       hasPartialSharedAuthFileSelection([first, second, single], [getAuthFileSelectionKey(single)])
     ).toBe(false);
+  });
+
+  it('returns delete candidates only when every row in a shared auth file is eligible', () => {
+    const first = codexFile({ name: 'shared-codex.json', authIndex: 0 });
+    const second = codexFile({ name: 'shared-codex.json', authIndex: 1 });
+    const single = codexFile({ name: 'single-codex.json', authIndex: 'single' });
+
+    expect(getWholeAuthFileDeleteCandidates([first, second, single], [first, single])).toEqual([
+      single,
+    ]);
+    expect(
+      getWholeAuthFileDeleteCandidates([first, second, single], [first, second, single])
+    ).toEqual([first, single]);
+  });
+
+  it('does not collapse repeated rows that have no auth index', () => {
+    const first = codexFile({ name: 'legacy-shared.json', authIndex: undefined });
+    const second = codexFile({ name: 'legacy-shared.json', authIndex: undefined });
+
+    expect(getWholeAuthFileDeleteCandidates([first, second], [first])).toEqual([]);
+    expect(getWholeAuthFileDeleteCandidates([first, second], [first, second])).toEqual([first]);
   });
 });

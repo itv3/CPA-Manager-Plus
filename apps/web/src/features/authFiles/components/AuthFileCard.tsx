@@ -36,8 +36,9 @@ import {
 import type { AuthFileStatusBarData } from '@/features/authFiles/hooks/useAuthFilesStatusBarCache';
 import type { AntigravitySubscriptionState } from '@/features/authFiles/hooks/useAntigravitySubscriptions';
 import type { AuthFileCodexStatusBadge } from '@/features/authFiles/model/authFilesPageModel';
+import { getAccountAutomationPresentation } from '@/features/authFiles/model/accountAutomationPresentation';
 import { getQuotaCooldownPresentation } from '@/features/authFiles/model/quotaCooldownPresentation';
-import type { QuotaCooldownInfo } from '@/services/api/usageService';
+import type { AccountActionCandidate, QuotaCooldownInfo } from '@/services/api/usageService';
 import { AuthFileQuotaSection } from '@/features/authFiles/components/AuthFileQuotaSection';
 import styles from '@/features/authFiles/AuthFilesPage.module.scss';
 
@@ -58,6 +59,7 @@ export type AuthFileCardProps = {
   antigravitySubscription?: AntigravitySubscriptionState;
   onRefreshAntigravitySubscription?: (file: AuthFileItem) => void;
   quotaCooldown?: QuotaCooldownInfo;
+  accountActionCandidate?: AccountActionCandidate;
   onShowModels: (file: AuthFileItem) => void;
   onReauth?: (file: AuthFileItem) => void;
   onDownload: (name: string) => void;
@@ -96,6 +98,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
     antigravitySubscription,
     onRefreshAntigravitySubscription,
     quotaCooldown,
+    accountActionCandidate,
     onShowModels,
     onReauth,
     onDownload,
@@ -120,6 +123,9 @@ export function AuthFileCard(props: AuthFileCardProps) {
   const typeLabel = getTypeLabel(t, providerKey);
   const quotaCooldownPresentation = quotaCooldown
     ? getQuotaCooldownPresentation(quotaCooldown)
+    : null;
+  const accountAutomationPresentation = accountActionCandidate
+    ? getAccountAutomationPresentation(accountActionCandidate)
     : null;
 
   const quotaType = resolveQuotaType(file);
@@ -148,8 +154,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
   const priorityValue = parsePriorityValue(file.priority ?? file['priority']);
   const projectIdValue = getProjectIdValue(file);
   const noteValue = typeof file.note === 'string' ? file.note.trim() : '';
-  const subscription =
-    isAntigravity && !isRuntimeOnly ? antigravitySubscription : undefined;
+  const subscription = isAntigravity && !isRuntimeOnly ? antigravitySubscription : undefined;
   const subscriptionData = subscription?.status === 'success' ? subscription.data : undefined;
   const isSubscriptionLoading = subscription?.status === 'loading';
   const subscriptionPlanLabel =
@@ -166,10 +171,9 @@ export function AuthFileCard(props: AuthFileCardProps) {
                 subscriptionData.tierId ||
                 t('antigravity_subscription.plan_unknown')
               : '';
-  const subscriptionBadgeLabel =
-    isSubscriptionLoading
-      ? t('antigravity_subscription.loading_short')
-      : subscription?.status === 'error'
+  const subscriptionBadgeLabel = isSubscriptionLoading
+    ? t('antigravity_subscription.loading_short')
+    : subscription?.status === 'error'
       ? t('antigravity_subscription.error_badge')
       : subscriptionData
         ? t('antigravity_subscription.plan_badge', {
@@ -182,10 +186,9 @@ export function AuthFileCard(props: AuthFileCardProps) {
       : subscriptionData?.tierName && subscriptionData.tierId
         ? `${subscriptionData.tierName} (${subscriptionData.tierId})`
         : subscriptionData?.tierName || subscriptionData?.tierId || subscriptionBadgeLabel;
-  const subscriptionBadgeClass =
-    isSubscriptionLoading
-      ? styles.subscriptionBadgeLoading
-      : subscription?.status === 'error'
+  const subscriptionBadgeClass = isSubscriptionLoading
+    ? styles.subscriptionBadgeLoading
+    : subscription?.status === 'error'
       ? styles.subscriptionBadgeError
       : subscriptionData?.plan === 'free'
         ? styles.subscriptionBadgeFree
@@ -193,9 +196,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
           ? styles.subscriptionBadgeUnknown
           : styles.subscriptionBadgePaid;
   const subscriptionErrorMessage =
-    subscription?.status === 'error'
-      ? subscription.error || t('common.unknown_error')
-      : '';
+    subscription?.status === 'error' ? subscription.error || t('common.unknown_error') : '';
   const showSubscriptionRefreshButton =
     isAntigravity &&
     !isRuntimeOnly &&
@@ -298,6 +299,22 @@ export function AuthFileCard(props: AuthFileCardProps) {
                     </span>
                   );
                 })}
+                {accountActionCandidate && accountAutomationPresentation && (
+                  <span
+                    className={`${styles.codexStatusBadge} ${codexStatusBadgeClassByTone[accountAutomationPresentation.tone]}`}
+                    title={t(accountAutomationPresentation.titleKey, {
+                      reason: accountActionCandidate.reason,
+                      disabledAt: accountActionCandidate.autoDisabledAtMs
+                        ? formatUnixTimestamp(accountActionCandidate.autoDisabledAtMs)
+                        : t('common.not_set', { defaultValue: 'Not set' }),
+                      defaultValue: `${accountAutomationPresentation.titleDefault} ${accountActionCandidate.reason}`,
+                    })}
+                  >
+                    {t(accountAutomationPresentation.labelKey, {
+                      defaultValue: accountAutomationPresentation.labelDefault,
+                    })}
+                  </span>
+                )}
                 {quotaCooldown && quotaCooldownPresentation && (
                   <span
                     className={`${styles.codexStatusBadge} ${styles.codexStatusBadgeInfo} ${styles.quotaCooldownBadge}`}
