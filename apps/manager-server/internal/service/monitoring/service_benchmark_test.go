@@ -50,6 +50,29 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 		Granularity:        "day",
 	})
 	selectedCredentialTimeline.Filters.CredentialIDs = []string{"account-000.json"}
+	monitoringFull := request(Include{
+		Summary:            true,
+		Timeline:           true,
+		HourlyDistribution: true,
+		ModelShare:         true,
+		ChannelShare:       true,
+		ModelStats:         true,
+		FailureSources:     true,
+		AccountStats:       true,
+		APIKeyStats:        true,
+		FilterOptions:      true,
+		TaskBuckets:        true,
+		RecentFailures:     8,
+		EventsPage:         &EventsPage{Limit: 500},
+		Granularity:        "day",
+	})
+	monitoringCurlScope := monitoringFull
+	monitoringCurlScope.FromMS = 1
+	monitoringCurlScope.TimeZone = "Asia/Shanghai"
+	monitoringFullWithoutFilterOptions := monitoringFull
+	monitoringFullWithoutFilterOptions.Include.FilterOptions = false
+	monitoringFullFiltered := monitoringFull
+	monitoringFullFiltered.Filters.Models = []string{"gpt-00"}
 	profiles := []struct {
 		name     string
 		service  *Service
@@ -73,6 +96,11 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 				Granularity:        "day",
 			})},
 		},
+		{name: "monitoring_full", service: rollupService, requests: []Request{monitoringFull}},
+		{name: "monitoring_curl_scope", service: rollupService, requests: []Request{monitoringCurlScope}},
+		{name: "monitoring_full_without_filter_options", service: rollupService, requests: []Request{monitoringFullWithoutFilterOptions}},
+		{name: "monitoring_full_filtered", service: rollupService, requests: []Request{monitoringFullFiltered}},
+		{name: "filter_options_only", service: rollupService, requests: []Request{request(Include{FilterOptions: true})}},
 		{
 			name:    "overview_initial",
 			service: rollupService,

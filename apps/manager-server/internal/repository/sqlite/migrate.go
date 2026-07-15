@@ -2,7 +2,14 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
+)
+
+const (
+	dashboardHourlyRollupFormatVersionKey = "usage_dashboard_hourly_format_version"
+	dashboardHourlyRollupFormatVersion    = "2"
 )
 
 func Migrate(db *sql.DB) error {
@@ -351,7 +358,46 @@ func Migrate(db *sql.DB) error {
 	if err := ensureUsageRollupLongContextColumns(db); err != nil {
 		return err
 	}
+	if err := ensureDashboardHourlyRollupFormatVersion(db); err != nil {
+		return err
+	}
 	return ensureModelPriceColumns(db)
+}
+
+func ensureDashboardHourlyRollupFormatVersion(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var version string
+	err = tx.QueryRow(`select value from settings where key = ?`, dashboardHourlyRollupFormatVersionKey).Scan(&version)
+	switch {
+	case err == nil && version == dashboardHourlyRollupFormatVersion:
+		return tx.Commit()
+	case err == nil:
+		return fmt.Errorf("unsupported dashboard hourly rollup format version %q", version)
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+
+	for _, statement := range []string{
+		`delete from usage_dashboard_hourly_rollups`,
+		`delete from usage_rollup_checkpoints where name = 'dashboard_hourly'`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`insert into settings (key, value, updated_at_ms) values (?, ?, ?)`,
+		dashboardHourlyRollupFormatVersionKey,
+		dashboardHourlyRollupFormatVersion,
+		time.Now().UnixMilli(),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ensureUsageDataMigrationColumns(db *sql.DB) error {

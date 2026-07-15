@@ -132,13 +132,6 @@ func (r *Reader) loadRows(
 		r.logFallback(fmt.Sprintf("hourly rows query failed: %v", err))
 		return Snapshot{}, false
 	}
-	for _, row := range rows {
-		if row.Model == "-" {
-			r.logFallback("hourly rows contain a normalized empty model")
-			return Snapshot{}, false
-		}
-	}
-
 	agg, modelStats := coreFromRows(rows)
 	edges := rawEdges(fromMS, toMS, fullStartMS, fullEndMS)
 	for _, edge := range edges {

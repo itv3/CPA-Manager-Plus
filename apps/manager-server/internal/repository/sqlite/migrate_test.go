@@ -252,6 +252,169 @@ func TestEnsureUsageRollupLongContextColumnsRollsBackAndRetries(t *testing.T) {
 	assertTableCount(t, db, "usage_rollup_checkpoints", 0)
 }
 
+func TestDashboardHourlyRollupFormatUpgradeRebuildsOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dashboard-rollup-format.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	for _, statement := range []string{
+		`insert into usage_events (event_hash, timestamp_ms, timestamp, model, created_at_ms)
+		values ('preserved-event', 1, '1', '-', 1)`,
+		`insert into usage_dashboard_hourly_rollups (
+			bucket_ms, model, billing_model, service_tier, updated_at_ms
+		) values (0, '-', '-', '', 1)`,
+		`insert into usage_rollup_checkpoints (name, last_event_id, updated_at_ms)
+		values ('dashboard_hourly', 1, 1), ('account_history', 1, 1)`,
+		`delete from settings where key = 'usage_dashboard_hourly_format_version'`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("setup legacy rollup: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("upgrade sqlite: %v", err)
+	}
+	assertTableCount(t, db, "usage_events", 1)
+	assertTableCount(t, db, "usage_dashboard_hourly_rollups", 0)
+	var dashboardCheckpoints, accountCheckpoints int
+	if err := db.QueryRow(`select count(*) from usage_rollup_checkpoints where name = 'dashboard_hourly'`).Scan(&dashboardCheckpoints); err != nil {
+		t.Fatalf("read dashboard checkpoint count: %v", err)
+	}
+	if err := db.QueryRow(`select count(*) from usage_rollup_checkpoints where name = 'account_history'`).Scan(&accountCheckpoints); err != nil {
+		t.Fatalf("read account checkpoint count: %v", err)
+	}
+	if dashboardCheckpoints != 0 || accountCheckpoints != 1 {
+		t.Fatalf("checkpoint counts = dashboard:%d account:%d", dashboardCheckpoints, accountCheckpoints)
+	}
+	var version string
+	if err := db.QueryRow(`select value from settings where key = ?`, dashboardHourlyRollupFormatVersionKey).Scan(&version); err != nil {
+		t.Fatalf("read rollup format version: %v", err)
+	}
+	if version != dashboardHourlyRollupFormatVersion {
+		t.Fatalf("rollup format version = %q, want %q", version, dashboardHourlyRollupFormatVersion)
+	}
+	if _, err := db.Exec(`insert into usage_dashboard_hourly_rollups (
+		bucket_ms, model, billing_model, service_tier, updated_at_ms
+	) values (0, '-', '-', '', 2)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("insert rebuilt rollup: %v", err)
+	}
+	if _, err := db.Exec(`insert into usage_rollup_checkpoints (name, last_event_id, updated_at_ms)
+		values ('dashboard_hourly', 1, 2)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("insert rebuilt checkpoint: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close upgraded sqlite: %v", err)
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen upgraded sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	assertTableCount(t, db, "usage_dashboard_hourly_rollups", 1)
+	if err := db.QueryRow(`select count(*) from usage_rollup_checkpoints where name = 'dashboard_hourly'`).Scan(&dashboardCheckpoints); err != nil {
+		t.Fatalf("read preserved dashboard checkpoint: %v", err)
+	}
+	if dashboardCheckpoints != 1 {
+		t.Fatalf("dashboard checkpoint count after idempotent reopen = %d, want 1", dashboardCheckpoints)
+	}
+}
+
+func TestDashboardHourlyRollupFormatUpgradeRollsBackAndRetries(t *testing.T) {
+	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "dashboard-rollup-format-retry.sqlite")))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, statement := range []string{
+		`create table settings (key text primary key, value text not null, updated_at_ms integer not null)`,
+		`create table usage_dashboard_hourly_rollups (id integer primary key)`,
+		`create table usage_rollup_checkpoints (name text primary key)`,
+		`insert into usage_dashboard_hourly_rollups (id) values (1)`,
+		`insert into usage_rollup_checkpoints (name) values ('dashboard_hourly'), ('account_history')`,
+		`create trigger reject_dashboard_rollup_delete before delete on usage_dashboard_hourly_rollups
+		begin select raise(abort, 'blocked'); end`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("setup migration fixture: %v", err)
+		}
+	}
+
+	if err := ensureDashboardHourlyRollupFormatVersion(db); err == nil {
+		t.Fatal("format migration error = nil, want trigger failure")
+	}
+	assertTableCount(t, db, "usage_dashboard_hourly_rollups", 1)
+	assertTableCount(t, db, "usage_rollup_checkpoints", 2)
+	var settingCount int
+	if err := db.QueryRow(`select count(*) from settings where key = ?`, dashboardHourlyRollupFormatVersionKey).Scan(&settingCount); err != nil {
+		t.Fatalf("read format setting count: %v", err)
+	}
+	if settingCount != 0 {
+		t.Fatalf("format setting count after rollback = %d, want 0", settingCount)
+	}
+
+	if _, err := db.Exec(`drop trigger reject_dashboard_rollup_delete`); err != nil {
+		t.Fatalf("drop failure trigger: %v", err)
+	}
+	if err := ensureDashboardHourlyRollupFormatVersion(db); err != nil {
+		t.Fatalf("retry format migration: %v", err)
+	}
+	assertTableCount(t, db, "usage_dashboard_hourly_rollups", 0)
+	var dashboardCheckpoints, accountCheckpoints int
+	if err := db.QueryRow(`select count(*) from usage_rollup_checkpoints where name = 'dashboard_hourly'`).Scan(&dashboardCheckpoints); err != nil {
+		t.Fatalf("read dashboard checkpoint count: %v", err)
+	}
+	if err := db.QueryRow(`select count(*) from usage_rollup_checkpoints where name = 'account_history'`).Scan(&accountCheckpoints); err != nil {
+		t.Fatalf("read account checkpoint count: %v", err)
+	}
+	if dashboardCheckpoints != 0 || accountCheckpoints != 1 {
+		t.Fatalf("checkpoint counts after retry = dashboard:%d account:%d", dashboardCheckpoints, accountCheckpoints)
+	}
+}
+
+func TestDashboardHourlyRollupFormatUpgradeRejectsUnknownVersionWithoutMutation(t *testing.T) {
+	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "dashboard-rollup-format-unknown.sqlite")))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, statement := range []string{
+		`create table settings (key text primary key, value text not null, updated_at_ms integer not null)`,
+		`create table usage_dashboard_hourly_rollups (id integer primary key)`,
+		`create table usage_rollup_checkpoints (name text primary key)`,
+		`insert into settings (key, value, updated_at_ms)
+		values ('usage_dashboard_hourly_format_version', 'future', 1)`,
+		`insert into usage_dashboard_hourly_rollups (id) values (1)`,
+		`insert into usage_rollup_checkpoints (name) values ('dashboard_hourly'), ('account_history')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("setup unknown format fixture: %v", err)
+		}
+	}
+
+	if err := ensureDashboardHourlyRollupFormatVersion(db); err == nil {
+		t.Fatal("format migration error = nil, want unsupported version failure")
+	}
+	assertTableCount(t, db, "usage_dashboard_hourly_rollups", 1)
+	assertTableCount(t, db, "usage_rollup_checkpoints", 2)
+	var version string
+	if err := db.QueryRow(`select value from settings where key = ?`, dashboardHourlyRollupFormatVersionKey).Scan(&version); err != nil {
+		t.Fatalf("read preserved format version: %v", err)
+	}
+	if version != "future" {
+		t.Fatalf("format version after rejection = %q, want future", version)
+	}
+}
+
 func TestEnsureUsageEventSnapshotColumnsOnlyMigratesSchema(t *testing.T) {
 	db, err := sql.Open("sqlite", dataSourceName(filepath.Join(t.TempDir(), "usage-event-migration.sqlite")))
 	if err != nil {

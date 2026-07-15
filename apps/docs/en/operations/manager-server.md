@@ -224,9 +224,11 @@ Hourly rollup is enabled by default. The worker catches up historical events in 
 USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 ```
 
-Restart Manager Server after changing it. Dashboard and Usage Analytics will always use raw events while disabled, and existing rollup tables are left intact. This runtime switch is not exposed in the UI.
+Restart Manager Server after changing it. Dashboard and Usage Analytics will always use raw events while disabled. Except for the one-time startup format upgrade described below, disabling this runtime switch does not delete current-format rollup data. The switch is not exposed in the UI.
 
-When upgrading an existing database, Manager Server performs only fast schema changes during startup. Cache-accounting corrections that must scan historical `usage_events` begin in the background after the HTTP listener is bound, processing 1,000 rows per batch. Each data update and its checkpoint commit in the same transaction, so a restart resumes at the last successfully committed event ID instead of repeating completed batches.
+When upgrading to the lossless model encoding, Manager Server clears the old `usage_dashboard_hourly_rollups` rows and resets only the `dashboard_hourly` checkpoint. When hourly rollup is enabled, the worker then rebuilds it in bounded background batches; while disabled, it remains empty until the worker is enabled again. This format migration itself does not modify or delete `usage_events` and does not reset the account-history rollup. Long-window queries temporarily fall back to raw events until catch-up completes. The new encoding distinguishes an empty model, the literal `-` model, and models with surrounding whitespace, so a legitimate `-` model no longer disables the entire rollup path.
+
+When upgrading an existing database, Manager Server performs schema and metadata changes plus any required derived-rollup reset during startup, but does not scan historical `usage_events`. Cache-accounting corrections that require a historical event scan begin in the background after the HTTP listener is bound, processing 1,000 rows per batch. Each data update and its checkpoint commit in the same transaction, so a restart resumes at the last successfully committed event ID instead of repeating completed batches.
 
 While the migration is running:
 

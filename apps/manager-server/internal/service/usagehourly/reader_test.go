@@ -3,6 +3,7 @@ package usagehourly
 import (
 	"context"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -123,20 +124,66 @@ func TestReaderAnalyticsTimelineFallsBackForHalfHourBuckets(t *testing.T) {
 	}
 }
 
-func TestReaderFallsBackForNormalizedEmptyModel(t *testing.T) {
+func TestReaderPreservesEmptyLiteralDashAndWhitespaceModels(t *testing.T) {
 	db := newReaderTestStore(t)
 	ctx := context.Background()
 	fromMS := int64(1_800_000_000_000)
 	toMS := fromMS + 2*hourMS
-	if _, err := db.InsertEvents(ctx, []usage.Event{
-		readerEvent("empty-model", fromMS+1_000, "", false, 1, 2, nil),
-	}); err != nil {
+	empty := readerEvent("empty-model", fromMS+1_000, "", false, 1, 2, nil)
+	dash := readerEvent("dash-model", fromMS+2_000, "-", false, 2, 3, nil)
+	padded := readerEvent("padded-model", fromMS+3_000, " model ", false, 3, 4, nil)
+	padded.ResolvedModel = " resolved "
+	padded.ServiceTier = " priority "
+	if _, err := db.InsertEvents(ctx, []usage.Event{empty, dash, padded}); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
 	catchUpReaderRollup(t, ctx, db)
-	if _, ok := New(db, true).Load(ctx, fromMS, toMS); ok {
-		t.Fatal("normalized empty model used rollup instead of preserving raw model semantics")
+
+	rawAggregate, err := db.AggregateBetween(ctx, fromMS, toMS)
+	if err != nil {
+		t.Fatalf("raw aggregate: %v", err)
 	}
+	rawModels, err := db.ModelStatsBetween(ctx, fromMS, toMS)
+	if err != nil {
+		t.Fatalf("raw models: %v", err)
+	}
+	filter := store.AnalyticsFilter{FromMS: fromMS, ToMS: toMS, IncludeFailed: true}
+	rawTimeline, err := db.TimelineWithFilter(ctx, filter, "day", time.UTC)
+	if err != nil {
+		t.Fatalf("raw timeline: %v", err)
+	}
+	snapshot, ok := New(db, true).LoadAnalytics(ctx, fromMS, toMS, "day", time.UTC, false)
+	if !ok {
+		t.Fatal("dimension-preserving rollup was unavailable")
+	}
+	if !reflect.DeepEqual(snapshot.Aggregate, rawAggregate) || !reflect.DeepEqual(snapshot.ModelStats, rawModels) {
+		t.Fatalf("dimension-preserving rollup mismatch\nrollup=%#v %#v\nraw=%#v %#v", snapshot.Aggregate, snapshot.ModelStats, rawAggregate, rawModels)
+	}
+	timelineSnapshot, ok := New(db, true).LoadAnalytics(ctx, fromMS, toMS, "day", time.UTC, true)
+	if !ok {
+		t.Fatal("dimension-preserving timeline rollup was unavailable")
+	}
+	rolledTimeline, ok := New(db, true).AnalyticsTimeline(ctx, timelineSnapshot, "day", time.UTC)
+	sortTimelinePoints(rawTimeline)
+	sortTimelinePoints(rolledTimeline)
+	if !ok || !reflect.DeepEqual(rolledTimeline, rawTimeline) {
+		t.Fatalf("dimension-preserving timeline mismatch\nrollup=%#v\nraw=%#v", rolledTimeline, rawTimeline)
+	}
+}
+
+func sortTimelinePoints(points []store.TimelinePoint) {
+	sort.Slice(points, func(i, j int) bool {
+		if points[i].BucketMS != points[j].BucketMS {
+			return points[i].BucketMS < points[j].BucketMS
+		}
+		if points[i].Model != points[j].Model {
+			return points[i].Model < points[j].Model
+		}
+		if points[i].BillingModel != points[j].BillingModel {
+			return points[i].BillingModel < points[j].BillingModel
+		}
+		return points[i].ServiceTier < points[j].ServiceTier
+	})
 }
 
 func TestReaderFallsBackWhenDisabledOrPending(t *testing.T) {

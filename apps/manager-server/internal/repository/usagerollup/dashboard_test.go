@@ -99,6 +99,47 @@ func TestCatchUpDashboardHourlyAggregatesByCheckpoint(t *testing.T) {
 	}
 }
 
+func TestCatchUpDashboardHourlyPreservesDimensionStrings(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	baseMS := int64(1_700_000_000_000)
+	hourMS := baseMS - baseMS%dashboardHourMS
+
+	empty := rollupTestEvent("dashboard-empty-model", hourMS+1_000, "", "", "", "", "auth-empty", false, 1, 2, 0, 0, 0, 0, 3)
+	dash := rollupTestEvent("dashboard-dash-model", hourMS+2_000, "-", "", "", "", "auth-dash", false, 2, 3, 0, 0, 0, 0, 5)
+	padded := rollupTestEvent("dashboard-padded-model", hourMS+3_000, " model ", " resolved ", "", "", "auth-padded", false, 3, 4, 0, 0, 0, 0, 7)
+	padded.ServiceTier = " priority "
+	if _, err := events.InsertBatch(ctx, []usage.Event{empty, dash, padded}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := repo.CatchUpDashboardHourly(ctx, 10, baseMS+10_000); err != nil {
+		t.Fatalf("catch up dashboard hourly: %v", err)
+	}
+
+	rows, err := repo.DashboardHourlyRows(ctx, hourMS, hourMS+dashboardHourMS)
+	if err != nil {
+		t.Fatalf("query dashboard hourly rows: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %#v, want 3 dimension-preserving rows", rows)
+	}
+	byModel := make(map[string]DashboardHourlyRow, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
+	}
+	if row, ok := byModel[""]; !ok || row.BillingModel != "" || row.ServiceTier != "" || row.Calls != 1 {
+		t.Fatalf("empty model row = %#v, present=%v", row, ok)
+	}
+	if row, ok := byModel["-"]; !ok || row.BillingModel != "-" || row.ServiceTier != "" || row.Calls != 1 {
+		t.Fatalf("literal dash row = %#v, present=%v", row, ok)
+	}
+	if row, ok := byModel[" model "]; !ok || row.BillingModel != " resolved " || row.ServiceTier != " priority " || row.Calls != 1 {
+		t.Fatalf("padded model row = %#v, present=%v", row, ok)
+	}
+}
+
 func TestCatchUpDashboardHourlyFailureDoesNotAdvanceCheckpoint(t *testing.T) {
 	db := newRollupTestDB(t)
 	ctx := context.Background()

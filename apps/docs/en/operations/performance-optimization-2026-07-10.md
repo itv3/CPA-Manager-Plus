@@ -4,12 +4,13 @@ This report documents the Manager Server, Dashboard, Request Monitoring, Usage A
 
 ## Executive Summary
 
-The work was delivered in four stages:
+The work was delivered in five stages:
 
 1. PR #319 bounded memory, request, and SQLite connection resources.
 2. PR #320 moved Dashboard core metrics to incremental hourly rollups.
 3. PR #323 scoped Usage Analytics requests to the active tab.
 4. Usage Analytics Hourly Rollup Phase 2B reused hourly rollups for strictly unfiltered long-window core metrics.
+5. Complete Monitoring requests reused duplicate dimension statistics and executed independent SQLite reads with bounded concurrency.
 
 Using the effective work required to open Usage Analytics Overview on a 100,000-event dataset:
 
@@ -200,6 +201,49 @@ This scope includes only the aggregate, model-stat, and timeline work owned by P
 
 The rollup-owned path is about 20 times faster, while the complete Overview request is about 23% faster because P95, TTFT, task, active-day, API key, and channel queries remain on raw events and now dominate the remaining time.
 
+## Stage 5: Complete Monitoring Request Deduplication And Bounded Concurrency
+
+### Cause
+
+Request Monitoring loads Summary, Timeline, hourly distribution, model/channel/account/API-key statistics, failure sources, task buckets, filter options, and event pagination in one analytics request. These independent reads previously ran sequentially. For an unfiltered request, `filter_options` also recalculated account, API-key, channel, and model statistics already requested by the main response.
+
+In the 100k, 30-day UTC Monitoring include profile:
+
+- The complete request took about 5.44s.
+- Removing `filter_options` reduced it to about 3.38s.
+- `filter_options` alone took about 2.09s.
+
+### Changes
+
+- Reuse loaded model, channel, account, and API-key source statistics when the main filter and filter-options base filter are equivalent.
+- Reuse the built main-response rows inside filter options so both values and tie ordering are identical.
+- Prefetch timeline percentiles, hourly distribution, high-dimensional statistics, filter options, recent failures, and the events page through a cancellable query group.
+- Limit background prefetch to two concurrent reads. Together with the foreground summary/task path, one request uses at most three SQLite connections, leaving one connection in the four-connection pool available for other work.
+- Cancel sibling work after the first query error and assemble the response on one goroutine only after all reads complete.
+- Add no schema, rollup table, resident cache, or API field. Requests with dimension or status filters that the filter-options base scope clears continue to calculate those options independently, preserving the original option semantics. Search-only requests remain reusable because search is retained in that base scope.
+
+### 100k Monitoring Include-Profile Results
+
+| Path | Duration | B/op | allocs/op |
+|---|---:|---:|---:|
+| Before | about 5.44s | 16.26MB | about 984 thousand |
+| After | about 1.69–1.81s | 15.14MB | about 958 thousand |
+| Change | about 67%–69% lower | about 7% lower | about 3% lower |
+
+Twenty consecutive runs remained near 1.69s/op and 15.14MB/op. The change adds no cross-request cache or retained event array.
+
+A separate post-change benchmark using the curl scope (`from_ms=1`, `Asia/Shanghai`, and the same include payload) completed at about 1.815s/op, 26.02MB/op, and 1.093 million allocs/op. The wider time range increases allocation, but not elapsed time materially on this dataset.
+
+### 58,686-Event Real-Data Validation
+
+On a disposable SQLite backup of `bin/tmp/db/data`, after completing the cache-accounting migration and dashboard-rollup catch-up:
+
+- The complete request baseline after Phase 1 was about 5.80s.
+- This stage completed the service call in 2.21–2.38s.
+- That is another reduction of approximately 59%–62% from the previous stage.
+- Serializing the 7.58MB JSON response took only about 16ms, so SQLite reads still dominate the remaining time.
+- The original `bin/tmp/db/data` was not modified.
+
 ## Memory And Stability Validation
 
 - Ten-run and 200-run 100k rollup benchmarks remained stable.
@@ -259,13 +303,13 @@ Hourly rollup is enabled by default. To disable it temporarily:
 USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 ```
 
-Restart Manager Server after changing the variable. Dashboard and Usage Analytics will use raw events while disabled, and existing rollup tables remain intact. The switch is intentionally not exposed in the UI.
+Restart Manager Server after changing the variable. Dashboard and Usage Analytics will use raw events while disabled. Except for the one-time startup format upgrade documented in the Manager Server guide, disabling this runtime switch does not delete current-format rollup data. The switch is intentionally not exposed in the UI.
 
 See the [Manager Server Guide](./manager-server.md) for the full runtime reference.
 
 ## Recommended Next Step
 
-The remaining time is concentrated in raw-only Summary metrics:
+Compact Summary, hourly rollups, compact latency-percentile reads, high-dimensional request shaping, and complete Monitoring request concurrency are now implemented. The remaining time depends primarily on queries that must preserve raw-event semantics:
 
 - P95 latency and P95 TTFT.
 - Task buckets.
@@ -273,4 +317,4 @@ The remaining time is concentrated in raw-only Summary metrics:
 - Zero-token models.
 - Overview API key and channel dimensions.
 
-The next optimization should evaluate a Compact Summary Profile so tabs that do not need full diagnostic metrics stop executing these raw queries. A bounded recent-event cache should only proceed if new pprof evidence shows short-window SQLite reads are still the dominant bottleneck.
+Re-profile on a larger real dataset before adding another optimization layer. If filter-option distinct reads or one high-dimensional aggregate consistently dominates, prefer a focused query-shaping change or a dedicated dimension rollup. Current evidence still does not justify a bounded recent-event cache.

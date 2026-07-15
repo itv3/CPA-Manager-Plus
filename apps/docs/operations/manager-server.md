@@ -222,9 +222,11 @@ go tool pprof http://127.0.0.1:6060/debug/pprof/heap
 USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 ```
 
-关闭后需重启 Manager Server，Dashboard 和 Usage Analytics 将始终读取 raw events，已有 rollup 表不会被删除。该运行期开关不接入 UI。
+关闭后需重启 Manager Server，Dashboard 和 Usage Analytics 将始终读取 raw events。除下述启动时的一次性格式升级外，关闭该运行时开关本身不会删除当前格式的 rollup 数据。该开关不接入 UI。
 
-升级旧数据库时，Manager Server 只在启动阶段执行快速 schema 变更；需要扫描历史 `usage_events` 的 cache accounting 修正会在 HTTP 服务开始监听后，以每批 1000 条的方式在后台执行。每批数据更新和 checkpoint 在同一个事务中提交，进程重启后会从最后成功的 event ID 继续，不会重新处理已经提交的批次。
+升级到使用无损 model 编码的版本时，Manager Server 会清空旧的 `usage_dashboard_hourly_rollups` 并重置 `dashboard_hourly` checkpoint。小时汇总启用时，后台 worker 会随后分批重建；禁用时则保持为空，直到重新启用。该格式迁移本身不会修改或删除 `usage_events`，也不会重置 account-history rollup；重建完成前相关长窗口查询会临时回退 raw events。新的编码会区分空 model、字面量 `-` 和包含前后空格的 model，避免合法的 `-` model 使整个查询回退。
+
+升级旧数据库时，Manager Server 在启动阶段执行 schema/metadata 变更和必要的派生 rollup 重置，但不扫描历史 `usage_events`。需要扫描历史事件的 cache accounting 修正会在 HTTP 服务开始监听后，以每批 1000 条的方式在后台执行。每批数据更新和 checkpoint 在同一个事务中提交，进程重启后会从最后成功的 event ID 继续，不会重新处理已经提交的批次。
 
 迁移期间：
 

@@ -4,12 +4,13 @@
 
 ## 执行摘要
 
-本轮优化分为四个阶段：
+本轮优化分为五个阶段：
 
 1. PR #319：限制无界内存、请求和 SQLite 连接资源。
 2. PR #320：Dashboard 核心统计改用增量小时汇总。
 3. PR #323：Usage Analytics 按当前 Tab 请求最小数据集。
 4. Usage Analytics Hourly Rollup Phase 2B：严格无筛选的长窗口核心统计复用小时汇总。
+5. Monitoring 完整请求复用重复维度统计，并以有界并发执行独立 SQLite 读取。
 
 在 100,000 条测试事件下，以打开 Usage Analytics Overview 的有效工作量为口径：
 
@@ -200,6 +201,49 @@ Raw analytics 与 rollup reader 共用同一个时区 bucket 规则。每个 UTC
 
 核心路径约快 20 倍，但 Overview 整体只快约 23%，是因为 P95、TTFT、task、active days、API Key 和 Channel 等保留的 raw 查询已经成为主要耗时来源。
 
+## 阶段五：Monitoring 完整请求去重与有界并发
+
+### 问题原因
+
+Request Monitoring 会在一次 analytics 请求中同时加载 Summary、Timeline、小时分布、Model/Channel/Account/API Key 统计、失败来源、task buckets、filter options 和事件分页。这些独立读取原本串行执行，且无筛选请求的 `filter_options` 会再次计算主响应已经请求的 account、API key、channel 和 model 统计。
+
+在 100k、30 天 UTC 的 Monitoring include profile 中：
+
+- 完整请求约 5.44s。
+- 移除 `filter_options` 后约 3.38s。
+- 单独 `filter_options` 约 2.09s。
+
+### 优化内容
+
+- 主 filter 与 filter-options 基准 filter 等价时，复用已加载的 model、channel、account 和 API key 原始统计。
+- Filter options 直接复用主响应构建后的行，保证数值与 tie ordering 完全一致。
+- Timeline percentile、小时分布、高维统计、filter options、recent failures 和 events page 使用可取消的查询组预取。
+- 后台预取最多并发 2 个读取；加上前台 Summary/task 路径，单请求最多占用 3 个 SQLite 连接，为四连接池中的其他工作保留 1 个连接。
+- 第一个查询错误会取消同组任务；响应仅在全部查询完成后单线程组装。
+- 不新增 schema、rollup 表、常驻 cache 或 API 字段。对于 filter-options 基准范围会清除的维度或状态筛选，选项继续独立计算并保持原有语义；仅搜索请求仍可复用，因为基准范围会保留搜索条件。
+
+### 100k Monitoring include-profile 测试
+
+| 路径 | 耗时 | B/op | allocs/op |
+|---|---:|---:|---:|
+| 优化前 | 约 5.44s | 16.26MB | 约 98.4 万 |
+| 优化后 | 约 1.69～1.81s | 15.14MB | 约 95.8 万 |
+| 变化 | 降低约 67%～69% | 降低约 7% | 降低约 3% |
+
+20 次连续测试保持在约 1.69s/op、15.14MB/op，未新增跨请求持有的缓存或事件数组。
+
+另一次优化后 benchmark 使用 curl 范围（`from_ms=1`、`Asia/Shanghai` 和相同 include payload），结果约为 1.815s/op、26.02MB/op、109.3 万 allocs/op。更宽的时间范围会增加分配量，但在该数据集上没有显著增加耗时。
+
+### 58,686 条真实数据验证
+
+在 `bin/tmp/db/data` 的 disposable SQLite backup 上，完成 cache-accounting migration 和 dashboard rollup 追平后：
+
+- Phase 1 后完整请求基线约 5.80s。
+- 本阶段 service 耗时稳定在 2.21～2.38s。
+- 相对上一阶段再降低约 59%～62%。
+- 7.58MB JSON 响应的序列化仅约 16ms，剩余耗时仍主要来自 SQLite 查询。
+- 原始 `bin/tmp/db/data` 未被修改。
+
 ## 内存与稳定性验证
 
 - 10 次和 200 次连续 100k rollup benchmark 保持稳定。
@@ -259,13 +303,13 @@ Raw analytics 与 rollup reader 共用同一个时区 bucket 规则。每个 UTC
 USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 ```
 
-修改后重启 Manager Server。Dashboard 和 Usage Analytics 会回退 raw events，已有 rollup 表不会删除。该开关不接入 UI。
+修改后重启 Manager Server。Dashboard 和 Usage Analytics 会回退 raw events。除 Manager Server 指南说明的启动时一次性格式升级外，关闭该运行时开关本身不会删除当前格式的 rollup 数据。该开关不接入 UI。
 
 更多配置见 [Manager Server 指南](./manager-server.md)。
 
 ## 后续方向
 
-当前剩余耗时主要集中在 Summary 的 raw-only 指标：
+当前 Compact Summary、hourly rollup、latency percentile 紧凑读取、高维请求裁剪和 Monitoring 完整请求并发均已完成。剩余耗时主要依赖必须保留 raw 语义的查询：
 
 - P95 latency 和 P95 TTFT。
 - Task buckets。
@@ -273,4 +317,4 @@ USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED=false
 - Zero-token models。
 - Overview 的 API Key 和 Channel 高维聚合。
 
-下一阶段应优先评估 Compact Summary Profile，让不需要完整诊断指标的 Tab 不再重复执行这些 raw 查询。只有新的 pprof 证据显示短窗口 SQLite 查询仍是瓶颈时，才应继续考虑 bounded recent event cache。
+继续优化前应先在更大真实数据上重新 profile。若 filter option distinct 或某个高维聚合稳定占据主导，再选择单一查询整形或专用维度 rollup；现有证据仍不支持引入 bounded recent event cache。

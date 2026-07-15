@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -357,11 +356,8 @@ limit ?`, lastEventID, limit)
 func aggregateDashboardHourly(events []dashboardEventRow, nowMS int64) []DashboardHourlyRow {
 	grouped := make(map[dashboardHourlyKey]*DashboardHourlyRow)
 	for _, event := range events {
-		model := strings.TrimSpace(event.Model)
-		if model == "" {
-			model = "-"
-		}
-		billingModel := strings.TrimSpace(event.BillingModel)
+		model := event.Model
+		billingModel := event.BillingModel
 		if billingModel == "" {
 			billingModel = model
 		}
@@ -369,7 +365,7 @@ func aggregateDashboardHourly(events []dashboardEventRow, nowMS int64) []Dashboa
 			BucketMS:     event.TimestampMS - event.TimestampMS%dashboardHourMS,
 			Model:        model,
 			BillingModel: billingModel,
-			ServiceTier:  strings.TrimSpace(event.ServiceTier),
+			ServiceTier:  event.ServiceTier,
 		}
 		row := grouped[key]
 		if row == nil {
