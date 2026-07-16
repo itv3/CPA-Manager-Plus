@@ -48,6 +48,10 @@ import {
 import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
+import {
+  filterLegacyAccountPrimaryNavigation,
+  isLegacyAccountAdvancedPath,
+} from '@/features/accounts/accountNavigation';
 import { getDemoLogoutPath, prefixRouteBase, stripRouteBase } from '@/features/demo/demoMode';
 import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER, STORAGE_KEY_SIDEBAR } from '@/utils/constants';
 import { isSupportedLanguage } from '@/utils/language';
@@ -508,6 +512,8 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     const label = t(shortKey, { defaultValue: fallback });
     return label === shortKey ? fallback : label;
   };
+  // 保留上游源码接线测试依赖的紧凑声明。
+  // prettier-ignore
   const dashboardNavItem: NavItem = {
     path: '/', label: t('nav.dashboard'),
     shortLabel: navShortLabel('nav.dashboard', t('nav.dashboard')),
@@ -622,13 +628,19 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         icon: sidebarIcons.system,
       },
     ],
-  ].filter((section) => section.length > 0);
+  ]
+    .map(filterLegacyAccountPrimaryNavigation)
+    .filter((section) => section.length > 0);
   const navItems = navSections.flat();
   const navOrder = navItems.map((item) => item.path);
   const getRouteOrder = (pathname: string) => {
     const trimmedPath =
       pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
     const normalizedPath = trimmedPath === '/dashboard' ? '/' : trimmedPath;
+    const accountIndex = navOrder.indexOf('/accounts');
+    if (accountIndex !== -1 && isLegacyAccountAdvancedPath(normalizedPath)) {
+      return accountIndex + 0.1;
+    }
 
     const aiProvidersIndex = navOrder.indexOf('/ai-providers');
     if (aiProvidersIndex !== -1) {
@@ -714,6 +726,7 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
       ? routePathname.slice(0, -1)
       : routePathname;
   const currentPath = normalizedLocationPath === '/dashboard' ? '/' : normalizedLocationPath;
+  const activePath = isLegacyAccountAdvancedPath(currentPath) ? '/accounts' : currentPath;
   const matchesNavPath = (item: NavItem, pathname: string) =>
     item.path === '/' || item.exact
       ? pathname === item.path
@@ -721,7 +734,7 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
   const activeNavItem =
     [...navItems]
       .sort((a, b) => b.path.length - a.path.length)
-      .find((item) => matchesNavPath(item, currentPath)) ?? navItems[0];
+      .find((item) => matchesNavPath(item, activePath)) ?? navItems[0];
   const currentRouteLabel = activeNavItem?.label ?? fullBrandName;
 
   return (

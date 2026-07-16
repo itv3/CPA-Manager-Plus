@@ -27,6 +27,12 @@ func TestLoadCreatesDefaultConfig(t *testing.T) {
 	if !cfg.DashboardHourlyRollupEnabled {
 		t.Fatal("DashboardHourlyRollupEnabled = false by default")
 	}
+	if !cfg.BackupEnabled || cfg.BackupInterval != 24*time.Hour || cfg.BackupRetention != 14 {
+		t.Fatalf("默认备份配置=%#v", cfg)
+	}
+	if want := filepath.Join(dir, "data", "backups"); cfg.BackupDir != want {
+		t.Fatalf("BackupDir=%q want=%q", cfg.BackupDir, want)
+	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -66,6 +72,10 @@ func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(`{
   "httpAddr": "127.0.0.1:19000",
   "dataDir": "state",
+	  "backupEnabled": false,
+	  "backupDir": "database-backups",
+	  "backupIntervalHours": 12,
+	  "backupRetention": 7,
   "cpaUpstreamUrl": "http://cpa.local:8317",
   "managementKeyFile": "secret.txt",
   "collectorMode": "http",
@@ -129,6 +139,12 @@ func TestLoadReadsConfigAndResolvesRelativePaths(t *testing.T) {
 	if !cfg.AccountActionsAutoDisable {
 		t.Fatal("AccountActionsAutoDisable = false")
 	}
+	if cfg.BackupEnabled || cfg.BackupInterval != 12*time.Hour || cfg.BackupRetention != 7 {
+		t.Fatalf("文件备份配置=%#v", cfg)
+	}
+	if want := filepath.Join(dir, "database-backups"); cfg.BackupDir != want {
+		t.Fatalf("BackupDir=%q want=%q", cfg.BackupDir, want)
+	}
 }
 
 func TestLoadEnvOverridesConfig(t *testing.T) {
@@ -150,6 +166,10 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	t.Setenv("USAGE_BATCH_SIZE", "12")
 	t.Setenv("CPA_MANAGER_PPROF_ADDR", "[::1]:6061")
 	t.Setenv("USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED", "false")
+	t.Setenv("CPA_MANAGER_BACKUP_ENABLED", "true")
+	t.Setenv("CPA_MANAGER_BACKUP_DIR", filepath.Join(dir, "env-backups"))
+	t.Setenv("CPA_MANAGER_BACKUP_INTERVAL_HOURS", "6")
+	t.Setenv("CPA_MANAGER_BACKUP_RETENTION", "5")
 
 	cfg, err := Load()
 	if err != nil {
@@ -172,6 +192,9 @@ func TestLoadEnvOverridesConfig(t *testing.T) {
 	}
 	if cfg.DashboardHourlyRollupEnabled {
 		t.Fatal("DashboardHourlyRollupEnabled = true, want false")
+	}
+	if !cfg.BackupEnabled || cfg.BackupDir != filepath.Join(dir, "env-backups") || cfg.BackupInterval != 6*time.Hour || cfg.BackupRetention != 5 {
+		t.Fatalf("环境变量备份配置=%#v", cfg)
 	}
 }
 
@@ -219,6 +242,10 @@ func clearConfigEnv(t *testing.T) {
 		"USAGE_ACCOUNT_ACTIONS_ENABLED",
 		"USAGE_ACCOUNT_ACTIONS_AUTO_DISABLE",
 		"USAGE_DASHBOARD_HOURLY_ROLLUP_ENABLED",
+		"CPA_MANAGER_BACKUP_ENABLED",
+		"CPA_MANAGER_BACKUP_DIR",
+		"CPA_MANAGER_BACKUP_INTERVAL_HOURS",
+		"CPA_MANAGER_BACKUP_RETENTION",
 		"PANEL_PATH",
 	} {
 		t.Setenv(key, "")

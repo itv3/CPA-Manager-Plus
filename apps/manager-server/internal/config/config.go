@@ -27,6 +27,10 @@ type Config struct {
 	AdminKey                     string
 	DataKey                      string
 	DataKeyPath                  string
+	BackupEnabled                bool
+	BackupDir                    string
+	BackupInterval               time.Duration
+	BackupRetention              int
 	CollectorMode                string
 	Queue                        string
 	PopSide                      string
@@ -59,6 +63,10 @@ type fileConfig struct {
 	AdminKeyFile              string   `json:"adminKeyFile,omitempty"`
 	DataKeyFile               string   `json:"dataKeyFile,omitempty"`
 	DataKeyPath               string   `json:"dataKeyPath,omitempty"`
+	BackupEnabled             *bool    `json:"backupEnabled,omitempty"`
+	BackupDir                 string   `json:"backupDir,omitempty"`
+	BackupIntervalHours       int      `json:"backupIntervalHours,omitempty"`
+	BackupRetention           int      `json:"backupRetention,omitempty"`
 	CollectorMode             string   `json:"collectorMode,omitempty"`
 	Queue                     string   `json:"queue,omitempty"`
 	PopSide                   string   `json:"popSide,omitempty"`
@@ -119,6 +127,10 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 	if dataKeyPath == "" {
 		dataKeyPath = filepath.Join(dataDir, "data.key")
 	}
+	backupDir := resolveConfigPath(cfgFile.BackupDir, cfgDir)
+	if backupDir == "" {
+		backupDir = filepath.Join(dataDir, "backups")
+	}
 
 	return Config{
 		HTTPAddr:                     env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
@@ -129,6 +141,10 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		AdminKey:                     readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
 		DataKey:                      readSecret("CPA_MANAGER_DATA_KEY", "CPA_MANAGER_DATA_KEY_FILE", dataKeyFile),
 		DataKeyPath:                  env("CPA_MANAGER_DATA_KEY_PATH", dataKeyPath),
+		BackupEnabled:                envBool("CPA_MANAGER_BACKUP_ENABLED", boolPointerFallback(cfgFile.BackupEnabled, true)),
+		BackupDir:                    env("CPA_MANAGER_BACKUP_DIR", backupDir),
+		BackupInterval:               time.Duration(envInt("CPA_MANAGER_BACKUP_INTERVAL_HOURS", intFallback(cfgFile.BackupIntervalHours, 24))) * time.Hour,
+		BackupRetention:              envInt("CPA_MANAGER_BACKUP_RETENTION", intFallback(cfgFile.BackupRetention, 14)),
 		CollectorMode:                normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
 		Queue:                        env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
 		PopSide:                      env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
@@ -282,6 +298,13 @@ func intFallback(value int, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func boolPointerFallback(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func sliceFallback(value []string, fallback []string) []string {

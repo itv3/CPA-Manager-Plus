@@ -41,6 +41,7 @@ import { isLogsRouteAvailable } from '@/features/logs/logFeatureAvailability';
 import { ensureRouteBasePathname, isDemoMode } from '@/features/demo/demoMode';
 import { useAuthStore, useConfigStore } from '@/stores';
 import codexInspectionStyles from '@/features/monitoring/CodexInspectionPage.module.scss';
+import { LEGACY_ACCOUNT_ROUTE_PATHS } from './legacyAccountRoutes';
 
 type FeatureKey = 'requestMonitoring' | 'modelPrices' | 'serverCodexInspection';
 
@@ -187,19 +188,25 @@ const mainRoutes: RouteObject[] = [
     ],
   },
   {
-    path: '/ai-providers/openai/:index',
+    path: LEGACY_ACCOUNT_ROUTE_PATHS.aiProvidersOpenAI,
     element: <AiProvidersOpenAIEditLayout />,
     children: [
       { index: true, element: <AiProvidersOpenAIEditPage /> },
       { path: 'models', element: <AiProvidersOpenAIModelsPage /> },
     ],
   },
-  { path: '/ai-providers', element: <AiProvidersPage /> },
+  { path: LEGACY_ACCOUNT_ROUTE_PATHS.aiProviders, element: <AiProvidersPage /> },
   { path: '/ai-providers/*', element: <AiProvidersPage /> },
-  { path: '/auth-files', element: <AuthFilesPage /> },
-  { path: '/auth-files/oauth-excluded', element: <AuthFilesOAuthExcludedEditPage /> },
-  { path: '/auth-files/oauth-model-alias', element: <AuthFilesOAuthModelAliasEditPage /> },
-  { path: '/oauth', element: <OAuthPage /> },
+  { path: LEGACY_ACCOUNT_ROUTE_PATHS.authFiles, element: <AuthFilesPage /> },
+  {
+    path: LEGACY_ACCOUNT_ROUTE_PATHS.authFilesOAuthExcluded,
+    element: <AuthFilesOAuthExcludedEditPage />,
+  },
+  {
+    path: LEGACY_ACCOUNT_ROUTE_PATHS.authFilesOAuthModelAlias,
+    element: <AuthFilesOAuthModelAliasEditPage />,
+  },
+  { path: LEGACY_ACCOUNT_ROUTE_PATHS.oauth, element: <OAuthPage /> },
   { path: '/quota', element: <QuotaPage /> },
   {
     path: '/usage-analytics',
@@ -317,13 +324,7 @@ const ensureRouteLocationBase = (
   };
 };
 
-export function MainRoutes({
-  location,
-  routeBase,
-}: {
-  location?: Location;
-  routeBase?: string;
-}) {
+export function MainRoutes({ location, routeBase }: { location?: Location; routeBase?: string }) {
   const routeLocation = useMemo(
     () => ensureRouteLocationBase(location, routeBase),
     [location, routeBase]

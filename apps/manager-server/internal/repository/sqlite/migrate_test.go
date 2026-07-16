@@ -2,9 +2,37 @@ package sqlite
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestMigrateVersionsLegacyDatabaseAndRejectsFutureSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schema-version.sqlite")
+	db, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("迁移旧版本数据库：%v", err)
+	}
+	version, err := SchemaVersion(db)
+	if err != nil || version != CurrentSchemaVersion {
+		t.Fatalf("迁移后版本=%d err=%v", version, err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`pragma user_version = %d`, CurrentSchemaVersion+1)); err != nil {
+		t.Fatalf("写入未来版本：%v", err)
+	}
+	if err := Migrate(db); err == nil || !strings.Contains(err.Error(), "unsupported manager sqlite schema version") {
+		t.Fatalf("未来版本迁移错误=%v", err)
+	}
+	version, err = SchemaVersion(db)
+	if err != nil || version != CurrentSchemaVersion+1 {
+		t.Fatalf("拒绝后版本被改写：version=%d err=%v", version, err)
+	}
+}
 
 func TestUsageDataMigrationInitialStateMatchesExistingUsageData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage-data-migration.sqlite")

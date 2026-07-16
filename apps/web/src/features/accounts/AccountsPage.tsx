@@ -38,6 +38,7 @@ import {
   usageRequestOptions,
   type UsageRefreshTrigger,
 } from './accountFormUtils';
+import { advancedAccountPath } from './accountNavigation';
 import styles from './AccountsPage.module.scss';
 
 const AUTO_REFRESH_INTERVAL_MS = 60_000;
@@ -643,10 +644,7 @@ export function AccountsPage() {
               </thead>
               <tbody>
                 {rows.map((item) => {
-                  const advancedPath =
-                    item.authType === 'oauth' || item.authType === 'vertex'
-                      ? '/auth-files'
-                      : '/ai-providers';
+                  const advancedPath = advancedAccountPath(item);
                   return (
                     <tr key={item.id}>
                       <td className={styles.selectionColumn}>

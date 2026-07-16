@@ -51,6 +51,7 @@ type AccountActionCandidateUpsert = model.AccountActionCandidateUpsert
 type AutomationSettings = model.AutomationSettings
 type DataMigrationState = datamigration.State
 type DataMigrationBatchResult = datamigration.BatchResult
+type DatabaseBackupResult = sqliterepo.BackupResult
 
 var DefaultCodexInspectionConfig = model.DefaultCodexInspectionConfig
 var NormalizeCodexInspectionConfig = model.NormalizeCodexInspectionConfig
@@ -130,6 +131,14 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) BackupDatabase(ctx context.Context, directory string, kind string, retention int) (DatabaseBackupResult, error) {
+	return sqliterepo.CreateBackup(ctx, s.db, sqliterepo.BackupOptions{
+		Directory: directory,
+		Kind:      kind,
+		Retention: retention,
+	})
 }
 
 func (s *Store) SaveSetup(ctx context.Context, setup Setup) error {

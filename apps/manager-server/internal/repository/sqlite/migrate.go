@@ -10,9 +10,17 @@ import (
 const (
 	dashboardHourlyRollupFormatVersionKey = "usage_dashboard_hourly_format_version"
 	dashboardHourlyRollupFormatVersion    = "2"
+	CurrentSchemaVersion                  = 1
 )
 
 func Migrate(db *sql.DB) error {
+	schemaVersion, err := SchemaVersion(db)
+	if err != nil {
+		return err
+	}
+	if schemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("unsupported manager sqlite schema version %d; current version is %d", schemaVersion, CurrentSchemaVersion)
+	}
 	statements := []string{
 		`pragma journal_mode = WAL`,
 		`pragma synchronous = FULL`,
@@ -368,7 +376,25 @@ func Migrate(db *sql.DB) error {
 	if err := ensureModelPriceColumns(db); err != nil {
 		return err
 	}
-	return ensureProAccountTables(db)
+	if err := ensureProAccountTables(db); err != nil {
+		return err
+	}
+	_, err = db.Exec(fmt.Sprintf(`pragma user_version = %d`, CurrentSchemaVersion))
+	return err
+}
+
+func SchemaVersion(db *sql.DB) (int, error) {
+	if db == nil {
+		return 0, errors.New("manager sqlite database is nil")
+	}
+	var version int
+	if err := db.QueryRow(`pragma user_version`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("read manager sqlite schema version: %w", err)
+	}
+	if version < 0 {
+		return 0, fmt.Errorf("invalid manager sqlite schema version %d", version)
+	}
+	return version, nil
 }
 
 func ensureDashboardHourlyRollupFormatVersion(db *sql.DB) error {

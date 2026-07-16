@@ -17,8 +17,10 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/adminreset"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/databasebackup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/httpapi"
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	bootstrapservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	collectorservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
@@ -35,6 +37,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "backup-db", "verify-db-backup", "restore-db":
+			if err := databasebackup.Run(context.Background(), os.Args[1], os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("database maintenance: %v", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 	runServer()
@@ -44,6 +52,21 @@ func runServer() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	if cfg.BackupEnabled {
+		backup, created, backupErr := sqliterepo.CreateMigrationBackupIfNeeded(context.Background(), cfg.DBPath, sqliterepo.BackupOptions{
+			Directory: cfg.BackupDir,
+			Retention: cfg.BackupRetention,
+		})
+		if backupErr != nil && backup.DatabasePath == "" {
+			log.Fatalf("create pre-migration sqlite backup: %v", backupErr)
+		}
+		if backupErr != nil {
+			log.Printf("SQLite 迁移前备份已创建，但保留策略执行失败: %v", backupErr)
+		}
+		if created {
+			log.Printf("SQLite 迁移前备份完成: %s", backup.DatabasePath)
+		}
 	}
 	dataKey, dataKeyCreated, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
 	if err != nil {
@@ -80,6 +103,9 @@ func runServer() {
 	collectorWorker := worker.NewCollectorWorker(cfg, db, collectorService)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.BackupEnabled {
+		worker.NewDatabaseBackupWorker(db, cfg.BackupDir, cfg.BackupRetention, cfg.BackupInterval).Start(ctx)
+	}
 
 	serverApp := httpapi.New(cfg, db, manager)
 	proAccountRecoveryWorker := worker.NewProAccountRecoveryWorker(
