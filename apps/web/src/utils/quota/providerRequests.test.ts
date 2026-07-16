@@ -278,6 +278,286 @@ describe('fetchClaudeQuota', () => {
     });
   });
 
+  it('restores base windows from a limits-only response before scoped weekly rows', async () => {
+    const sessionResetAt = '2026-07-01T10:00:00Z';
+    const weeklyResetAt = '2026-07-07T10:00:00Z';
+    const scopedResetAt = '2026-07-08T21:00:00+00:00';
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          limits: [
+            {
+              kind: 'session',
+              group: 'session',
+              percent: '18',
+              resets_at: sessionResetAt,
+              is_active: true,
+            },
+            {
+              kind: 'weekly_all',
+              group: 'weekly',
+              percent: 125,
+              resetsAt: weeklyResetAt,
+              scope: null,
+              isActive: true,
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 42,
+              reset_at: scopedResetAt,
+              scope: { model: { display_name: 'Fable 5 Max' } },
+              is_active: true,
+            },
+          ],
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows).toEqual([
+      {
+        id: 'five-hour',
+        label: 'claude_quota.five_hour',
+        labelKey: 'claude_quota.five_hour',
+        usedPercent: 18,
+        resetLabel: formatQuotaResetTime(sessionResetAt),
+      },
+      {
+        id: 'seven-day',
+        label: 'claude_quota.seven_day',
+        labelKey: 'claude_quota.seven_day',
+        usedPercent: 125,
+        resetLabel: formatQuotaResetTime(weeklyResetAt),
+      },
+      {
+        id: 'weekly-scoped-fable%205%20max',
+        label: 'Fable 5 Max',
+        usedPercent: 42,
+        resetLabel: formatQuotaResetTime(scopedResetAt),
+      },
+    ]);
+  });
+
+  it('fills only a missing base window and keeps top-level values authoritative', async () => {
+    const topLevelResetAt = '2026-07-01T10:00:00Z';
+    const fallbackResetAt = '2026-07-07T10:00:00Z';
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          five_hour: {
+            utilization: 9,
+            resets_at: topLevelResetAt,
+          },
+          limits: [
+            {
+              kind: 'session',
+              group: 'session',
+              percent: 99,
+              resets_at: '2026-07-02T10:00:00Z',
+              scope: null,
+            },
+            {
+              kind: 'weekly',
+              group: 'weekly',
+              percent: 41,
+              resets_at: fallbackResetAt,
+            },
+            {
+              kind: 'weekly_all',
+              group: 'weekly',
+              percent: 88,
+              resets_at: '2026-07-08T10:00:00Z',
+              scope: null,
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {},
+      });
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows).toEqual([
+      {
+        id: 'five-hour',
+        label: 'claude_quota.five_hour',
+        labelKey: 'claude_quota.five_hour',
+        usedPercent: 9,
+        resetLabel: formatQuotaResetTime(topLevelResetAt),
+      },
+      {
+        id: 'seven-day',
+        label: 'claude_quota.seven_day',
+        labelKey: 'claude_quota.seven_day',
+        usedPercent: 41,
+        resetLabel: formatQuotaResetTime(fallbackResetAt),
+      },
+    ]);
+  });
+
+  it('uses valid limits fallbacks when top-level windows contain no displayable data', async () => {
+    const sessionResetAt = '2026-07-01T10:00:00Z';
+    const weeklyResetAt = '2026-07-07T10:00:00Z';
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          five_hour: {
+            utilization: 'bad',
+            resets_at: 'not-a-date',
+          },
+          seven_day: {
+            utilization: null,
+            resets_at: '',
+          },
+          limits: [
+            {
+              kind: 'session',
+              group: 'session',
+              percent: 17,
+              resets_at: sessionResetAt,
+              scope: null,
+            },
+            {
+              kind: 'weekly_all',
+              group: 'weekly',
+              percent: 29,
+              resets_at: weeklyResetAt,
+              scope: null,
+            },
+          ],
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows).toEqual([
+      {
+        id: 'five-hour',
+        label: 'claude_quota.five_hour',
+        labelKey: 'claude_quota.five_hour',
+        usedPercent: 17,
+        resetLabel: formatQuotaResetTime(sessionResetAt),
+      },
+      {
+        id: 'seven-day',
+        label: 'claude_quota.seven_day',
+        labelKey: 'claude_quota.seven_day',
+        usedPercent: 29,
+        resetLabel: formatQuotaResetTime(weeklyResetAt),
+      },
+    ]);
+  });
+
+  it('skips unsafe base fallback candidates without losing valid scoped limits', async () => {
+    const scopedResetAt = '2026-07-08T21:00:00+00:00';
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          limits: [
+            {
+              kind: 'session',
+              group: 'session',
+              percent: 10,
+              resets_at: '2026-07-01T10:00:00Z',
+              scope: { model: { display_name: 'Scoped session' } },
+            },
+            {
+              kind: 'session',
+              group: 'session',
+              percent: 20,
+              resets_at: '2026-07-01T10:00:00Z',
+              is_active: false,
+            },
+            {
+              kind: 'weekly_all',
+              group: 'weekly',
+              percent: null,
+              resets_at: 'not-a-date',
+              scope: null,
+            },
+            {
+              kind: 'monthly',
+              group: 'monthly',
+              percent: 30,
+              resets_at: '2026-08-01T10:00:00Z',
+              scope: null,
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 42,
+              resets_at: scopedResetAt,
+              scope: { model: { display_name: 'Healthy scoped model' } },
+            },
+          ],
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows).toEqual([
+      {
+        id: 'weekly-scoped-healthy%20scoped%20model',
+        label: 'Healthy scoped model',
+        usedPercent: 42,
+        resetLabel: formatQuotaResetTime(scopedResetAt),
+      },
+    ]);
+  });
+
   it('preserves over-limit scoped percentages for the renderer to clamp', async () => {
     mocks.request
       .mockResolvedValueOnce({
@@ -346,6 +626,13 @@ describe('fetchClaudeQuota', () => {
               group: 'weekly',
               percent: 34,
               resets_at: '2026-07-07T10:00:00Z',
+              scope: null,
+            },
+            {
+              kind: 'weekly_all',
+              group: 'weekly',
+              percent: 35,
+              resets_at: '2026-07-08T10:00:00Z',
               scope: null,
             },
             {

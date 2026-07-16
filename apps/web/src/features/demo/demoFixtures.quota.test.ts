@@ -4,21 +4,31 @@ import { getDemoApiCallResult } from './demoFixtures';
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
 describe('Claude quota demo fixtures', () => {
-  it('provides multiple model-scoped weekly limits for the team account', () => {
+  it('provides limits-only base quotas plus multiple fictional scoped models', () => {
     const result = getDemoApiCallResult({
       authIndex: 'claude-team-01',
       url: CLAUDE_USAGE_URL,
     });
 
     expect(result.body).toMatchObject({
-      five_hour: { utilization: 44 },
-      seven_day: { utilization: 31 },
       limits: [
+        {
+          kind: 'session',
+          group: 'session',
+          percent: 44,
+          scope: null,
+        },
+        {
+          kind: 'weekly_all',
+          group: 'weekly',
+          percent: 31,
+          scope: null,
+        },
         {
           kind: 'weekly_scoped',
           group: 'weekly',
           percent: 78,
-          scope: { model: { display_name: 'Fable 5 Max' } },
+          scope: { model: { display_name: 'Demo Model A' } },
         },
         {
           kind: 'model_scoped',
@@ -28,6 +38,8 @@ describe('Claude quota demo fixtures', () => {
         },
       ],
     });
+    expect(result.body).not.toHaveProperty('five_hour');
+    expect(result.body).not.toHaveProperty('seven_day');
   });
 
   it('keeps the research account on the legacy payload without limits', () => {

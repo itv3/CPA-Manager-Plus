@@ -2841,15 +2841,29 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
     body =
       authIndex === 'claude-team-01'
         ? {
-            five_hour: fiveHour,
-            seven_day: sevenDay,
             limits: [
+              {
+                kind: 'session',
+                group: 'session',
+                percent: fiveHour.utilization,
+                resets_at: fiveHour.resets_at,
+                scope: null,
+                is_active: true,
+              },
+              {
+                kind: 'weekly_all',
+                group: 'weekly',
+                percent: sevenDay.utilization,
+                resets_at: sevenDay.resets_at,
+                scope: null,
+                is_active: true,
+              },
               {
                 kind: 'weekly_scoped',
                 group: 'weekly',
                 percent: 78,
                 resets_at: new Date(now() + 4 * day).toISOString(),
-                scope: { model: { display_name: 'Fable 5 Max' } },
+                scope: { model: { display_name: 'Demo Model A' } },
                 is_active: true,
               },
               {

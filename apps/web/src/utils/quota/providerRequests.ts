@@ -475,6 +475,38 @@ const isClaudeWeeklyScopedLimit = (limit: Record<string, unknown>): boolean => {
   return kind === 'model_scoped' && group === 'weekly';
 };
 
+type ClaudeBaseLimitWindowId = 'five-hour' | 'seven-day';
+
+const resolveClaudeBaseLimitWindowId = (
+  limit: Record<string, unknown>
+): ClaudeBaseLimitWindowId | null => {
+  const kind = normalizeClaudeLimitToken(limit.kind);
+  const group = normalizeClaudeLimitToken(limit.group);
+
+  if (kind === 'session' && (!group || group === 'session')) return 'five-hour';
+  if (
+    (kind === 'weekly' || kind === 'weekly_all') &&
+    (!group || group === 'weekly' || group === 'weekly_all')
+  ) {
+    return 'seven-day';
+  }
+  return null;
+};
+
+type ClaudeLimitWindowValues = Pick<ClaudeQuotaWindow, 'usedPercent' | 'resetLabel'>;
+
+const parseClaudeLimitWindowValues = (
+  limit: Record<string, unknown>
+): ClaudeLimitWindowValues | null => {
+  const rawPercent = normalizeNumberValue(limit.percent);
+  const usedPercent = rawPercent !== null && rawPercent >= 0 ? rawPercent : null;
+  const rawResetAt = limit.resets_at ?? limit.resetsAt ?? limit.reset_at ?? limit.resetAt;
+  const resetAt = typeof rawResetAt === 'string' ? rawResetAt.trim() : '';
+  const resetLabel = formatQuotaResetTime(resetAt || undefined);
+  if (usedPercent === null && resetLabel === '-') return null;
+  return { usedPercent, resetLabel };
+};
+
 const findClaudeModelDisplayName = (value: unknown, depth = 0): string | null => {
   if (!isRecord(value)) return null;
 
@@ -517,6 +549,31 @@ type ClaudeScopedWeeklyWindowEntry = {
   window: ClaudeQuotaWindow;
 };
 
+const buildClaudeBaseLimitFallbacks = (
+  payload: ClaudeUsagePayload
+): Map<ClaudeBaseLimitWindowId, ClaudeLimitWindowValues> => {
+  const fallbacks = new Map<ClaudeBaseLimitWindowId, ClaudeLimitWindowValues>();
+  if (!Array.isArray(payload.limits)) return fallbacks;
+
+  for (const rawLimit of payload.limits) {
+    try {
+      if (!isRecord(rawLimit)) continue;
+      if (normalizeFlagValue(rawLimit.is_active ?? rawLimit.isActive) === false) continue;
+      if (rawLimit.scope !== undefined && rawLimit.scope !== null) continue;
+
+      const windowId = resolveClaudeBaseLimitWindowId(rawLimit);
+      if (!windowId || fallbacks.has(windowId)) continue;
+      const values = parseClaudeLimitWindowValues(rawLimit);
+      if (!values) continue;
+      fallbacks.set(windowId, values);
+    } catch {
+      continue;
+    }
+  }
+
+  return fallbacks;
+};
+
 const buildClaudeScopedWeeklyWindows = (payload: ClaudeUsagePayload): ClaudeQuotaWindow[] => {
   if (!Array.isArray(payload.limits)) return [];
 
@@ -532,13 +589,8 @@ const buildClaudeScopedWeeklyWindows = (payload: ClaudeUsagePayload): ClaudeQuot
       const label = findClaudeModelDisplayName(model);
       if (!label) continue;
 
-      const rawPercent = normalizeNumberValue(rawLimit.percent);
-      const usedPercent = rawPercent !== null && rawPercent >= 0 ? rawPercent : null;
-      const rawResetAt =
-        rawLimit.resets_at ?? rawLimit.resetsAt ?? rawLimit.reset_at ?? rawLimit.resetAt;
-      const resetAt = typeof rawResetAt === 'string' ? rawResetAt.trim() : '';
-      const resetLabel = formatQuotaResetTime(resetAt || undefined);
-      if (usedPercent === null && resetLabel === '-') continue;
+      const values = parseClaudeLimitWindowValues(rawLimit);
+      if (!values) continue;
 
       const rawModelId = model.id ?? model.model_id ?? model.modelId;
       const modelId =
@@ -558,8 +610,7 @@ const buildClaudeScopedWeeklyWindows = (payload: ClaudeUsagePayload): ClaudeQuot
         window: {
           id: `weekly-scoped-${idPart}`,
           label,
-          usedPercent,
-          resetLabel,
+          ...values,
         },
       });
     } catch {
@@ -586,21 +637,37 @@ const buildClaudeQuotaWindows = (
   t: TFunction
 ): ClaudeQuotaWindow[] => {
   const windows: ClaudeQuotaWindow[] = [];
+  const baseLimitFallbacks = buildClaudeBaseLimitFallbacks(payload);
   const scopedWeeklyWindows = buildClaudeScopedWeeklyWindows(payload);
 
   for (const { key, id, labelKey } of CLAUDE_USAGE_WINDOW_KEYS) {
     const window = payload[key as keyof ClaudeUsagePayload];
+    let renderedTopLevelWindow = false;
     if (window && typeof window === 'object' && 'utilization' in window) {
       const typedWindow = window as { utilization: number; resets_at: string };
       const usedPercent = normalizeNumberValue(typedWindow.utilization);
       const resetLabel = formatQuotaResetTime(typedWindow.resets_at);
-      windows.push({
-        id,
-        label: t(labelKey),
-        labelKey,
-        usedPercent,
-        resetLabel,
-      });
+      if (usedPercent !== null || resetLabel !== '-') {
+        windows.push({
+          id,
+          label: t(labelKey),
+          labelKey,
+          usedPercent,
+          resetLabel,
+        });
+        renderedTopLevelWindow = true;
+      }
+    }
+    if (!renderedTopLevelWindow && (id === 'five-hour' || id === 'seven-day')) {
+      const fallback = baseLimitFallbacks.get(id);
+      if (fallback) {
+        windows.push({
+          id,
+          label: t(labelKey),
+          labelKey,
+          ...fallback,
+        });
+      }
     }
     if (key === 'seven_day') {
       windows.push(...scopedWeeklyWindows);
