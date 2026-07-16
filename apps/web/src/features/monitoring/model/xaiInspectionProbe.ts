@@ -3,7 +3,9 @@ import type { XaiBillingSummary } from '@/types';
 import { probeXaiBilling } from '@/utils/quota/providerRequests';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import { XaiProbeError, classifyXaiProbe, parseXaiErrorEnvelope } from '@/utils/quota/xaiErrors';
+import { formatXaiProbeIssue } from '@/utils/quota/xaiPresentation';
 import type {
+  CodexInspectionAction,
   CodexInspectionAccount,
   CodexInspectionLogLevel,
   CodexInspectionQuotaWindow,
@@ -15,6 +17,22 @@ type LogHandler = (level: CodexInspectionLogLevel, message: string) => void;
 
 const MAX_INSPECTION_ERROR_DETAIL_LENGTH = 2048;
 const identityT = ((key: string) => key) as TFunction;
+
+const formatXaiInspectionAction = (action: CodexInspectionAction, t: TFunction) => {
+  switch (action) {
+    case 'delete':
+      return t('monitoring.codex_inspection_action_delete');
+    case 'disable':
+      return t('monitoring.codex_inspection_action_disable');
+    case 'enable':
+      return t('monitoring.codex_inspection_action_enable');
+    case 'reauth':
+      return t('monitoring.codex_inspection_action_reauth');
+    case 'keep':
+    default:
+      return t('monitoring.codex_inspection_action_keep');
+  }
+};
 
 const truncateDetail = (value: unknown) => {
   const text = String(value ?? '').trim();
@@ -213,7 +231,7 @@ export const inspectSingleXaiAccount = async (
       level,
       t('monitoring.xai_inspection_log_result', {
         account: account.displayAccount,
-        action,
+        action: formatXaiInspectionAction(action, t),
         percent: percentText,
       })
     );
@@ -252,8 +270,10 @@ export const inspectSingleXaiAccount = async (
         level,
         t('monitoring.xai_inspection_log_classified', {
           account: account.displayAccount,
-          action,
-          classification: decision.classification,
+          action: formatXaiInspectionAction(action, t),
+          reason:
+            formatXaiProbeIssue(decision.classification, t) ??
+            t('xai_quota.diagnostic_unknown'),
         })
       );
       return {

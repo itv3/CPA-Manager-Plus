@@ -10,6 +10,7 @@ import {
   type CodexInspectionStoredLogEntry,
 } from '@/features/monitoring/codexInspection';
 import type { CodexInspectionResult } from '@/services/api/usageService';
+import { formatXaiProbeIssue } from '@/utils/quota/xaiPresentation';
 
 export type RunStatus = 'idle' | 'running' | 'paused' | 'success' | 'error';
 
@@ -136,6 +137,25 @@ export const formatActionLabel = (action: CodexInspectionAction, t: TFunction) =
     default:
       return t('monitoring.codex_inspection_action_keep');
   }
+};
+
+const isCodexInspectionActionValue = (value: unknown): value is CodexInspectionAction =>
+  value === 'delete' ||
+  value === 'disable' ||
+  value === 'enable' ||
+  value === 'reauth' ||
+  value === 'keep';
+
+export const formatServerCodexInspectionLogDetail = (detail: unknown, t: TFunction): string => {
+  if (typeof detail === 'string') return detail;
+  if (detail === null || detail === undefined) return '';
+  if (typeof detail === 'object' && !Array.isArray(detail)) {
+    const record = detail as Record<string, unknown>;
+    if (isCodexInspectionActionValue(record.action)) {
+      return JSON.stringify({ ...record, action: formatActionLabel(record.action, t) });
+    }
+  }
+  return JSON.stringify(detail) ?? String(detail);
 };
 
 export const isServerCodexInspectionAction = (
@@ -371,15 +391,33 @@ export const filterInspectionResults = (
 export const summarizeInspectionError = (
   item: Pick<
     CodexInspectionResultItem,
-    'action' | 'statusCode' | 'errorKind' | 'error' | 'errorDetail'
+    'provider' | 'action' | 'statusCode' | 'errorKind' | 'error' | 'errorDetail'
   >,
   t: TFunction
 ) => {
   if (item.action === 'reauth' || item.statusCode === 401) {
     return t('monitoring.codex_inspection_error_summary_reauth');
   }
+  if (item.errorKind === 'billing_healthy' || item.errorKind === 'inference_healthy') {
+    return '';
+  }
   if (item.errorKind) {
-    return t('monitoring.codex_inspection_error_summary_kind', { kind: item.errorKind });
+    const xaiIssue = item.provider === 'xai' ? formatXaiProbeIssue(item.errorKind, t) : null;
+    if (xaiIssue) return xaiIssue;
+    switch (item.errorKind) {
+      case 'http_status':
+        return t('monitoring.codex_inspection_error_summary_http_status');
+      case 'missing_status':
+        return t('monitoring.codex_inspection_error_summary_missing_status');
+      case 'request_error':
+        return t('monitoring.codex_inspection_error_summary_request_error');
+      case 'missing_auth_index':
+        return t('xai_quota.diagnostic_missing_auth_index');
+      case 'quota':
+        return t('monitoring.codex_inspection_error_summary_quota');
+      default:
+        return t('monitoring.codex_inspection_error_summary_response');
+    }
   }
   const raw = item.error || item.errorDetail;
   if (!raw) return '';

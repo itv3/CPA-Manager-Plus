@@ -499,7 +499,30 @@ describe('auth file Codex status helpers', () => {
     expect(quotaStatus.badges.map((badge) => badge.kind)).toContain('observed_quota');
     expect(reauthStatus.badges.map((badge) => badge.kind)).toContain('reauth');
     expect(partialStatus.badges.map((badge) => badge.kind)).toContain('observed_error');
+    expect(partialStatus.badges.find((badge) => badge.kind === 'observed_error')).toMatchObject({
+      titleKey: 'xai_quota.diagnostic_billing_partial',
+      defaultTitle: 'The latest xAI inspection found an issue. Review the inspection details.',
+    });
     expect(authFileMatchesCodexStatusFilter(quotaStatus, 'quota_limited')).toBe(false);
+  });
+
+  it('does not expose unknown xAI inspection classifications in auth file badges', () => {
+    const file: AuthFileItem = { name: 'xai-main.json', type: 'xai', authIndex: 'xai-main' };
+    const status = getAuthFileCodexStatus(file, undefined, {
+      fileName: file.name,
+      provider: 'xai',
+      authIndex: file.authIndex,
+      action: 'keep',
+      isQuota: false,
+      errorKind: 'future_xai_failure',
+    });
+
+    const badge = status.badges.find((item) => item.kind === 'observed_error');
+    expect(badge).toMatchObject({
+      titleKey: 'auth_files.provider_inspection_badge_error_title',
+      labelParams: { provider: 'xAI' },
+    });
+    expect(JSON.stringify(badge)).not.toContain('future_xai_failure');
   });
 
   it('indexes inspection results by file name and auth index', () => {

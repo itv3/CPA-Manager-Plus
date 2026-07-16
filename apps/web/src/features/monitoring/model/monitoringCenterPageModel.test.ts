@@ -67,6 +67,10 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'xai_quota.pay_as_you_go_label': 'Pay-as-you-go',
     'xai_quota.on_demand_cap': 'On-demand cap',
     'xai_quota.usage_amount': '{{remaining}} / {{limit}} remaining',
+    'xai_quota.partial_data': 'Some billing data is unavailable. Reason: {{details}}',
+    'xai_quota.partial_unknown': 'The cause could not be determined',
+    'xai_quota.diagnostic_protocol_changed':
+      'The billing endpoint returned data that cannot currently be recognized',
   };
   let value = copy[key] ?? key;
   Object.entries(options ?? {}).forEach(([name, replacement]) => {
@@ -392,11 +396,7 @@ describe('monitoringCenterPageModel account quota', () => {
 
     expect(merged).toMatchObject({
       planType: 'plus',
-      metaLabels: [
-        'Codex Quota',
-        'Plan: Plus',
-        'Observed from latest usage response headers',
-      ],
+      metaLabels: ['Codex Quota', 'Plan: Plus', 'Observed from latest usage response headers'],
       windows: [
         {
           id: 'monthly',
@@ -1025,5 +1025,44 @@ describe('monitoringCenterPageModel account quota', () => {
         },
       ],
     });
+  });
+
+  it('maps partial xAI billing diagnostics to user-facing explanations', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'monthly',
+      usagePercent: null,
+      productUsage: [],
+      monthlyLimitCents: 10_000,
+      usedCents: 2_500,
+      includedUsedCents: 2_500,
+      onDemandCapCents: null,
+      onDemandUsedCents: null,
+      onDemandUsedPercent: null,
+      usedPercent: 25,
+      partial: true,
+      diagnostics: [
+        {
+          classification: 'protocol_changed',
+          statusCode: 200,
+          message: 'xAI billing response schema changed',
+        },
+      ],
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({
+        provider: 'xai',
+        authIndex: '3',
+        fileName: 'xai.json',
+      }),
+      t
+    );
+
+    const metaLabels = entry.metaLabels ?? [];
+    expect(metaLabels).toContain(
+      'Some billing data is unavailable. Reason: The billing endpoint returned data that cannot currently be recognized'
+    );
+    expect(metaLabels.join(' ')).not.toContain('protocol_changed');
+    expect(metaLabels.join(' ')).not.toContain('HTTP 200');
   });
 });

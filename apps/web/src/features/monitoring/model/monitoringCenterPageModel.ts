@@ -55,6 +55,7 @@ import {
   getHeaderSnapshotUsedPercent,
   hasUsageHeaderQuotaSignal,
 } from '@/utils/usageHeaderSnapshots';
+import { formatXaiBillingDiagnostics } from '@/utils/quota/xaiPresentation';
 import {
   calculateCacheHitRateFromTotals,
   formatCompactNumber,
@@ -1329,14 +1330,7 @@ export const requestAccountQuota = async (
       if (billing.partial) {
         metaLabels.push(
           t('xai_quota.partial_data', {
-            details:
-              billing.diagnostics
-                ?.map((item) =>
-                  item.statusCode
-                    ? `${item.classification} (HTTP ${item.statusCode})`
-                    : item.classification
-                )
-                .join(', ') || t('xai_quota.partial_unknown'),
+            details: formatXaiBillingDiagnostics(billing.diagnostics, t),
           })
         );
       }

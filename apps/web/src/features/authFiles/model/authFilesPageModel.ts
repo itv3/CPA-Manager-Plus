@@ -6,6 +6,7 @@ import {
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
 } from '@/utils/quota';
+import { getXaiProbeIssueKey } from '@/utils/quota/xaiPresentation';
 import {
   getHeaderSnapshotErrorCode,
   getHeaderSnapshotErrorKind,
@@ -656,14 +657,15 @@ export const getAuthFileCodexStatus = (
     inspectionErrorKind !== 'billing_healthy' &&
     !needsReauth
   ) {
+    const issueTitleKey = getXaiProbeIssueKey(inspectionErrorKind);
     badges.push({
       kind: 'observed_error',
       tone: 'info',
       labelKey: 'auth_files.provider_inspection_badge_error',
       defaultLabel: 'Inspection warning',
-      titleKey: 'auth_files.provider_inspection_badge_error_title',
-      defaultTitle: `Latest xAI inspection reported ${inspectionErrorKind}.`,
-      labelParams: { provider: 'xAI', kind: inspectionErrorKind },
+      titleKey: issueTitleKey ?? 'auth_files.provider_inspection_badge_error_title',
+      defaultTitle: 'The latest xAI inspection found an issue. Review the inspection details.',
+      labelParams: issueTitleKey ? undefined : { provider: 'xAI' },
     });
   }
 

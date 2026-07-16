@@ -36,6 +36,7 @@ import {
   countHandlingStates,
   filterInspectionResults,
   formatActionLabel,
+  formatServerCodexInspectionLogDetail,
   formatTimestamp,
   getActionFilterCounts,
   getCanonicalServerCodexInspectionActionIds,
@@ -1867,7 +1868,7 @@ export function ServerCodexInspectionPage() {
       const lines = logs.map((entry) => {
         const ts = new Date(entry.createdAtMs).toISOString();
         const detail = entry.detail
-          ? ` ${typeof entry.detail === 'string' ? entry.detail : JSON.stringify(entry.detail)}`
+          ? ` ${formatServerCodexInspectionLogDetail(entry.detail, t)}`
           : '';
         const message = entry.message.startsWith('monitoring.') ? t(entry.message) : entry.message;
         return `[${ts}] [${entry.level}] ${message}${detail}`;
@@ -1982,9 +1983,7 @@ export function ServerCodexInspectionPage() {
                     {entry.message.startsWith('monitoring.') ? t(entry.message) : entry.message}
                     {entry.detail ? (
                       <small className={styles.serverLogDetail}>
-                        {typeof entry.detail === 'string'
-                          ? entry.detail
-                          : JSON.stringify(entry.detail)}
+                        {formatServerCodexInspectionLogDetail(entry.detail, t)}
                       </small>
                     ) : null}
                   </span>

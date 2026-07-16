@@ -25,12 +25,14 @@ import {
   countActions,
   filterInspectionResults,
   filterByAction,
+  formatServerCodexInspectionLogDetail,
   getCanonicalServerCodexInspectionActionIds,
   normalizeActionFilter,
   getMixedServerCodexInspectionActionIds,
   isActionableServerCodexInspectionResult,
   isPendingServerReauthResult,
   normalizeServerCodexInspectionActionStatus,
+  summarizeInspectionError,
   validateInspectionConfigDraft,
 } from './model/codexInspectionPresentation';
 import {
@@ -271,6 +273,86 @@ describe('Codex inspection settings', () => {
       { key: 'auto', value: 'Auto delete', tone: 'bad', field: 'autoActionMode' },
       { key: 'recover', value: 'Disabled', tone: 'idle', field: 'autoActionMode' },
     ]);
+  });
+});
+
+describe('Codex inspection error summaries', () => {
+  const t = ((key: string) => {
+    const messages: Record<string, string> = {
+      'xai_quota.diagnostic_protocol_changed':
+        'The billing endpoint returned data that cannot currently be recognized',
+      'monitoring.codex_inspection_error_summary_http_status':
+        'The service did not complete the request',
+    };
+    return messages[key] ?? key;
+  }) as never;
+
+  it('does not present a healthy xAI billing classification as an error', () => {
+    expect(
+      summarizeInspectionError(
+        createResultItem('keep', {
+          provider: 'xai',
+          errorKind: 'billing_healthy',
+          statusCode: 200,
+        }),
+        t
+      )
+    ).toBe('');
+  });
+
+  it('translates xAI diagnostic classifications into user-facing explanations', () => {
+    const summary = summarizeInspectionError(
+      createResultItem('keep', {
+        provider: 'xai',
+        errorKind: 'protocol_changed',
+        statusCode: 200,
+      }),
+      t
+    );
+
+    expect(summary).toBe('The billing endpoint returned data that cannot currently be recognized');
+    expect(summary).not.toContain('protocol_changed');
+    expect(summary).not.toContain('HTTP 200');
+  });
+
+  it('uses a user-facing explanation for generic HTTP failures', () => {
+    expect(
+      summarizeInspectionError(
+        createResultItem('keep', {
+          provider: 'codex',
+          errorKind: 'http_status',
+          statusCode: 403,
+        }),
+        t
+      )
+    ).toBe('The service did not complete the request');
+  });
+});
+
+describe('Server Codex inspection log details', () => {
+  const t = ((key: string) => {
+    const messages: Record<string, string> = {
+      'monitoring.codex_inspection_action_keep': '保留',
+    };
+    return messages[key] ?? key;
+  }) as never;
+
+  it('localizes structured action values without mutating the source detail', () => {
+    const detail = { fileName: 'xai.json', partial: false, action: 'keep' };
+
+    const formatted = formatServerCodexInspectionLogDetail(detail, t);
+
+    expect(JSON.parse(formatted)).toEqual({
+      fileName: 'xai.json',
+      partial: false,
+      action: '保留',
+    });
+    expect(formatted).not.toContain('"action":"keep"');
+    expect(detail.action).toBe('keep');
+  });
+
+  it('keeps string log details unchanged', () => {
+    expect(formatServerCodexInspectionLogDetail('network timeout', t)).toBe('network timeout');
   });
 });
 
@@ -902,9 +984,9 @@ describe('Codex inspection disable ownership', () => {
       auth_index: 'legacy-auth',
       disabled: true,
     } as AuthFileItem;
-    expect(Array.from(getCodexInspectionOwnedDisableFileNames('scope-legacy', [codexFile]))).toEqual([
-      'legacy.json',
-    ]);
+    expect(
+      Array.from(getCodexInspectionOwnedDisableFileNames('scope-legacy', [codexFile]))
+    ).toEqual(['legacy.json']);
   });
 });
 

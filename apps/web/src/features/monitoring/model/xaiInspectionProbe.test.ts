@@ -154,6 +154,36 @@ describe('inspectSingleXaiAccount', () => {
     expect(rateLimited).toMatchObject({ action: 'keep', errorKind: 'rate_limited' });
   });
 
+  it('localizes action and reason values in xAI inspection logs', async () => {
+    mockProbeXaiBilling.mockRejectedValue(structuredError(403, { error: 'Forbidden' }));
+    const onLog = vi.fn();
+    const t = ((key: string, values?: Record<string, unknown>) => {
+      const messages: Record<string, string> = {
+        'monitoring.codex_inspection_action_keep': '保留',
+        'monitoring.xai_inspection_log_classified':
+          '{{account}} -> {{action}}（{{reason}}）',
+        'monitoring.xai_inspection_reason_permission_unknown':
+          'xAI 拒绝访问，请人工检查账号权限',
+        'xai_quota.diagnostic_permission_unknown':
+          'xAI 拒绝访问，请检查账号订阅或权限',
+      };
+      let message = messages[key] ?? key;
+      Object.entries(values ?? {}).forEach(([name, value]) => {
+        message = message.replace(`{{${name}}}`, String(value));
+      });
+      return message;
+    }) as never;
+
+    await inspectSingleXaiAccount(baseAccount, settings, onLog, t);
+
+    expect(onLog).toHaveBeenCalledWith(
+      'warning',
+      'xai-user@example.test -> 保留（xAI 拒绝访问，请检查账号订阅或权限）'
+    );
+    expect(onLog.mock.calls.flat().join(' ')).not.toContain('permission_unknown');
+    expect(onLog.mock.calls.flat().join(' ')).not.toContain('-> keep');
+  });
+
   it('returns reauth instead of delete for invalid OAuth credentials', async () => {
     mockProbeXaiBilling.mockRejectedValue(
       structuredError(401, { code: 'unauthenticated:bad-credentials' })

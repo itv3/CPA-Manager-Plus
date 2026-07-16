@@ -54,6 +54,7 @@ import {
   hasUsageHeaderQuotaSignal,
 } from '@/utils/usageHeaderSnapshots';
 import { normalizeAuthIndex } from '@/utils/authIndex';
+import { formatXaiBillingDiagnostics } from '@/utils/quota/xaiPresentation';
 import type { QuotaRenderHelpers } from './QuotaCard';
 import styles from '@/features/quota/QuotaPage.module.scss';
 
@@ -1290,14 +1291,7 @@ const renderXaiItems = (
           'div',
           { key: 'partial-diagnostic', className: styleMap.quotaMessage },
           t('xai_quota.partial_data', {
-            details:
-              billing.diagnostics
-                ?.map((item) =>
-                  item.statusCode
-                    ? `${item.classification} (HTTP ${item.statusCode})`
-                    : item.classification
-                )
-                .join(', ') || t('xai_quota.partial_unknown'),
+            details: formatXaiBillingDiagnostics(billing.diagnostics, t),
           })
         )
       : null,
