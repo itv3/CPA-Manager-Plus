@@ -158,6 +158,26 @@ type ProAccountSyncResult struct {
 	Warnings     []string               `json:"warnings,omitempty"`
 }
 
+// ProAccountBindingReview 保存无法自动确认的底层绑定漂移，必须由管理员选择候选账号。
+type ProAccountBindingReview struct {
+	ID                int64    `json:"id"`
+	DiscoveryKey      string   `json:"discoveryKey"`
+	SourceType        string   `json:"sourceType"`
+	SourceLocator     string   `json:"sourceLocator"`
+	AuthIndex         string   `json:"authIndex,omitempty"`
+	SourceFingerprint string   `json:"sourceFingerprint,omitempty"`
+	ResolutionStatus  string   `json:"resolutionStatus"`
+	CandidateIDs      []string `json:"candidateIds"`
+	ReasonCode        string   `json:"reasonCode"`
+	DriftType         string   `json:"driftType"`
+	ResolvedAccountID string   `json:"resolvedAccountId,omitempty"`
+	ResolvedAtMS      int64    `json:"resolvedAtMs,omitempty"`
+	FirstSeenAtMS     int64    `json:"firstSeenAtMs"`
+	LastSeenAtMS      int64    `json:"lastSeenAtMs"`
+	CreatedAtMS       int64    `json:"createdAtMs"`
+	UpdatedAtMS       int64    `json:"updatedAtMs"`
+}
+
 // ProAccountCapabilities 描述当前 Gateway 是否具备 Pro 流程依赖的通用能力。
 type ProAccountCapabilities struct {
 	CredentialDraft bool `json:"credentialDraft"`

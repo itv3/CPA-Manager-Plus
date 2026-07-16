@@ -24,7 +24,11 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 		}
 		_, err = s.transition(ctx, operation, model.ProOperationStateCancelled, operation.ProAccountID, operation.Context, "", "OAuth 会话已取消", "cancel_oauth_session_completed")
 		return err
-	case "delete_new_credential", "delete_replacement_credential", "delete_credential", "resume_or_cleanup":
+	case "resume_or_cleanup":
+		_, err = s.transition(ctx, operation, model.ProOperationStateFailed, operation.ProAccountID, operation.Context,
+			valueOr(operation.ErrorCode, "manual_recovery_required"), "操作缺少明确补偿动作，已停止自动恢复并保留记录", "manual_recovery_required")
+		return err
+	case "delete_new_credential", "delete_replacement_credential", "delete_credential":
 		sourceType, sourceLocator := recoveryCredentialLocator(operation)
 		var account model.ProAccount
 		if operation.ProAccountID != "" {
@@ -98,6 +102,13 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 	default:
 		return ErrOperationState
 	}
+}
+
+func valueOr(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
 }
 
 func recoveryCredentialLocator(operation model.ProAccountDraft) (string, string) {

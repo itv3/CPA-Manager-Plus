@@ -42,6 +42,20 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.bulkToolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.bulkToolbar > span {
+  min-width: 74px;
+}
+
 .search {
   min-width: 220px;
   flex: 1;
@@ -75,7 +89,7 @@
 
 .table {
   width: 100%;
-  min-width: 1370px;
+  min-width: 1412px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
@@ -83,36 +97,41 @@
 
 .table th:nth-child(1),
 .table td:nth-child(1) {
-  width: 190px;
+  width: 42px;
 }
 
 .table th:nth-child(2),
 .table td:nth-child(2) {
-  width: 150px;
+  width: 190px;
 }
 
 .table th:nth-child(3),
 .table td:nth-child(3) {
-  width: 118px;
+  width: 150px;
 }
 
 .table th:nth-child(4),
 .table td:nth-child(4) {
-  width: 220px;
+  width: 118px;
 }
 
 .table th:nth-child(5),
 .table td:nth-child(5) {
-  width: 320px;
+  width: 220px;
 }
 
 .table th:nth-child(6),
 .table td:nth-child(6) {
-  width: 210px;
+  width: 320px;
 }
 
 .table th:nth-child(7),
 .table td:nth-child(7) {
+  width: 210px;
+}
+
+.table th:nth-child(8),
+.table td:nth-child(8) {
   width: 160px;
 }
 
@@ -138,6 +157,20 @@
 
 .table tbody tr:hover td {
   background: color-mix(in srgb, var(--surface-subtle) 55%, transparent);
+}
+
+.selectionColumn {
+  padding-right: 4px !important;
+  padding-left: 12px !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+.selectionColumn input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--primary-color);
 }
 
 .usageCell {
@@ -211,6 +244,20 @@
 .usageActions button:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.usageActions > span {
+  color: var(--text-tertiary);
+}
+
+.resetMessage {
+  max-width: 280px;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .usageError,
@@ -363,6 +410,15 @@
     align-items: stretch;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bulkToolbar {
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .bulkToolbar > * {
+    flex: 0 0 auto;
   }
 
   .search {

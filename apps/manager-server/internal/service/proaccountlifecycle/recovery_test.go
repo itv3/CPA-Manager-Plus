@@ -162,3 +162,25 @@ func TestRecoverRestoreRulesRequiresCurrentBinding(t *testing.T) {
 		t.Fatalf("错误 = %v", err)
 	}
 }
+
+func TestRecoverUnknownActionNeverDeletesExistingCredential(t *testing.T) {
+	account := recoveryAccount()
+	repository := &recoveryRepositoryStub{}
+	gateway := &recoveryGatewayStub{}
+	operations := &recoveryOperationStub{}
+	service := New(recoveryAccountReaderStub{account: account}, repository, recoverySetupStub{}, gateway, nil, operations)
+	err := service.Recover(context.Background(), model.ProAccountDraft{
+		OperationID: "operation-reset", OperationType: "reset", ProAccountID: account.ID,
+		State: model.ProOperationStateCompensating, Version: 2,
+		CompensationAction: "resume_or_cleanup", Context: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("恢复未知补偿：%v", err)
+	}
+	if gateway.deletedLocator != "" || repository.softDeleted {
+		t.Fatalf("未知补偿不应删除凭证或账号：gateway=%#v repository=%#v", gateway, repository)
+	}
+	if operations.lastTransition.State != model.ProOperationStateFailed || operations.lastTransition.CompensationAction != "manual_recovery_required" {
+		t.Fatalf("未知补偿终态 = %#v", operations.lastTransition)
+	}
+}

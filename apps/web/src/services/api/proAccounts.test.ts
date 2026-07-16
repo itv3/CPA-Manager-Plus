@@ -215,6 +215,60 @@ describe('proAccountsApi', () => {
     });
   });
 
+  it('序列化批量操作与批量重绑的逐项资源版本', async () => {
+    mocks.post.mockResolvedValue({ data: { total: 1, succeeded: 1, failed: 0, items: [] } });
+
+    await proAccountsApi.batch(
+      'https://manager.example',
+      'admin-key',
+      'test',
+      [{ account, model: 'client-model' }],
+      'batch-1',
+      'batch-key'
+    );
+    await proAccountsApi.rebind(
+      'https://manager.example',
+      'admin-key',
+      [{ reviewId: 9, account }],
+      'rebind-1',
+      'rebind-key'
+    );
+
+    expect(mocks.post.mock.calls[0][1]).toEqual({
+      operation_id: 'batch-1',
+      idempotency_key: 'batch-key',
+      action: 'test',
+      items: [{ pro_account_id: 'account-1', expected_version: 7, model: 'client-model' }],
+    });
+    expect(mocks.post.mock.calls[1][1]).toEqual({
+      operation_id: 'rebind-1',
+      idempotency_key: 'rebind-key',
+      items: [{ review_id: 9, pro_account_id: 'account-1', expected_version: 7 }],
+    });
+  });
+
+  it('reset credits 查询无副作用，重置请求显式携带确认和资源版本', async () => {
+    mocks.get.mockResolvedValue({ data: { capability: 'supported', availableCount: 2 } });
+    mocks.post.mockResolvedValue({ data: { credits: { capability: 'supported' } } });
+
+    await proAccountsApi.resetCredits('https://manager.example', 'admin-key', account.id);
+    await proAccountsApi.resetOpenAI(
+      'https://manager.example',
+      'admin-key',
+      account,
+      'reset-1',
+      'reset-key'
+    );
+
+    expect(mocks.get.mock.calls[0][0]).toContain('/account-1/openai-reset-credits');
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({
+      operation_id: 'reset-1',
+      idempotency_key: 'reset-key',
+      expected_version: 7,
+      confirmed: true,
+    });
+  });
+
   it('保留后端机器可识别错误字段', async () => {
     const failure = {
       message: 'Request failed',

@@ -20,9 +20,14 @@ import { useAuthStore, useNotificationStore } from '@/stores';
 import {
   proAccountsApi,
   type ProAccount,
+  type ProAccountBatchAction,
+  type ProAccountBindingReviewItem,
   type ProAccountCapabilitiesResponse,
+  type ProAccountResetCreditsResult,
   type ProAccountUsageResponse,
 } from '@/services/api/proAccounts';
+import { AccountBatchModal } from './AccountBatchModal';
+import { AccountBindingReviewModal } from './AccountBindingReviewModal';
 import { AccountEditModal } from './AccountEditModal';
 import { AccountTestModal } from './AccountTestModal';
 import { AccountWizardModal } from './AccountWizardModal';
@@ -73,6 +78,10 @@ function UsageCell({
   const [loading, setLoading] = useState(false);
   const [visible, setVisible] = useState(false);
   const [error, setError] = useState('');
+  const [resetCredits, setResetCredits] = useState<ProAccountResetCreditsResult | null>(null);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetMessage, setResetMessage] = useState('');
+  const resetEligible = account.platform === 'openai' && account.authType === 'oauth';
 
   const load = useCallback(
     async (trigger: UsageRefreshTrigger = 'initial', bypassCache = false) => {
@@ -143,6 +152,55 @@ function UsageCell({
     void load('automatic', true);
   }, [load, passiveRefreshToken, visible]);
 
+  const queryResetCredits = async () => {
+    if (!resetEligible || resetLoading) return;
+    setResetLoading(true);
+    setResetMessage('');
+    try {
+      const result = await proAccountsApi.resetCredits(managerBase, managementKey, account.id);
+      setResetCredits(result);
+      if (result.capability === 'unknown') {
+        setResetMessage(result.errorCode || '暂时无法确认重置能力');
+      } else if (result.capability === 'unsupported') {
+        setResetMessage('当前账号不支持官方重置');
+      }
+    } catch (resetError) {
+      setResetMessage(resetError instanceof Error ? resetError.message : String(resetError));
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const resetOpenAI = async () => {
+    const count = resetCredits?.availableCount;
+    if (resetCredits?.capability !== 'supported' || count === undefined || count <= 0) return;
+    const name = account.name || account.email || account.id;
+    if (
+      !window.confirm(`将为“${name}”消耗 1 次官方 reset credit，当前可用 ${count} 次。确认继续？`)
+    ) {
+      return;
+    }
+    setResetLoading(true);
+    setResetMessage('');
+    try {
+      const identity = createRequestIdentity('account-openai-reset');
+      const result = await proAccountsApi.resetOpenAI(
+        managerBase,
+        managementKey,
+        account,
+        identity.operationId,
+        identity.idempotencyKey
+      );
+      setResetCredits(result.credits);
+      setResetMessage('官方配额已重置');
+      await load('manual-active', true);
+    } catch (resetError) {
+      setResetMessage(resetError instanceof Error ? resetError.message : String(resetError));
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   return (
     <div className={styles.usageCell} ref={rootRef} aria-busy={loading}>
       {usage?.officialWindows.length ? (
@@ -195,7 +253,21 @@ function UsageCell({
         <button type="button" onClick={() => void load('manual-active', true)} disabled={loading}>
           查询
         </button>
+        {resetEligible && (!resetCredits || resetCredits.capability === 'unknown') ? (
+          <button type="button" onClick={() => void queryResetCredits()} disabled={resetLoading}>
+            {resetCredits?.capability === 'unknown' ? '重试重置次数' : '重置次数'}
+          </button>
+        ) : null}
+        {resetCredits?.capability === 'supported' ? (
+          <span>重置次数 {resetCredits.availableCount ?? '-'}</span>
+        ) : null}
+        {resetCredits?.capability === 'supported' && (resetCredits.availableCount ?? 0) > 0 ? (
+          <button type="button" onClick={() => void resetOpenAI()} disabled={resetLoading}>
+            重置
+          </button>
+        ) : null}
       </div>
+      {resetMessage ? <div className={styles.resetMessage}>{resetMessage}</div> : null}
     </div>
   );
 }
@@ -221,6 +293,10 @@ export function AccountsPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<ProAccount | null>(null);
   const [testingAccount, setTestingAccount] = useState<ProAccount | null>(null);
+  const [selectedIDs, setSelectedIDs] = useState<Set<string>>(new Set());
+  const [batchAction, setBatchAction] = useState<ProAccountBatchAction | null>(null);
+  const [bindingReviews, setBindingReviews] = useState<ProAccountBindingReviewItem[]>([]);
+  const [bindingReviewOpen, setBindingReviewOpen] = useState(false);
 
   const managerBase = featureAvailability.managerServiceBase;
 
@@ -239,6 +315,8 @@ export function AccountsPage() {
           healthStatus,
         });
         setItems(result.items);
+        const availableIDs = new Set(result.items.map((item) => item.id));
+        setSelectedIDs((current) => new Set([...current].filter((id) => availableIDs.has(id))));
         if (background) setPassiveRefreshToken((value) => value + 1);
       } catch (loadError) {
         const message = loadError instanceof Error ? loadError.message : String(loadError);
@@ -249,6 +327,16 @@ export function AccountsPage() {
     },
     [authType, enabled, healthStatus, managementKey, managerBase, platform, search]
   );
+
+  const loadBindingReviews = useCallback(async () => {
+    if (!managerBase || !managementKey) return;
+    try {
+      const result = await proAccountsApi.bindingReviews(managerBase, managementKey);
+      setBindingReviews(result.items);
+    } catch {
+      setBindingReviews([]);
+    }
+  }, [managementKey, managerBase]);
 
   useEffect(() => {
     if (featureAvailability.checking) return;
@@ -273,6 +361,10 @@ export function AccountsPage() {
   }, [featureAvailability.checking, managementKey, managerBase]);
 
   useEffect(() => {
+    if (!featureAvailability.checking) void loadBindingReviews();
+  }, [featureAvailability.checking, loadBindingReviews]);
+
+  useEffect(() => {
     if (!autoRefresh) return;
     const timer = window.setInterval(() => void loadAccounts(true), AUTO_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
@@ -288,12 +380,13 @@ export function AccountsPage() {
         result.conflicts > 0 || result.pending > 0 ? 'warning' : 'success'
       );
       await loadAccounts();
+      await loadBindingReviews();
     } catch (syncError) {
       showNotification(syncError instanceof Error ? syncError.message : String(syncError), 'error');
     } finally {
       setSyncing(false);
     }
-  }, [loadAccounts, managementKey, managerBase, showNotification]);
+  }, [loadAccounts, loadBindingReviews, managementKey, managerBase, showNotification]);
 
   const toggleAccount = async (account: ProAccount) => {
     const key = `${account.id}:toggle`;
@@ -354,6 +447,31 @@ export function AccountsPage() {
   };
 
   const rows = useMemo(() => items, [items]);
+  const selectedAccounts = useMemo(
+    () => rows.filter((item) => selectedIDs.has(item.id)),
+    [rows, selectedIDs]
+  );
+  const allVisibleSelected = rows.length > 0 && rows.every((item) => selectedIDs.has(item.id));
+
+  const toggleSelected = (accountID: string, checked: boolean) => {
+    setSelectedIDs((current) => {
+      const next = new Set(current);
+      if (checked) next.add(accountID);
+      else next.delete(accountID);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = (checked: boolean) => {
+    setSelectedIDs((current) => {
+      const next = new Set(current);
+      rows.forEach((item) => {
+        if (checked) next.add(item.id);
+        else next.delete(item.id);
+      });
+      return next;
+    });
+  };
 
   const refreshAfterSave = async (message: string, savedDisabled = false) => {
     showNotification(
@@ -368,6 +486,12 @@ export function AccountsPage() {
       <header className={styles.header}>
         <h1 className={styles.title}>{t('accounts.title', { defaultValue: '统一账号管理' })}</h1>
         <div className={styles.headerActions}>
+          {bindingReviews.length > 0 ? (
+            <Button variant="secondary" size="sm" onClick={() => setBindingReviewOpen(true)}>
+              <IconSettings size={15} />
+              待确认绑定 {bindingReviews.length}
+            </Button>
+          ) : null}
           <Button variant="secondary" size="sm" onClick={syncAccounts} loading={syncing}>
             <IconRefreshCw size={15} />
             {t('accounts.sync', { defaultValue: '同步存量' })}
@@ -453,6 +577,42 @@ export function AccountsPage() {
         </Button>
       </section>
 
+      <section className={styles.bulkToolbar} aria-label="批量账号操作">
+        <span>已选择 {selectedAccounts.length}</span>
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={() => setBatchAction('enable')}
+          disabled={selectedAccounts.length === 0}
+        >
+          <IconCheck size={14} /> 启用
+        </Button>
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={() => setBatchAction('disable')}
+          disabled={selectedAccounts.length === 0}
+        >
+          <IconX size={14} /> 停用
+        </Button>
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={() => setBatchAction('test')}
+          disabled={selectedAccounts.length === 0}
+        >
+          <IconCrosshair size={14} /> 测试
+        </Button>
+        <Button
+          variant="danger"
+          size="xs"
+          onClick={() => setBatchAction('delete')}
+          disabled={selectedAccounts.length === 0}
+        >
+          <IconTrash2 size={14} /> 删除
+        </Button>
+      </section>
+
       <section className={styles.panel}>
         {error ? <div className={styles.error}>{error}</div> : null}
         {loading && rows.length === 0 ? <div className={styles.state}>加载中...</div> : null}
@@ -464,6 +624,14 @@ export function AccountsPage() {
             <table className={styles.table}>
               <thead>
                 <tr>
+                  <th className={styles.selectionColumn}>
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={(event) => toggleAllVisible(event.target.checked)}
+                      aria-label="选择当前页全部账号"
+                    />
+                  </th>
                   <th>账号</th>
                   <th>平台 / 类型</th>
                   <th>状态</th>
@@ -481,6 +649,14 @@ export function AccountsPage() {
                       : '/ai-providers';
                   return (
                     <tr key={item.id}>
+                      <td className={styles.selectionColumn}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIDs.has(item.id)}
+                          onChange={(event) => toggleSelected(item.id, event.target.checked)}
+                          aria-label={`选择账号 ${item.name || item.email || item.id}`}
+                        />
+                      </td>
                       <td>
                         <div className={styles.accountName}>
                           {item.name || item.email || item.id}
@@ -630,6 +806,39 @@ export function AccountsPage() {
         managementKey={managementKey}
         onClose={() => setTestingAccount(null)}
         onTested={() => void loadAccounts(true)}
+      />
+      <AccountBatchModal
+        open={batchAction !== null}
+        action={batchAction}
+        accounts={selectedAccounts}
+        managerBase={managerBase}
+        managementKey={managementKey}
+        onClose={() => {
+          setBatchAction(null);
+          setSelectedIDs(new Set());
+        }}
+        onCompleted={(result) => {
+          showNotification(
+            `批量操作完成：成功 ${result.succeeded}，失败 ${result.failed}`,
+            result.failed > 0 ? 'warning' : 'success'
+          );
+          void loadAccounts();
+        }}
+      />
+      <AccountBindingReviewModal
+        open={bindingReviewOpen}
+        reviews={bindingReviews}
+        managerBase={managerBase}
+        managementKey={managementKey}
+        onClose={() => setBindingReviewOpen(false)}
+        onCompleted={(result) => {
+          showNotification(
+            `绑定确认完成：成功 ${result.succeeded}，失败 ${result.failed}`,
+            result.failed > 0 ? 'warning' : 'success'
+          );
+          void loadAccounts();
+          void loadBindingReviews();
+        }}
       />
     </div>
   );

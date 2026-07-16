@@ -61,6 +61,8 @@ func ensureProAccountTables(db *sql.DB) error {
 			resolution_status text not null,
 			candidate_ids_json text not null default '[]',
 			reason_code text not null,
+			resolved_account_id text references pro_accounts(id) on delete set null,
+			resolved_at_ms integer,
 			first_seen_at_ms integer not null,
 			last_seen_at_ms integer not null,
 			created_at_ms integer not null,
@@ -93,7 +95,10 @@ func ensureProAccountTables(db *sql.DB) error {
 			return err
 		}
 	}
-	return ensureProAccountColumns(db)
+	if err := ensureProAccountColumns(db); err != nil {
+		return err
+	}
+	return ensureProBindingReviewColumns(db)
 }
 
 func ensureProAccountColumns(db *sql.DB) error {
@@ -140,4 +145,43 @@ func ensureProAccountColumns(db *sql.DB) error {
 		_, err = db.Exec(`alter table pro_accounts add column deleted_at_ms integer`)
 	}
 	return err
+}
+
+func ensureProBindingReviewColumns(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(pro_account_binding_reviews)`)
+	if err != nil {
+		return err
+	}
+	hasResolvedAccountID := false
+	hasResolvedAt := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		switch name {
+		case "resolved_account_id":
+			hasResolvedAccountID = true
+		case "resolved_at_ms":
+			hasResolvedAt = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasResolvedAccountID {
+		if _, err := db.Exec(`alter table pro_account_binding_reviews add column resolved_account_id text references pro_accounts(id) on delete set null`); err != nil {
+			return err
+		}
+	}
+	if !hasResolvedAt {
+		if _, err := db.Exec(`alter table pro_account_binding_reviews add column resolved_at_ms integer`); err != nil {
+			return err
+		}
+	}
+	return nil
 }

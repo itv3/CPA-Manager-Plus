@@ -24,6 +24,9 @@ type Repository interface {
 	RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error)
 	RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error)
 	SoftDelete(ctx context.Context, accountID string, expectedVersion int64, nowMS int64) (model.ProAccount, error)
+	ListBindingReviews(ctx context.Context, statuses []string, limit int) ([]model.ProAccountBindingReview, error)
+	GetBindingReview(ctx context.Context, reviewID int64) (model.ProAccountBindingReview, bool, error)
+	RebindFromReview(ctx context.Context, reviewID int64, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error)
 }
 
 var (
@@ -323,10 +326,10 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 	}
 	if len(candidates) > 0 {
 		resolution := model.ProBindingResolutionPending
-		reasonCode := "binding_identity_requires_confirmation"
+		reasonCode := bindingDriftReason(discovery.SourceType, false)
 		if len(candidates) > 1 {
 			resolution = model.ProBindingResolutionConflict
-			reasonCode = "binding_identity_conflict"
+			reasonCode = bindingDriftReason(discovery.SourceType, true)
 		}
 		if err := upsertBindingReview(ctx, tx, discovery, candidates, resolution, reasonCode, nowMS); err != nil {
 			return item, err
@@ -365,6 +368,17 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 	item.Resolution = model.ProBindingResolutionCreated
 	item.ProAccountID = accountID
 	return item, nil
+}
+
+func bindingDriftReason(sourceType string, conflict bool) string {
+	prefix := "api_credential_drift"
+	if strings.TrimSpace(sourceType) == "auth_file" {
+		prefix = "file_path_drift"
+	}
+	if conflict {
+		return prefix + "_conflict"
+	}
+	return prefix + "_confirmation"
 }
 
 func updateDiscoveredAccount(ctx context.Context, tx *sql.Tx, accountID string, discovery model.ProAccountDiscovery, nowMS int64) error {
@@ -566,37 +580,54 @@ func (r *repository) RecordTestResult(ctx context.Context, accountID string, suc
 }
 
 func (r *repository) RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error) {
-	accountID = strings.TrimSpace(accountID)
-	discovery.SourceType = strings.TrimSpace(discovery.SourceType)
-	discovery.SourceLocator = strings.TrimSpace(discovery.SourceLocator)
-	discovery.AuthIndex = strings.TrimSpace(discovery.AuthIndex)
-	if accountID == "" || discovery.SourceType == "" || discovery.SourceLocator == "" {
-		return model.ProAccount{}, ErrAccountNotFound
-	}
-	if expectedVersion <= 0 {
-		return model.ProAccount{}, ErrVersionConflict
-	}
 	if nowMS <= 0 {
 		nowMS = time.Now().UnixMilli()
-	}
-	allowedJSON, mappingJSON, err := marshalModelRules(discovery.AllowedModels, discovery.ModelMapping)
-	if err != nil {
-		return model.ProAccount{}, err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.ProAccount{}, err
 	}
 	defer tx.Rollback()
+	if err := rebindManagedTx(ctx, tx, accountID, expectedVersion, discovery, nowMS); err != nil {
+		return model.ProAccount{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProAccount{}, err
+	}
+	item, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	return item, nil
+}
+
+func rebindManagedTx(ctx context.Context, tx *sql.Tx, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) error {
+	accountID = strings.TrimSpace(accountID)
+	discovery.SourceType = strings.TrimSpace(discovery.SourceType)
+	discovery.SourceLocator = strings.TrimSpace(discovery.SourceLocator)
+	discovery.AuthIndex = strings.TrimSpace(discovery.AuthIndex)
+	if accountID == "" || discovery.SourceType == "" || discovery.SourceLocator == "" {
+		return ErrAccountNotFound
+	}
+	if expectedVersion <= 0 {
+		return ErrVersionConflict
+	}
+	allowedJSON, mappingJSON, err := marshalModelRules(discovery.AllowedModels, discovery.ModelMapping)
+	if err != nil {
+		return err
+	}
 	var currentVersion int64
 	if err := tx.QueryRowContext(ctx, `select version from pro_accounts where id = ? and deleted_at_ms is null`, accountID).Scan(&currentVersion); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return model.ProAccount{}, ErrAccountNotFound
+			return ErrAccountNotFound
 		}
-		return model.ProAccount{}, err
+		return err
 	}
 	if currentVersion != expectedVersion {
-		return model.ProAccount{}, ErrVersionConflict
+		return ErrVersionConflict
 	}
 	var bindingID int64
 	var currentSourceType, currentLocator, currentAuthIndex string
@@ -604,20 +635,20 @@ func (r *repository) RebindManaged(ctx context.Context, accountID string, expect
 		from pro_account_bindings where pro_account_id = ? and is_current = 1 limit 1`, accountID).
 		Scan(&bindingID, &currentSourceType, &currentLocator, &currentAuthIndex)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return model.ProAccount{}, err
+		return err
 	}
 	sameBinding := err == nil && currentSourceType == discovery.SourceType && currentLocator == discovery.SourceLocator && currentAuthIndex == discovery.AuthIndex
 	if sameBinding {
 		if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
 			source_fingerprint = ?, binding_status = ?, last_seen_at_ms = ?, updated_at_ms = ? where id = ?`,
 			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, bindingID); err != nil {
-			return model.ProAccount{}, err
+			return err
 		}
 	} else {
 		if err == nil {
 			if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
 				binding_status = 'historical', is_current = 0, valid_to_ms = ?, updated_at_ms = ? where id = ?`, nowMS, nowMS, bindingID); err != nil {
-				return model.ProAccount{}, err
+				return err
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `insert into pro_account_bindings (
@@ -626,7 +657,7 @@ func (r *repository) RebindManaged(ctx context.Context, accountID string, expect
 		) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
 			accountID, nullString(discovery.AuthIndex), discovery.SourceType, discovery.SourceLocator,
 			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, nowMS, nowMS, nowMS); err != nil {
-			return model.ProAccount{}, err
+			return err
 		}
 	}
 	result, err := tx.ExecContext(ctx, `update pro_accounts set
@@ -640,25 +671,15 @@ func (r *repository) RebindManaged(ctx context.Context, accountID string, expect
 		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS,
 		accountID, expectedVersion)
 	if err != nil {
-		return model.ProAccount{}, err
+		return err
 	}
 	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
 		if err != nil {
-			return model.ProAccount{}, err
+			return err
 		}
-		return model.ProAccount{}, ErrVersionConflict
+		return ErrVersionConflict
 	}
-	if err := tx.Commit(); err != nil {
-		return model.ProAccount{}, err
-	}
-	item, ok, err := r.Get(ctx, accountID)
-	if err != nil {
-		return model.ProAccount{}, err
-	}
-	if !ok {
-		return model.ProAccount{}, ErrAccountNotFound
-	}
-	return item, nil
+	return nil
 }
 
 func (r *repository) SoftDelete(ctx context.Context, accountID string, expectedVersion int64, nowMS int64) (model.ProAccount, error) {

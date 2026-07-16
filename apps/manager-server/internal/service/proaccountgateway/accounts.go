@@ -107,6 +107,7 @@ func accountFromAuthFile(file cpaauthfiles.File) (AccountSnapshot, bool) {
 		BaseURL:           mapString(file.Raw, "base_url", "base-url", "baseUrl"),
 		Headers:           mapStringMap(file.Raw, "headers"),
 		CredentialDraft:   mapBool(file.Raw, "credential_draft", "credentialDraft", "pro_draft"),
+		UpstreamAccountID: strings.TrimSpace(file.AccountID),
 	}, true
 }
 

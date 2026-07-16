@@ -16,11 +16,14 @@ import (
 	proaccountrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccount"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccountdraft"
 	proaccountsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccount"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountbatch"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountlifecycle"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodels"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountoperation"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountrebind"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountreset"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccounttest"
 )
 
@@ -38,6 +41,12 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleCollection(w, r)
 	case path == "/v0/pro/accounts/capabilities":
 		h.handleCapabilities(w, r)
+	case path == "/v0/pro/accounts/batch":
+		h.handleBatch(w, r)
+	case path == "/v0/pro/accounts/binding-reviews":
+		h.handleBindingReviews(w, r)
+	case path == "/v0/pro/accounts/rebind":
+		h.handleRebind(w, r)
 	case path == "/v0/pro/accounts/operations":
 		h.handleOperations(w, r)
 	case strings.HasPrefix(path, "/v0/pro/accounts/operations/"):
@@ -56,6 +65,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleSync(w, r)
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/usage"):
 		h.handleUsage(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/usage"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/openai-reset-credits"):
+		h.handleResetCredits(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/openai-reset-credits"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/openai-reset"):
+		h.handleOpenAIReset(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/openai-reset"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/models"):
 		h.handleModels(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/models"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/test"):
@@ -66,6 +79,165 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleItem(w, r, strings.TrimPrefix(path, "/v0/pro/accounts/"))
 	default:
 		h.writeError(w, http.StatusNotFound, "pro_route_not_found", "Pro route not found", false, nil)
+	}
+}
+
+func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	var request struct {
+		OperationID    string `json:"operation_id"`
+		IdempotencyKey string `json:"idempotency_key"`
+		Action         string `json:"action"`
+		Items          []struct {
+			ProAccountID    string `json:"pro_account_id"`
+			ExpectedVersion int64  `json:"expected_version"`
+			Model           string `json:"model"`
+		} `json:"items"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "批量账号操作请求无效", false, nil)
+		return
+	}
+	items := make([]proaccountbatch.Item, 0, len(request.Items))
+	for _, item := range request.Items {
+		items = append(items, proaccountbatch.Item{
+			ProAccountID: item.ProAccountID, ExpectedVersion: item.ExpectedVersion, Model: item.Model,
+		})
+	}
+	result, err := h.App.ProAccountBatchService.Execute(r.Context(), proaccountbatch.Input{
+		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey),
+		Action: request.Action, Items: items,
+	})
+	if err != nil {
+		if errors.Is(err, proaccountbatch.ErrInvalidRequest) {
+			h.writeError(w, http.StatusBadRequest, "invalid_batch_request", "批量账号操作请求无效", false, nil)
+			return
+		}
+		h.writeError(w, http.StatusInternalServerError, "batch_operation_failed", "批量账号操作失败", true, nil)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleBindingReviews(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 || value > 500 {
+			h.writeError(w, http.StatusBadRequest, "invalid_limit", "limit 必须在 1 到 500 之间", false, nil)
+			return
+		}
+		limit = value
+	}
+	items, err := h.App.ProAccountRebindService.List(r.Context(), limit)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "binding_reviews_failed", "无法读取待确认绑定", true, nil)
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+func (h *Handler) handleRebind(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	var request struct {
+		OperationID    string `json:"operation_id"`
+		IdempotencyKey string `json:"idempotency_key"`
+		Items          []struct {
+			ReviewID        int64  `json:"review_id"`
+			ProAccountID    string `json:"pro_account_id"`
+			ExpectedVersion int64  `json:"expected_version"`
+		} `json:"items"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "批量重绑请求无效", false, nil)
+		return
+	}
+	items := make([]proaccountrebind.ConfirmItem, 0, len(request.Items))
+	for _, item := range request.Items {
+		items = append(items, proaccountrebind.ConfirmItem{
+			ReviewID: item.ReviewID, ProAccountID: item.ProAccountID, ExpectedVersion: item.ExpectedVersion,
+		})
+	}
+	result, err := h.App.ProAccountRebindService.Confirm(r.Context(), proaccountrebind.ConfirmInput{
+		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), Items: items,
+	})
+	if err != nil {
+		if errors.Is(err, proaccountrebind.ErrInvalidRequest) {
+			h.writeError(w, http.StatusBadRequest, "invalid_rebind_request", "批量重绑请求无效", false, nil)
+			return
+		}
+		h.writeError(w, http.StatusBadGateway, "binding_rebind_failed", "批量重绑无法执行", true, nil)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleResetCredits(w http.ResponseWriter, r *http.Request, accountID string) {
+	if r.Method != http.MethodGet || !validPathID(accountID) {
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountResetService.Credits(r.Context(), accountID)
+	if err != nil {
+		if errors.Is(err, proaccountsvc.ErrAccountNotFound) {
+			h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+			return
+		}
+		h.writeError(w, http.StatusInternalServerError, "reset_credits_query_failed", "无法查询重置次数", true, nil)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleOpenAIReset(w http.ResponseWriter, r *http.Request, accountID string) {
+	if r.Method != http.MethodPost || !validPathID(accountID) {
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+		return
+	}
+	var request struct {
+		OperationID     string `json:"operation_id"`
+		IdempotencyKey  string `json:"idempotency_key"`
+		ExpectedVersion int64  `json:"expected_version"`
+		Confirmed       bool   `json:"confirmed"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "OpenAI 重置请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountResetService.Reset(r.Context(), proaccountreset.ResetInput{
+		AccountID: accountID, OperationID: request.OperationID,
+		IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), ExpectedVersion: request.ExpectedVersion,
+		Confirmed: request.Confirmed,
+	})
+	if err == nil {
+		response.JSON(w, http.StatusOK, result)
+		return
+	}
+	switch {
+	case errors.Is(err, proaccountsvc.ErrAccountNotFound):
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+	case errors.Is(err, proaccountreset.ErrInvalidRequest):
+		h.writeError(w, http.StatusBadRequest, "reset_confirmation_required", "重置请求必须确认并携带操作标识", false, nil)
+	case errors.Is(err, proaccountreset.ErrCapabilityUnavailable):
+		h.writeError(w, http.StatusConflict, "reset_credits_unavailable", "该账号未确认支持 reset credits", false, result.Credits)
+	case errors.Is(err, proaccountreset.ErrNoCredits):
+		h.writeError(w, http.StatusConflict, "reset_credits_exhausted", "当前没有可用重置次数", false, result.Credits)
+	case errors.Is(err, proaccountrepo.ErrVersionConflict):
+		h.writeError(w, http.StatusConflict, "resource_version_conflict", "账号版本已变化", false, nil)
+	case errors.Is(err, proaccountreset.ErrResetFailed):
+		h.writeError(w, http.StatusBadGateway, "openai_reset_failed", "官方重置请求失败", true, nil)
+	default:
+		h.writeError(w, http.StatusInternalServerError, "openai_reset_failed", "OpenAI 重置失败", true, nil)
 	}
 }
 

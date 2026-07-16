@@ -188,6 +188,90 @@ export interface ProAccountOAuthResult {
   account?: ProAccount;
 }
 
+export type ProAccountBatchAction = 'enable' | 'disable' | 'test' | 'delete';
+
+export interface ProAccountBatchItemInput {
+  account: ProAccount;
+  model?: string;
+}
+
+export interface ProAccountItemResult {
+  proAccountId: string;
+  success: boolean;
+  code?: string;
+  message?: string;
+  retryable: boolean;
+  account?: ProAccount;
+  connectivity?: ProAccountConnectivityResult;
+}
+
+export interface ProAccountBatchResult {
+  action: ProAccountBatchAction;
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: ProAccountItemResult[];
+}
+
+export interface ProAccountBindingReview {
+  id: number;
+  discoveryKey: string;
+  sourceType: string;
+  sourceLocator: string;
+  authIndex?: string;
+  resolutionStatus: string;
+  candidateIds: string[];
+  reasonCode: string;
+  driftType: 'file_path' | 'api_credential';
+  firstSeenAtMs: number;
+  lastSeenAtMs: number;
+}
+
+export interface ProAccountBindingReviewItem {
+  review: ProAccountBindingReview;
+  candidates: ProAccount[];
+}
+
+export interface ProAccountBindingReviewsResponse {
+  items: ProAccountBindingReviewItem[];
+  total: number;
+}
+
+export interface ProAccountRebindItemInput {
+  reviewId: number;
+  account: ProAccount;
+}
+
+export interface ProAccountRebindItemResult extends ProAccountItemResult {
+  reviewId: number;
+}
+
+export interface ProAccountRebindResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: ProAccountRebindItemResult[];
+}
+
+export interface ProAccountResetCredit {
+  id?: string;
+  expiresAtMs?: number;
+}
+
+export interface ProAccountResetCreditsResult {
+  capability: 'supported' | 'unsupported' | 'unknown';
+  availableCount?: number;
+  credits: ProAccountResetCredit[];
+  updatedAtMs: number;
+  errorCode?: string;
+  retryable: boolean;
+}
+
+export interface ProAccountResetResult {
+  credits: ProAccountResetCreditsResult;
+  operation: ProAccountOperation;
+}
+
 export interface ProAccountProbeInput {
   operationId: string;
   idempotencyKey: string;
@@ -501,6 +585,109 @@ export const proAccountsApi = {
           save_disabled_on_test_failure: input.saveDisabledOnTestFailure,
         },
         requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async batch(
+    base: string,
+    managementKey: string,
+    action: ProAccountBatchAction,
+    items: ProAccountBatchItemInput[],
+    operationId: string,
+    idempotencyKey: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountBatchResult>(
+        buildURL(base, '/v0/pro/accounts/batch'),
+        {
+          operation_id: operationId,
+          idempotency_key: idempotencyKey,
+          action,
+          items: items.map((item) => ({
+            pro_account_id: item.account.id,
+            expected_version: item.account.version,
+            model: item.model,
+          })),
+        },
+        requestConfig(managementKey, idempotencyKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async bindingReviews(base: string, managementKey: string, limit = 100) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    try {
+      const response = await axios.get<ProAccountBindingReviewsResponse>(
+        buildURL(base, '/v0/pro/accounts/binding-reviews', query),
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async rebind(
+    base: string,
+    managementKey: string,
+    items: ProAccountRebindItemInput[],
+    operationId: string,
+    idempotencyKey: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountRebindResult>(
+        buildURL(base, '/v0/pro/accounts/rebind'),
+        {
+          operation_id: operationId,
+          idempotency_key: idempotencyKey,
+          items: items.map((item) => ({
+            review_id: item.reviewId,
+            pro_account_id: item.account.id,
+            expected_version: item.account.version,
+          })),
+        },
+        requestConfig(managementKey, idempotencyKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async resetCredits(base: string, managementKey: string, accountId: string) {
+    try {
+      const response = await axios.get<ProAccountResetCreditsResult>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(accountId)}/openai-reset-credits`),
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async resetOpenAI(
+    base: string,
+    managementKey: string,
+    account: ProAccount,
+    operationId: string,
+    idempotencyKey: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountResetResult>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(account.id)}/openai-reset`),
+        {
+          ...mutationBody(operationId, idempotencyKey, account.version),
+          confirmed: true,
+        },
+        requestConfig(managementKey, idempotencyKey)
       );
       return response.data;
     } catch (error) {

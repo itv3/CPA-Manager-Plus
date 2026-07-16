@@ -2,6 +2,7 @@ package proaccount_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -244,5 +245,59 @@ func TestRepositoryManagedRebindPreservesUUIDAndSoftDeleteKeepsHistory(t *testin
 	}
 	if bindings != 2 {
 		t.Fatalf("软删除不应移除绑定历史，数量 = %d", bindings)
+	}
+}
+
+func TestBindingReviewRequiresCandidateAndResolvesIdempotently(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "manager.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repository := proaccount.New(db)
+	created, err := repository.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "旧账号",
+		AuthIndex: "auth-old", SourceLocator: "/old/account.json", SourceFingerprint: "same-identity",
+	}}, 1000, false)
+	if err != nil || len(created.Items) != 1 || created.Items[0].ProAccountID == "" {
+		t.Fatalf("创建账号：result=%#v err=%v", created, err)
+	}
+	accountID := created.Items[0].ProAccountID
+	pending, err := repository.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "漂移账号",
+		AuthIndex: "auth-new", SourceLocator: "/new/account.json", SourceFingerprint: "same-identity",
+	}}, 2000, false)
+	if err != nil || pending.Pending != 1 || pending.Items[0].ReasonCode != "file_path_drift_confirmation" {
+		t.Fatalf("漂移识别：result=%#v err=%v", pending, err)
+	}
+	reviews, err := repository.ListBindingReviews(context.Background(), nil, 100)
+	if err != nil || len(reviews) != 1 || reviews[0].DriftType != "file_path" {
+		t.Fatalf("待确认列表：items=%#v err=%v", reviews, err)
+	}
+	driftedDiscovery := model.ProAccountDiscovery{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "漂移账号",
+		AuthIndex: "auth-new", SourceLocator: "/new/account.json", SourceFingerprint: "same-identity",
+	}
+	if _, err := repository.RebindFromReview(context.Background(), reviews[0].ID, "not-a-candidate", 1, driftedDiscovery, 3000); !errors.Is(err, proaccount.ErrBindingReviewCandidateInvalid) {
+		t.Fatalf("无效候选错误 = %v", err)
+	}
+	if _, err := repository.RebindFromReview(context.Background(), reviews[0].ID, accountID, 99, driftedDiscovery, 3000); !errors.Is(err, proaccount.ErrVersionConflict) {
+		t.Fatalf("错误版本重绑错误 = %v", err)
+	}
+	stillPending, ok, err := repository.GetBindingReview(context.Background(), reviews[0].ID)
+	if err != nil || !ok || stillPending.ResolutionStatus != model.ProBindingResolutionPending {
+		t.Fatalf("重绑失败必须回滚确认记录：item=%#v ok=%v err=%v", stillPending, ok, err)
+	}
+	rebound, err := repository.RebindFromReview(context.Background(), reviews[0].ID, accountID, 1, driftedDiscovery, 3000)
+	if err != nil || rebound.ID != accountID || rebound.Binding == nil || rebound.Binding.SourceLocator != "/new/account.json" {
+		t.Fatalf("原子重绑结果：item=%#v err=%v", rebound, err)
+	}
+	resolved, ok, err := repository.GetBindingReview(context.Background(), reviews[0].ID)
+	if err != nil || !ok || resolved.ResolutionStatus != "resolved" || resolved.ResolvedAccountID != accountID || resolved.ResolvedAtMS != 3000 {
+		t.Fatalf("确认结果：item=%#v ok=%v err=%v", resolved, ok, err)
+	}
+	replayed, err := repository.RebindFromReview(context.Background(), reviews[0].ID, accountID, 1, driftedDiscovery, 4000)
+	if err != nil || replayed.ID != accountID || replayed.Version != rebound.Version {
+		t.Fatalf("幂等确认：item=%#v err=%v", replayed, err)
 	}
 }

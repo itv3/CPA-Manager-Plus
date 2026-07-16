@@ -49,6 +49,7 @@ type AccountSnapshot struct {
 	BaseURL           string
 	Headers           map[string]string
 	CredentialDraft   bool
+	UpstreamAccountID string
 }
 
 type SnapshotResult struct {

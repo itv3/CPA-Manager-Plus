@@ -187,7 +187,7 @@ func canTransition(from string, to string) bool {
 
 func validOperationType(value string) bool {
 	switch value {
-	case "add", "edit", "model_update", "test", "enable", "disable", "delete", "migrate", "rebind":
+	case "add", "edit", "model_update", "test", "enable", "disable", "delete", "migrate", "rebind", "reset":
 		return true
 	default:
 		return false
