@@ -117,3 +117,16 @@ func TestWriteAndVerifyModelRulesReadsBackVersion(t *testing.T) {
 		t.Fatalf("生效规则 = %#v", applied)
 	}
 }
+
+func TestEditableHeadersExcludeCredentialValues(t *testing.T) {
+	result := editableHeaders(map[string]string{
+		"Authorization":  "Bearer secret",
+		"X-API-Key":      "secret-key",
+		"Cookie":         "session=secret",
+		"X-Tenant":       "tenant-a",
+		"X-Feature-Flag": "enabled",
+	})
+	if !reflect.DeepEqual(result, map[string]string{"X-Tenant": "tenant-a", "X-Feature-Flag": "enabled"}) {
+		t.Fatalf("可编辑 Header = %#v", result)
+	}
+}

@@ -22,6 +22,8 @@ type Repository interface {
 	Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, error)
 	UpdateModelRules(ctx context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error)
 	RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error)
+	RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error)
+	SoftDelete(ctx context.Context, accountID string, expectedVersion int64, nowMS int64) (model.ProAccount, error)
 }
 
 var (
@@ -59,7 +61,7 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 	query := `select
 		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
-		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
+		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
 		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
@@ -95,7 +97,7 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 }
 
 func buildListWhere(filter model.ProAccountListFilter) (string, []any, error) {
-	clauses := make([]string, 0)
+	clauses := []string{`a.deleted_at_ms is null`}
 	args := make([]any, 0)
 	if search := strings.TrimSpace(filter.Search); search != "" {
 		clauses = append(clauses, `(lower(coalesce(a.name, '')) like ? or lower(coalesce(a.email, '')) like ? or lower(a.id) like ?)`)
@@ -125,9 +127,6 @@ func buildListWhere(filter model.ProAccountListFilter) (string, []any, error) {
 		}
 		clauses = append(clauses, `(a.updated_at_ms < ? or (a.updated_at_ms = ? and a.id < ?))`)
 		args = append(args, cursor.UpdatedAtMS, cursor.UpdatedAtMS, cursor.ID)
-	}
-	if len(clauses) == 0 {
-		return "", args, nil
 	}
 	return "where " + strings.Join(clauses, " and "), args, nil
 }
@@ -160,7 +159,7 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 	row := r.db.QueryRowContext(ctx, `select
 		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
-		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
+		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
 		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
@@ -445,7 +444,7 @@ type rowScanner interface {
 func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var item model.ProAccount
 	var name, email, lastError, allowedJSON, mappingJSON, modelRuleVersion sql.NullString
-	var lastUsed, lastTested, expires sql.NullInt64
+	var lastUsed, lastTested, expires, deletedAt sql.NullInt64
 	var enabled int
 	var bindingID sql.NullInt64
 	var authIndex, bindingSourceType, sourceLocator, sourceFingerprint, bindingStatus sql.NullString
@@ -454,7 +453,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	if err := row.Scan(
 		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &name, &email, &enabled,
 		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON, &modelRuleVersion,
-		&lastUsed, &lastTested, &expires, &item.CreatedAtMS, &item.UpdatedAtMS, &item.Version,
+		&lastUsed, &lastTested, &expires, &deletedAt, &item.CreatedAtMS, &item.UpdatedAtMS, &item.Version,
 		&bindingID, &authIndex, &bindingSourceType, &sourceLocator, &sourceFingerprint,
 		&bindingStatus, &isCurrent, &validFrom, &validTo, &firstSeen, &lastSeen, &bindingCreated, &bindingUpdated,
 	); err != nil {
@@ -468,6 +467,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	item.LastUsedAtMS = lastUsed.Int64
 	item.LastTestedAtMS = lastTested.Int64
 	item.ExpiresAtMS = expires.Int64
+	item.DeletedAtMS = deletedAt.Int64
 	item.AllowedModels = []string{}
 	item.ModelMapping = map[string]string{}
 	if allowedJSON.Valid && allowedJSON.String != "" {
@@ -554,6 +554,156 @@ func (r *repository) RecordTestResult(ctx context.Context, accountID string, suc
 	}
 	if affected == 0 {
 		return model.ProAccount{}, ErrAccountNotFound
+	}
+	item, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	return item, nil
+}
+
+func (r *repository) RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error) {
+	accountID = strings.TrimSpace(accountID)
+	discovery.SourceType = strings.TrimSpace(discovery.SourceType)
+	discovery.SourceLocator = strings.TrimSpace(discovery.SourceLocator)
+	discovery.AuthIndex = strings.TrimSpace(discovery.AuthIndex)
+	if accountID == "" || discovery.SourceType == "" || discovery.SourceLocator == "" {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	if expectedVersion <= 0 {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	allowedJSON, mappingJSON, err := marshalModelRules(discovery.AllowedModels, discovery.ModelMapping)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	defer tx.Rollback()
+	var currentVersion int64
+	if err := tx.QueryRowContext(ctx, `select version from pro_accounts where id = ? and deleted_at_ms is null`, accountID).Scan(&currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProAccount{}, ErrAccountNotFound
+		}
+		return model.ProAccount{}, err
+	}
+	if currentVersion != expectedVersion {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	var bindingID int64
+	var currentSourceType, currentLocator, currentAuthIndex string
+	err = tx.QueryRowContext(ctx, `select id, source_type, source_locator, coalesce(auth_index, '')
+		from pro_account_bindings where pro_account_id = ? and is_current = 1 limit 1`, accountID).
+		Scan(&bindingID, &currentSourceType, &currentLocator, &currentAuthIndex)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.ProAccount{}, err
+	}
+	sameBinding := err == nil && currentSourceType == discovery.SourceType && currentLocator == discovery.SourceLocator && currentAuthIndex == discovery.AuthIndex
+	if sameBinding {
+		if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
+			source_fingerprint = ?, binding_status = ?, last_seen_at_ms = ?, updated_at_ms = ? where id = ?`,
+			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, bindingID); err != nil {
+			return model.ProAccount{}, err
+		}
+	} else {
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
+				binding_status = 'historical', is_current = 0, valid_to_ms = ?, updated_at_ms = ? where id = ?`, nowMS, nowMS, bindingID); err != nil {
+				return model.ProAccount{}, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `insert into pro_account_bindings (
+			pro_account_id, auth_index, source_type, source_locator, source_fingerprint, binding_status,
+			is_current, valid_from_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+		) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+			accountID, nullString(discovery.AuthIndex), discovery.SourceType, discovery.SourceLocator,
+			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, nowMS, nowMS, nowMS); err != nil {
+			return model.ProAccount{}, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `update pro_accounts set
+		platform = ?, auth_type = ?, source_type = ?, name = ?, email = ?, enabled = ?,
+		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?,
+		model_rule_version = ?, expires_at_ms = ?, updated_at_ms = ?, version = version + 1
+		where id = ? and version = ? and deleted_at_ms is null`,
+		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
+		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
+		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS,
+		accountID, expectedVersion)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return model.ProAccount{}, err
+		}
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProAccount{}, err
+	}
+	item, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	return item, nil
+}
+
+func (r *repository) SoftDelete(ctx context.Context, accountID string, expectedVersion int64, nowMS int64) (model.ProAccount, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	if expectedVersion <= 0 {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `update pro_accounts set
+		enabled = 0, health_status = 'deleted', deleted_at_ms = ?, updated_at_ms = ?, version = version + 1
+		where id = ? and version = ? and deleted_at_ms is null`, nowMS, nowMS, accountID, expectedVersion)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if affected == 0 {
+		var exists int
+		if scanErr := tx.QueryRowContext(ctx, `select count(*) from pro_accounts where id = ?`, accountID).Scan(&exists); scanErr != nil {
+			return model.ProAccount{}, scanErr
+		}
+		if exists == 0 {
+			return model.ProAccount{}, ErrAccountNotFound
+		}
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
+		binding_status = 'deleted', is_current = 0, valid_to_ms = ?, updated_at_ms = ?
+		where pro_account_id = ? and is_current = 1`, nowMS, nowMS, accountID); err != nil {
+		return model.ProAccount{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProAccount{}, err
 	}
 	item, ok, err := r.Get(ctx, accountID)
 	if err != nil {

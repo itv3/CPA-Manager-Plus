@@ -193,3 +193,56 @@ func TestRepositoryUsageUsesBindingValidity(t *testing.T) {
 		t.Fatalf("成本聚合 = %#v", usage)
 	}
 }
+
+func TestRepositoryManagedRebindPreservesUUIDAndSoftDeleteKeepsHistory(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "api", SourceType: "config_codex_api_key",
+		Name: "OpenAI API", Enabled: true, AuthIndex: "old-auth", SourceLocator: "index:0",
+	}}, 1000, false)
+	if err != nil {
+		t.Fatalf("创建账号：%v", err)
+	}
+	accountID := created.Items[0].ProAccountID
+	rebound, err := repo.RebindManaged(ctx, accountID, 1, model.ProAccountDiscovery{
+		Platform: "openai", AuthType: "api", SourceType: "config_openai_compatibility",
+		Name: "OpenAI API", Enabled: true, AuthIndex: "new-auth", SourceLocator: "provider:0:key:0",
+	}, 2000)
+	if err != nil {
+		t.Fatalf("轮换绑定：%v", err)
+	}
+	if rebound.ID != accountID || rebound.Binding == nil || rebound.Binding.AuthIndex != "new-auth" || rebound.Version != 2 {
+		t.Fatalf("轮换结果 = %#v", rebound)
+	}
+	var historicalCount int
+	if err := db.QueryRow(`select count(*) from pro_account_bindings where pro_account_id = ? and is_current = 0 and auth_index = 'old-auth' and valid_to_ms = 2000`, accountID).Scan(&historicalCount); err != nil {
+		t.Fatalf("读取历史绑定：%v", err)
+	}
+	if historicalCount != 1 {
+		t.Fatalf("历史绑定数量 = %d", historicalCount)
+	}
+	deleted, err := repo.SoftDelete(ctx, accountID, rebound.Version, 3000)
+	if err != nil {
+		t.Fatalf("软删除：%v", err)
+	}
+	if deleted.DeletedAtMS != 3000 || deleted.Binding != nil {
+		t.Fatalf("软删除结果 = %#v", deleted)
+	}
+	list, err := repo.List(ctx, model.ProAccountListFilter{Limit: 10})
+	if err != nil || list.Total != 0 || len(list.Items) != 0 {
+		t.Fatalf("软删除后列表 = %#v err=%v", list, err)
+	}
+	var bindings int
+	if err := db.QueryRow(`select count(*) from pro_account_bindings where pro_account_id = ?`, accountID).Scan(&bindings); err != nil {
+		t.Fatalf("读取保留绑定：%v", err)
+	}
+	if bindings != 2 {
+		t.Fatalf("软删除不应移除绑定历史，数量 = %d", bindings)
+	}
+}

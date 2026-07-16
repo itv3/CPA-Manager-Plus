@@ -81,7 +81,7 @@ func capabilitiesFromHeaders(headers http.Header) Capabilities {
 
 func accountFromAuthFile(file cpaauthfiles.File) (AccountSnapshot, bool) {
 	locator := strings.TrimSpace(file.Name)
-	if locator == "" {
+	if locator == "" || mapBool(file.Raw, "runtime_only", "runtimeOnly", "plugin_virtual", "pluginVirtual") {
 		return AccountSnapshot{}, false
 	}
 	platform := normalizedPlatform(file.Provider, file.Raw)
@@ -104,6 +104,9 @@ func accountFromAuthFile(file cpaauthfiles.File) (AccountSnapshot, bool) {
 		ModelMapping:      mapStringMap(file.Raw, "model_mapping", "modelMapping"),
 		ModelRuleVersion:  mapString(file.Raw, "model_rule_version", "modelRuleVersion", "model-rule-version"),
 		ExpiresAtMS:       mapTimeMS(file.Raw, "expires_at", "expiresAt", "expired_at"),
+		BaseURL:           mapString(file.Raw, "base_url", "base-url", "baseUrl"),
+		Headers:           mapStringMap(file.Raw, "headers"),
+		CredentialDraft:   mapBool(file.Raw, "credential_draft", "credentialDraft", "pro_draft"),
 	}, true
 }
 
@@ -137,6 +140,8 @@ func (c *Client) snapshotConfigEndpoint(ctx context.Context, baseURL string, man
 			AllowedModels:     mapStringSlice(entry, "allowed-models", "allowed_models", "allowedModels"),
 			ModelMapping:      modelMappingFromList(mapSlice(entry, "models")),
 			ModelRuleVersion:  mapString(entry, "model-rule-version", "model_rule_version", "modelRuleVersion"),
+			BaseURL:           base,
+			Headers:           mapStringMap(entry, "headers"),
 		})
 	}
 	return accounts, true, nil
@@ -172,6 +177,8 @@ func (c *Client) snapshotOpenAICompatibility(ctx context.Context, baseURL string
 				SourceFingerprint: fingerprint("openai", providerName, base), ModelMapping: mapping,
 				ModelRuleVersion: mapString(provider, "model-rule-version", "model_rule_version", "modelRuleVersion"),
 				SharedProvider:   true,
+				BaseURL:          base,
+				Headers:          mapStringMap(provider, "headers"),
 			})
 			continue
 		}
@@ -186,6 +193,8 @@ func (c *Client) snapshotOpenAICompatibility(ctx context.Context, baseURL string
 				ModelMapping:      mapping,
 				ModelRuleVersion:  mapString(keyEntry, "model-rule-version", "model_rule_version", "modelRuleVersion"),
 				SharedProvider:    true,
+				BaseURL:           base,
+				Headers:           mapStringMap(provider, "headers"),
 			})
 		}
 	}

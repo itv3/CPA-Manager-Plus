@@ -19,15 +19,23 @@ type proAccountOperationRecovery interface {
 
 type ProAccountRecoveryWorker struct {
 	operations proAccountOperationRecovery
-	interval   time.Duration
+	recovery   interface {
+		Recover(ctx context.Context, operation model.ProAccountDraft) error
+	}
+	interval time.Duration
 }
 
-func NewProAccountRecoveryWorker(operations proAccountOperationRecovery, interval ...time.Duration) *ProAccountRecoveryWorker {
+func NewProAccountRecoveryWorker(operations proAccountOperationRecovery, recovery ...interface {
+	Recover(ctx context.Context, operation model.ProAccountDraft) error
+}) *ProAccountRecoveryWorker {
 	wakeInterval := defaultProAccountRecoveryInterval
-	if len(interval) > 0 && interval[0] > 0 {
-		wakeInterval = interval[0]
+	var recoveryService interface {
+		Recover(ctx context.Context, operation model.ProAccountDraft) error
 	}
-	return &ProAccountRecoveryWorker{operations: operations, interval: wakeInterval}
+	if len(recovery) > 0 {
+		recoveryService = recovery[0]
+	}
+	return &ProAccountRecoveryWorker{operations: operations, recovery: recoveryService, interval: wakeInterval}
 }
 
 func (w *ProAccountRecoveryWorker) Start(ctx context.Context) {
@@ -59,13 +67,14 @@ func (w *ProAccountRecoveryWorker) runOnce(ctx context.Context) {
 	}
 	for _, item := range items {
 		if item.State == model.ProOperationStateCompensating {
+			w.recover(ctx, item)
 			continue
 		}
 		action := item.CompensationAction
 		if action == "" {
 			action = "resume_or_cleanup"
 		}
-		_, err := w.operations.Transition(ctx, item.OperationID, proaccountoperation.TransitionInput{
+		transitioned, err := w.operations.Transition(ctx, item.OperationID, proaccountoperation.TransitionInput{
 			ExpectedVersion: item.Version, State: model.ProOperationStateCompensating,
 			RetryCount: item.RetryCount, CleanupDeadlineMS: item.CleanupDeadlineMS,
 			CompensationAction: action, ErrorCode: "cleanup_deadline_exceeded",
@@ -73,6 +82,19 @@ func (w *ProAccountRecoveryWorker) runOnce(ctx context.Context) {
 		})
 		if err != nil && !errors.Is(err, proaccountoperation.ErrOperationVersionConflict) && ctx.Err() == nil {
 			log.Printf("标记统一账号恢复操作失败 operation_id=%s: %v", item.OperationID, err)
+			continue
 		}
+		if err == nil {
+			w.recover(ctx, transitioned)
+		}
+	}
+}
+
+func (w *ProAccountRecoveryWorker) recover(ctx context.Context, operation model.ProAccountDraft) {
+	if w.recovery == nil {
+		return
+	}
+	if err := w.recovery.Recover(ctx, operation); err != nil && ctx.Err() == nil {
+		log.Printf("恢复统一账号操作失败 operation_id=%s: %v", operation.OperationID, err)
 	}
 }

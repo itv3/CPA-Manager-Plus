@@ -20,6 +20,7 @@ import (
 	panelsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/panel"
 	proaccountsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccount"
 	proaccountgatewaysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
+	proaccountlifecyclesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountlifecycle"
 	proaccountmodelssvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodels"
 	proaccountoperationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountoperation"
 	proaccountprobesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
@@ -60,6 +61,7 @@ type Context struct {
 	PanelService                   *panelsvc.Service
 	ProAccountService              *proaccountsvc.Service
 	ProAccountGateway              *proaccountgatewaysvc.Client
+	ProAccountLifecycleService     *proaccountlifecyclesvc.Service
 	ProAccountModelsService        *proaccountmodelssvc.Service
 	ProAccountOperationService     *proaccountoperationsvc.Service
 	ProAccountProbeService         *proaccountprobesvc.Service
@@ -91,6 +93,7 @@ func FromExisting(
 	proAccountOperationService := proaccountoperationsvc.New(st.ProAccountDrafts)
 	proAccountModelsService := proaccountmodelssvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
 	proAccountProbeService := proaccountprobesvc.New(nil)
+	proAccountLifecycleService := proaccountlifecyclesvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountProbeService, proAccountOperationService)
 	proAccountTestService := proaccounttestsvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
 	proAccountUsageService := proaccountusagesvc.New(st.ProAccounts, proAccountService, managerConfigService)
 	return &Context{
@@ -115,6 +118,7 @@ func FromExisting(
 		PanelService:                   panelsvc.New(cfg.PanelPath, embeddedPanel),
 		ProAccountService:              proAccountService,
 		ProAccountGateway:              proAccountGateway,
+		ProAccountLifecycleService:     proAccountLifecycleService,
 		ProAccountModelsService:        proAccountModelsService,
 		ProAccountOperationService:     proAccountOperationService,
 		ProAccountProbeService:         proAccountProbeService,

@@ -82,7 +82,10 @@ func runServer() {
 	defer stop()
 
 	serverApp := httpapi.New(cfg, db, manager)
-	proAccountRecoveryWorker := worker.NewProAccountRecoveryWorker(serverApp.AppContext().ProAccountOperationService)
+	proAccountRecoveryWorker := worker.NewProAccountRecoveryWorker(
+		serverApp.AppContext().ProAccountOperationService,
+		serverApp.AppContext().ProAccountLifecycleService,
+	)
 	proAccountRecoveryWorker.Start(ctx)
 	automationSettingsService := serverApp.AppContext().AccountProcessingPolicyService
 	runtimeSettings := automationSettingsService.RuntimeSettings(ctx)

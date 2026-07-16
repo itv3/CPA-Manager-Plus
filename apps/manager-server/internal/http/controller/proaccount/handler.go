@@ -17,6 +17,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccountdraft"
 	proaccountsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccount"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountlifecycle"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodels"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountoperation"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
@@ -43,6 +44,14 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleOperation(w, r, strings.TrimPrefix(path, "/v0/pro/accounts/operations/"))
 	case path == "/v0/pro/accounts/probe":
 		h.handleProbe(w, r)
+	case path == "/v0/pro/accounts/vertex":
+		h.handleCreateVertex(w, r)
+	case path == "/v0/pro/accounts/oauth/start":
+		h.handleOAuthStart(w, r)
+	case path == "/v0/pro/accounts/oauth/status":
+		h.handleOAuthStatus(w, r)
+	case path == "/v0/pro/accounts/oauth/cancel":
+		h.handleOAuthCancel(w, r)
 	case path == "/v0/pro/accounts/sync":
 		h.handleSync(w, r)
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/usage"):
@@ -51,6 +60,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleModels(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/models"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/test"):
 		h.handleTest(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/test"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/complete"):
+		h.handleComplete(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/complete"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/"):
 		h.handleItem(w, r, strings.TrimPrefix(path, "/v0/pro/accounts/"))
 	default:
@@ -189,6 +200,92 @@ func (h *Handler) handleProbe(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, map[string]any{"probe": result, "operation": operation})
 }
 
+func (h *Handler) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	var request struct {
+		OperationID    string `json:"operation_id"`
+		IdempotencyKey string `json:"idempotency_key"`
+		Platform       string `json:"platform"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "OAuth 启动请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.StartOAuth(r.Context(), proaccountlifecycle.OAuthStartInput{
+		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), Platform: request.Platform,
+	})
+	if err != nil {
+		h.writeLifecycleOAuthError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusCreated, result)
+}
+
+func (h *Handler) handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.OAuthStatus(r.Context(), r.URL.Query().Get("operation_id"))
+	if err != nil {
+		h.writeLifecycleOAuthError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleOAuthCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	var request struct {
+		OperationID string `json:"operation_id"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "OAuth 取消请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.CancelOAuth(r.Context(), request.OperationID)
+	if err != nil {
+		h.writeLifecycleOAuthError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request, accountID string) {
+	if r.Method != http.MethodPost || !validPathID(accountID) {
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+		return
+	}
+	var request struct {
+		OperationID     string            `json:"operation_id"`
+		ExpectedVersion int64             `json:"expected_version"`
+		AllowedModels   []string          `json:"allowed_models"`
+		ModelMapping    map[string]string `json:"model_mapping"`
+		TestModel       string            `json:"test_model"`
+		SaveDisabled    bool              `json:"save_disabled_on_test_failure"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "草稿完成请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.CompleteDraft(r.Context(), proaccountlifecycle.CompleteDraftInput{
+		OperationID: request.OperationID, AccountID: accountID, ExpectedVersion: request.ExpectedVersion,
+		AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping,
+		TestModel: request.TestModel, SaveDisabled: request.SaveDisabled,
+	})
+	if err != nil {
+		h.writeLifecycleError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, accountID string) {
 	if r.Method != http.MethodPut || !validPathID(accountID) {
 		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
@@ -284,6 +381,10 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request, id string)
 }
 
 func (h *Handler) handleCollection(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		h.handleCreateAPI(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
 		return
@@ -325,16 +426,25 @@ func parseListFilter(r *http.Request) (model.ProAccountListFilter, error) {
 }
 
 func (h *Handler) handleItem(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
-		return
-	}
 	id = strings.TrimSpace(id)
 	if id == "" || strings.Contains(id, "/") {
 		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "Pro account not found", false, nil)
 		return
 	}
-	item, err := h.App.ProAccountService.Get(r.Context(), id)
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetItem(w, r, id)
+	case http.MethodPut:
+		h.handleUpdateItem(w, r, id)
+	case http.MethodDelete:
+		h.handleDeleteItem(w, r, id)
+	default:
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+	}
+}
+
+func (h *Handler) handleGetItem(w http.ResponseWriter, r *http.Request, id string) {
+	item, editable, err := h.App.ProAccountLifecycleService.Details(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, proaccountsvc.ErrAccountNotFound) {
 			h.writeError(w, http.StatusNotFound, "pro_account_not_found", err.Error(), false, nil)
@@ -343,7 +453,152 @@ func (h *Handler) handleItem(w http.ResponseWriter, r *http.Request, id string) 
 		h.writeError(w, http.StatusInternalServerError, "pro_account_get_failed", err.Error(), true, nil)
 		return
 	}
-	response.JSON(w, http.StatusOK, map[string]any{"item": item})
+	response.JSON(w, http.StatusOK, map[string]any{"item": item, "editable": editable})
+}
+
+func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		OperationID    string            `json:"operation_id"`
+		IdempotencyKey string            `json:"idempotency_key"`
+		Platform       string            `json:"platform"`
+		AuthType       string            `json:"auth_type"`
+		Name           string            `json:"name"`
+		BaseURL        string            `json:"base_url"`
+		APIKey         string            `json:"api_key"`
+		ProtocolMode   string            `json:"protocol_mode"`
+		Headers        map[string]string `json:"headers"`
+		AllowedModels  []string          `json:"allowed_models"`
+		ModelMapping   map[string]string `json:"model_mapping"`
+		TestModel      string            `json:"test_model"`
+		SaveDisabled   bool              `json:"save_disabled_on_test_failure"`
+	}
+	if err := decodeBody(w, r, &request); err != nil || (request.AuthType != "" && request.AuthType != "api") {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "API 账号添加请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.CreateAPI(r.Context(), proaccountlifecycle.CreateAPIInput{
+		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey),
+		Platform: request.Platform, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
+		ProtocolMode: request.ProtocolMode, Headers: request.Headers,
+		AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping,
+		TestModel: request.TestModel, SaveDisabled: request.SaveDisabled,
+	})
+	if err != nil {
+		h.writeLifecycleError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusCreated, result)
+}
+
+func (h *Handler) handleCreateVertex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 3*1024*1024)
+	if err := r.ParseMultipartForm(3 * 1024 * 1024); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "Vertex 上传请求无效", false, nil)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "vertex_file_required", "请选择 Service Account JSON 文件", false, nil)
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 2*1024*1024+1))
+	if err != nil || len(raw) == 0 || len(raw) > 2*1024*1024 {
+		h.writeError(w, http.StatusBadRequest, "invalid_vertex_file", "Service Account 文件无效或超过 2 MiB", false, nil)
+		return
+	}
+	allowedModels := []string{}
+	modelMapping := map[string]string{}
+	if value := strings.TrimSpace(r.FormValue("allowed_models")); value != "" {
+		if json.Unmarshal([]byte(value), &allowedModels) != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid_model_rules", "允许模型格式无效", false, nil)
+			return
+		}
+	}
+	if value := strings.TrimSpace(r.FormValue("model_mapping")); value != "" {
+		if json.Unmarshal([]byte(value), &modelMapping) != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid_model_rules", "模型映射格式无效", false, nil)
+			return
+		}
+	}
+	saveDisabled, _ := strconv.ParseBool(strings.TrimSpace(r.FormValue("save_disabled_on_test_failure")))
+	result, err := h.App.ProAccountLifecycleService.CreateVertex(r.Context(), proaccountlifecycle.CreateVertexInput{
+		OperationID: r.FormValue("operation_id"), IdempotencyKey: idempotencyKey(r, r.FormValue("idempotency_key")),
+		FileName: header.Filename, ServiceAccount: raw, Location: r.FormValue("location"),
+		AllowedModels: allowedModels, ModelMapping: modelMapping,
+		TestModel: r.FormValue("test_model"), SaveDisabled: saveDisabled,
+	})
+	if err != nil {
+		h.writeLifecycleError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusCreated, result)
+}
+
+func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accountID string) {
+	var request struct {
+		OperationID     string             `json:"operation_id"`
+		IdempotencyKey  string             `json:"idempotency_key"`
+		ExpectedVersion int64              `json:"expected_version"`
+		Enabled         *bool              `json:"enabled"`
+		Name            *string            `json:"name"`
+		BaseURL         *string            `json:"base_url"`
+		APIKey          string             `json:"api_key"`
+		ProtocolMode    string             `json:"protocol_mode"`
+		Headers         *map[string]string `json:"headers"`
+		AllowedModels   []string           `json:"allowed_models"`
+		ModelMapping    map[string]string  `json:"model_mapping"`
+		TestModel       string             `json:"test_model"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "账号更新请求无效", false, nil)
+		return
+	}
+	mutation := proaccountlifecycle.MutationInput{
+		AccountID: accountID, OperationID: request.OperationID,
+		IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), ExpectedVersion: request.ExpectedVersion,
+	}
+	var result proaccountlifecycle.Result
+	var err error
+	if request.Enabled != nil {
+		result, err = h.App.ProAccountLifecycleService.SetEnabled(r.Context(), mutation, *request.Enabled)
+	} else {
+		result, err = h.App.ProAccountLifecycleService.Update(r.Context(), proaccountlifecycle.UpdateInput{
+			MutationInput: mutation, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
+			ProtocolMode: request.ProtocolMode, Headers: request.Headers,
+			AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping, TestModel: request.TestModel,
+		})
+	}
+	if err != nil {
+		h.writeLifecycleError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleDeleteItem(w http.ResponseWriter, r *http.Request, accountID string) {
+	var request struct {
+		OperationID     string `json:"operation_id"`
+		IdempotencyKey  string `json:"idempotency_key"`
+		ExpectedVersion int64  `json:"expected_version"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "账号删除请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.Delete(r.Context(), proaccountlifecycle.MutationInput{
+		AccountID: accountID, OperationID: request.OperationID,
+		IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), ExpectedVersion: request.ExpectedVersion,
+	})
+	if err != nil {
+		h.writeLifecycleError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) handleSync(w http.ResponseWriter, r *http.Request) {
@@ -435,6 +690,54 @@ func (h *Handler) writeTestError(w http.ResponseWriter, err error, result proacc
 		h.writeError(w, http.StatusConflict, "operation_conflict", "操作 ID 或幂等键发生冲突", false, details)
 	default:
 		h.writeError(w, http.StatusBadGateway, "connectivity_test_failed", "账号连通性测试失败", true, details)
+	}
+}
+
+func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result proaccountlifecycle.Result) {
+	details := map[string]any{"operation": result.Operation}
+	switch {
+	case errors.Is(err, proaccountsvc.ErrAccountNotFound), errors.Is(err, proaccountrepo.ErrAccountNotFound):
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrResourceVersionConflict):
+		h.writeError(w, http.StatusConflict, "version_conflict", "账号版本已变化，请刷新后重试", true, details)
+	case errors.Is(err, proaccountlifecycle.ErrUnsupportedAccountType):
+		h.writeError(w, http.StatusBadRequest, "unsupported_account_type", "该平台不支持所选认证方式", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrGatewayCapability):
+		h.writeError(w, http.StatusPreconditionFailed, "gateway_capability_required", "当前 Gateway 不具备安全添加账号所需能力", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrInvalidRequest), errors.Is(err, proaccountgateway.ErrInvalidModelRule):
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "账号生命周期请求无效", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrOperationState), errors.Is(err, proaccountlifecycle.ErrOperationConflict):
+		h.writeError(w, http.StatusConflict, "operation_state_conflict", "账号操作状态不允许执行当前步骤", false, details)
+	case errors.Is(err, proaccountdraft.ErrIdempotencyConflict), errors.Is(err, proaccountdraft.ErrOperationIDConflict):
+		h.writeError(w, http.StatusConflict, "operation_conflict", "操作 ID 或幂等键发生冲突", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrConnectivityFailed):
+		h.writeError(w, http.StatusUnprocessableEntity, "connectivity_test_failed", "账号连通性测试失败，未启用凭证", false, details)
+	case errors.Is(err, proaccountgateway.ErrCredentialNotReady):
+		h.writeError(w, http.StatusGatewayTimeout, "credential_not_ready", "Gateway 尚未完成凭证重载", true, details)
+	default:
+		h.writeError(w, http.StatusBadGateway, "account_lifecycle_failed", "账号生命周期操作失败", true, details)
+	}
+}
+
+func (h *Handler) writeLifecycleOAuthError(w http.ResponseWriter, err error, result proaccountlifecycle.OAuthResult) {
+	details := map[string]any{"operation": result.Operation}
+	switch {
+	case errors.Is(err, proaccountlifecycle.ErrUnsupportedAccountType), errors.Is(err, proaccountlifecycle.ErrInvalidRequest):
+		h.writeError(w, http.StatusBadRequest, "invalid_oauth_request", "OAuth 请求无效", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrGatewayCapability):
+		h.writeError(w, http.StatusPreconditionFailed, "oauth_draft_unsupported", "当前 Gateway 或 Token Store 不支持 OAuth 草稿首次持久化", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrOAuthCredentialAmbiguous):
+		h.writeError(w, http.StatusConflict, "oauth_credential_ambiguous", "同时发现多个 OAuth 草稿，需人工确认", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrOAuthCredentialMissing):
+		h.writeError(w, http.StatusNotFound, "oauth_credential_missing", "未找到本次 OAuth 授权保存的草稿凭证", true, details)
+	case errors.Is(err, proaccountlifecycle.ErrOperationState), errors.Is(err, proaccountlifecycle.ErrOperationConflict):
+		h.writeError(w, http.StatusConflict, "operation_state_conflict", "OAuth 操作状态不允许执行当前步骤", false, details)
+	case errors.Is(err, proaccountoperation.ErrOperationNotFound):
+		h.writeError(w, http.StatusNotFound, "operation_not_found", "账号操作不存在", false, details)
+	case errors.Is(err, proaccountdraft.ErrIdempotencyConflict), errors.Is(err, proaccountdraft.ErrOperationIDConflict):
+		h.writeError(w, http.StatusConflict, "operation_conflict", "操作 ID 或幂等键发生冲突", false, details)
+	default:
+		h.writeError(w, http.StatusBadGateway, "oauth_lifecycle_failed", "OAuth 生命周期操作失败", true, details)
 	}
 }
 

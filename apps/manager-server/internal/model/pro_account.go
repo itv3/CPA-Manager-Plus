@@ -40,6 +40,7 @@ type ProAccount struct {
 	LastUsedAtMS     int64              `json:"lastUsedAtMs,omitempty"`
 	LastTestedAtMS   int64              `json:"lastTestedAtMs,omitempty"`
 	ExpiresAtMS      int64              `json:"expiresAtMs,omitempty"`
+	DeletedAtMS      int64              `json:"deletedAtMs,omitempty"`
 	CreatedAtMS      int64              `json:"createdAtMs"`
 	UpdatedAtMS      int64              `json:"updatedAtMs"`
 	Version          int64              `json:"version"`
@@ -74,6 +75,7 @@ type ProAccountDraftCreate struct {
 }
 
 type ProAccountDraftUpdate struct {
+	ProAccountID       string
 	State              string
 	RetryCount         int
 	CleanupDeadlineMS  int64

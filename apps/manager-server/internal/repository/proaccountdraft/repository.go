@@ -119,9 +119,11 @@ func (r *repository) Update(ctx context.Context, operationID string, expectedVer
 		return model.ProAccountDraft{}, err
 	}
 	result, err := r.db.ExecContext(ctx, `update pro_account_drafts set
+		pro_account_id = case when ? <> '' then ? else pro_account_id end,
 		state = ?, version = version + 1, retry_count = ?, cleanup_deadline_ms = ?,
 		compensation_action = ?, error_code = ?, error_summary = ?, context_json = ?, updated_at_ms = ?
 		where operation_id = ? and version = ?`,
+		strings.TrimSpace(update.ProAccountID), strings.TrimSpace(update.ProAccountID),
 		update.State, update.RetryCount, update.CleanupDeadlineMS,
 		nullableString(update.CompensationAction), nullableString(update.ErrorCode), nullableString(update.ErrorSummary),
 		contextJSON, nowMS, strings.TrimSpace(operationID), expectedVersion)

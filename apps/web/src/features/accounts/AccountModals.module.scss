@@ -1,0 +1,221 @@
+@use '../../styles/variables' as *;
+
+.modal {
+  max-height: min(86vh, 760px);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+  min-width: 0;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.step {
+  min-width: 0;
+  padding: 9px 6px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.stepActive {
+  border-bottom-color: var(--primary-color);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.formStack {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+  min-width: 0;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: $spacing-md;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fieldFull {
+  grid-column: 1 / -1;
+}
+
+.fieldLabel {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.input,
+.select {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.textarea {
+  resize: vertical;
+  padding: 9px 10px;
+  line-height: 1.45;
+}
+
+.platforms,
+.authTypes {
+  display: grid;
+  gap: 8px;
+}
+
+.platforms {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.authTypes {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.choice {
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.choiceSelected {
+  border-color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 8%, var(--surface-primary));
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sectionTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.modelChoices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 8px 0;
+}
+
+.notice,
+.error,
+.success {
+  min-height: 36px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--border-color);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.error {
+  border-left-color: var(--danger-color, #b91c1c);
+  color: var(--danger-color, #b91c1c);
+}
+
+.success {
+  border-left-color: #15803d;
+  color: #15803d;
+}
+
+.inlineActions,
+.footer,
+.oauthStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.footer {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.review {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.review dt {
+  color: var(--text-tertiary);
+}
+
+.review dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.sharedWarning {
+  color: var(--warning-color, #a16207);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .modal {
+    max-height: 92vh;
+  }
+
+  .formGrid,
+  .platforms,
+  .authTypes,
+  .modelChoices {
+    grid-template-columns: 1fr;
+  }
+
+  .review {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .review dd {
+    margin-bottom: 7px;
+  }
+
+  .footer > * {
+    flex: 1;
+  }
+}

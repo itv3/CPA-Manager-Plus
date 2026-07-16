@@ -3,6 +3,7 @@ package proaccountgateway
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
@@ -24,9 +25,18 @@ func (c *Client) ResolveAccountRuntime(ctx context.Context, baseURL string, mana
 			return AccountRuntime{}, ErrGatewayAccountNotFound
 		}
 		platform := normalizedPlatform(file.Provider, file.Raw)
+		authType := normalizedAuthType(file.Provider, file.Raw)
+		accountBaseURL := valueOr(mapString(file.Raw, "base_url", "base-url", "baseUrl"), defaultBaseURL(platform, sourceType))
+		if authType == "vertex" {
+			projectID := mapString(file.Raw, "project_id", "projectId")
+			location := valueOr(mapString(file.Raw, "location", "region"), "us-central1")
+			if projectID != "" {
+				accountBaseURL = "https://" + location + "-aiplatform.googleapis.com/v1/projects/" + url.PathEscape(projectID) + "/locations/" + url.PathEscape(location) + "/publishers/google"
+			}
+		}
 		return AccountRuntime{
 			Platform: platform,
-			BaseURL:  valueOr(mapString(file.Raw, "base_url", "base-url", "baseUrl"), defaultBaseURL(platform, sourceType)),
+			BaseURL:  accountBaseURL,
 			Headers:  mapStringMap(file.Raw, "headers"),
 		}, nil
 	case SourceOpenAICompatibility:

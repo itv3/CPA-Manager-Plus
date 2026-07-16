@@ -46,6 +46,9 @@ type AccountSnapshot struct {
 	ModelRuleVersion  string
 	ExpiresAtMS       int64
 	SharedProvider    bool
+	BaseURL           string
+	Headers           map[string]string
+	CredentialDraft   bool
 }
 
 type SnapshotResult struct {
@@ -95,6 +98,45 @@ type ConnectivityResult struct {
 	Model      string `json:"model"`
 	ErrorCode  string `json:"errorCode,omitempty"`
 	Retryable  bool   `json:"retryable"`
+}
+
+type CreateAPIInput struct {
+	Platform      string
+	SourceType    string
+	Name          string
+	BaseURL       string
+	APIKey        string
+	Headers       map[string]string
+	AllowedModels []string
+	ModelMapping  map[string]string
+}
+
+type UpdateAPIInput struct {
+	APIKey  string
+	BaseURL *string
+	Headers *map[string]string
+}
+
+type EditableAccount struct {
+	BaseURL        string            `json:"baseUrl,omitempty"`
+	Headers        map[string]string `json:"headers"`
+	SharedProvider bool              `json:"sharedProvider"`
+}
+
+type OAuthStartResult struct {
+	URL   string `json:"url"`
+	State string `json:"state"`
+}
+
+type OAuthStatusResult struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+type ImportVertexInput struct {
+	FileName       string
+	ServiceAccount []byte
+	Location       string
 }
 
 func NormalizeModelRules(input ModelRules) (ModelRules, error) {

@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +13,391 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
+
+func TestProAccountLifecycleCreateMigrateToggleAndDelete(t *testing.T) {
+	responsesUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"upstream-model"}]}`))
+		case "/v1/responses":
+			_, _ = w.Write([]byte(`{"output":[{"type":"function_call","name":"probe_account"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(responsesUpstream.Close)
+	chatUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"upstream-model"}]}`))
+		case "/v1/responses":
+			http.NotFound(w, r)
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(chatUpstream.Close)
+	gatewayState := &lifecycleGatewayState{}
+	gateway := httptest.NewServer(gatewayState)
+	t.Cleanup(gateway.Close)
+	handler := newTestHandler(t, gateway.URL, true)
+
+	createRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts", fmt.Sprintf(`{
+		"operation_id":"create-operation","idempotency_key":"create-key","platform":"openai","auth_type":"api",
+		"name":"主 OpenAI","base_url":%q,"api_key":"candidate-key","protocol_mode":"responses",
+		"allowed_models":["client-model"],"model_mapping":{"client-model":"upstream-model"},"test_model":"client-model"
+	}`, responsesUpstream.URL), testutil.AdminKey)
+	testutil.RequireStatus(t, createRR, http.StatusCreated)
+	var created struct {
+		Account struct {
+			ID         string `json:"id"`
+			Version    int64  `json:"version"`
+			SourceType string `json:"sourceType"`
+			Enabled    bool   `json:"enabled"`
+		} `json:"account"`
+	}
+	testutil.DecodeJSON(t, createRR, &created)
+	if created.Account.ID == "" || created.Account.SourceType != "config_codex_api_key" || !created.Account.Enabled || created.Account.Version < 3 {
+		t.Fatalf("create body = %s", createRR.Body.String())
+	}
+	accountID := created.Account.ID
+
+	migrateRR := testutil.Request(t, handler, http.MethodPut, "/v0/pro/accounts/"+accountID, fmt.Sprintf(`{
+		"operation_id":"migrate-operation","idempotency_key":"migrate-key","expected_version":%d,
+		"base_url":%q,"api_key":"replacement-key","protocol_mode":"auto",
+		"allowed_models":["client-model"],"model_mapping":{"client-model":"upstream-model"},"test_model":"client-model"
+	}`, created.Account.Version, chatUpstream.URL), testutil.AdminKey)
+	testutil.RequireStatus(t, migrateRR, http.StatusOK)
+	var migrated struct {
+		Account struct {
+			ID         string `json:"id"`
+			Version    int64  `json:"version"`
+			SourceType string `json:"sourceType"`
+			Enabled    bool   `json:"enabled"`
+		} `json:"account"`
+	}
+	testutil.DecodeJSON(t, migrateRR, &migrated)
+	if migrated.Account.ID != accountID || migrated.Account.SourceType != "config_openai_compatibility" || !migrated.Account.Enabled {
+		t.Fatalf("migrate body = %s", migrateRR.Body.String())
+	}
+	gatewayState.mu.Lock()
+	if len(gatewayState.codex) != 0 || len(gatewayState.compat) != 1 {
+		gatewayState.mu.Unlock()
+		t.Fatalf("迁移后 Gateway 配置 codex=%d compat=%d", len(gatewayState.codex), len(gatewayState.compat))
+	}
+	gatewayState.mu.Unlock()
+
+	disableRR := testutil.Request(t, handler, http.MethodPut, "/v0/pro/accounts/"+accountID, fmt.Sprintf(`{
+		"operation_id":"disable-operation","idempotency_key":"disable-key","expected_version":%d,"enabled":false
+	}`, migrated.Account.Version), testutil.AdminKey)
+	testutil.RequireStatus(t, disableRR, http.StatusOK)
+	var disabled struct {
+		Account struct {
+			Version int64 `json:"version"`
+			Enabled bool  `json:"enabled"`
+		} `json:"account"`
+	}
+	testutil.DecodeJSON(t, disableRR, &disabled)
+	if disabled.Account.Enabled {
+		t.Fatalf("disable body = %s", disableRR.Body.String())
+	}
+
+	deleteRR := testutil.Request(t, handler, http.MethodDelete, "/v0/pro/accounts/"+accountID, fmt.Sprintf(`{
+		"operation_id":"delete-operation","idempotency_key":"delete-key","expected_version":%d
+	}`, disabled.Account.Version), testutil.AdminKey)
+	testutil.RequireStatus(t, deleteRR, http.StatusOK)
+	listRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts", "", testutil.AdminKey)
+	testutil.RequireStatus(t, listRR, http.StatusOK)
+	if !strings.Contains(listRR.Body.String(), `"total":0`) {
+		t.Fatalf("delete list body = %s", listRR.Body.String())
+	}
+	gatewayState.mu.Lock()
+	defer gatewayState.mu.Unlock()
+	if gatewayState.apiCalls < 2 || len(gatewayState.compat) != 0 {
+		t.Fatalf("Gateway 最终状态 apiCalls=%d compat=%d", gatewayState.apiCalls, len(gatewayState.compat))
+	}
+}
+
+func TestProAccountOAuthDraftCanCompleteAndCancel(t *testing.T) {
+	gatewayState := &oauthGatewayState{mapping: map[string]string{}}
+	gateway := httptest.NewServer(gatewayState)
+	t.Cleanup(gateway.Close)
+	handler := newTestHandler(t, gateway.URL, true)
+
+	startRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/oauth/start", `{
+		"operation_id":"oauth-operation","idempotency_key":"oauth-key","platform":"openai"
+	}`, testutil.AdminKey)
+	testutil.RequireStatus(t, startRR, http.StatusCreated)
+	if !strings.Contains(startRR.Body.String(), `"state":"oauth-state"`) || !strings.Contains(startRR.Body.String(), `"state":"probed"`) {
+		t.Fatalf("oauth start body = %s", startRR.Body.String())
+	}
+	statusRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts/oauth/status?operation_id=oauth-operation", "", testutil.AdminKey)
+	testutil.RequireStatus(t, statusRR, http.StatusOK)
+	var statusResult struct {
+		Account struct {
+			ID      string `json:"id"`
+			Version int64  `json:"version"`
+		} `json:"account"`
+	}
+	testutil.DecodeJSON(t, statusRR, &statusResult)
+	if statusResult.Account.ID == "" || statusResult.Account.Version != 1 || !strings.Contains(statusRR.Body.String(), `"state":"credential_saved_disabled"`) {
+		t.Fatalf("oauth status body = %s", statusRR.Body.String())
+	}
+	completeRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/"+statusResult.Account.ID+"/complete", `{
+		"operation_id":"oauth-operation","expected_version":1,"allowed_models":["client-model"],
+		"model_mapping":{"client-model":"upstream-model"},"test_model":"client-model"
+	}`, testutil.AdminKey)
+	testutil.RequireStatus(t, completeRR, http.StatusOK)
+	if !strings.Contains(completeRR.Body.String(), `"state":"enabled"`) || !strings.Contains(completeRR.Body.String(), `"enabled":true`) {
+		t.Fatalf("oauth complete body = %s", completeRR.Body.String())
+	}
+	gatewayState.mu.Lock()
+	if gatewayState.credentialDraft || gatewayState.disabled {
+		gatewayState.mu.Unlock()
+		t.Fatalf("启用后应清除草稿状态：%#v", gatewayState)
+	}
+	gatewayState.mu.Unlock()
+
+	cancelStartRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/oauth/start", `{
+		"operation_id":"oauth-cancel-operation","idempotency_key":"oauth-cancel-key","platform":"openai"
+	}`, testutil.AdminKey)
+	testutil.RequireStatus(t, cancelStartRR, http.StatusCreated)
+	cancelRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/oauth/cancel", `{
+		"operation_id":"oauth-cancel-operation"
+	}`, testutil.AdminKey)
+	testutil.RequireStatus(t, cancelRR, http.StatusOK)
+	if !strings.Contains(cancelRR.Body.String(), `"state":"cancelled"`) {
+		t.Fatalf("oauth cancel body = %s", cancelRR.Body.String())
+	}
+	gatewayState.mu.Lock()
+	defer gatewayState.mu.Unlock()
+	if !gatewayState.cancelled {
+		t.Fatal("OAuth 取消未转发到 Gateway")
+	}
+}
+
+type lifecycleGatewayState struct {
+	mu       sync.Mutex
+	codex    []map[string]any
+	compat   []map[string]any
+	apiCalls int
+}
+
+type oauthGatewayState struct {
+	mu              sync.Mutex
+	draftCreated    bool
+	disabled        bool
+	credentialDraft bool
+	allowed         []string
+	mapping         map[string]string
+	cancelled       bool
+}
+
+func (s *oauthGatewayState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch r.URL.Path {
+	case "/v0/management/auth-files":
+		w.Header().Set("X-CPA-SUPPORT-CREDENTIAL-DRAFT", "true")
+		w.Header().Set("X-CPA-SUPPORT-ALLOWED-MODELS", "true")
+		files := []map[string]any{}
+		if s.draftCreated {
+			files = append(files, map[string]any{
+				"name": "oauth-account.json", "provider": "codex", "auth_index": "oauth-auth-index",
+				"account": "oauth@example.com", "disabled": s.disabled,
+				"credential_draft": s.credentialDraft, "allowed_models": s.allowed,
+				"model_mapping": s.mapping, "model_rule_version": "oauth-rule-version",
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
+	case "/v0/management/codex-auth-url":
+		if r.URL.Query().Get("credential_draft") != "true" {
+			http.Error(w, "draft required", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"url":"https://login.example/authorize","state":"oauth-state"}`))
+	case "/v0/management/get-auth-status":
+		s.draftCreated = true
+		s.disabled = true
+		s.credentialDraft = true
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	case "/v0/management/oauth-session":
+		s.cancelled = true
+		_, _ = w.Write([]byte(`{"status":"ok","cancelled":true}`))
+	case "/v0/management/auth-files/fields":
+		var payload struct {
+			Allowed []string `json:"allowed_models"`
+			Aliases []struct {
+				Name  string `json:"name"`
+				Alias string `json:"alias"`
+			} `json:"model_aliases"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		s.allowed = payload.Allowed
+		s.mapping = map[string]string{}
+		for _, item := range payload.Aliases {
+			s.mapping[item.Alias] = item.Name
+		}
+		w.WriteHeader(http.StatusOK)
+	case "/v0/management/auth-files/status":
+		var payload struct {
+			Disabled bool `json:"disabled"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		s.disabled = payload.Disabled
+		if !payload.Disabled {
+			s.credentialDraft = false
+		}
+		w.WriteHeader(http.StatusOK)
+	case "/v0/management/api-call":
+		_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{}"}`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *lifecycleGatewayState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "Bearer management-key" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch r.URL.Path {
+	case "/v0/management/auth-files":
+		w.Header().Set("X-CPA-SUPPORT-CREDENTIAL-DRAFT", "true")
+		w.Header().Set("X-CPA-SUPPORT-ALLOWED-MODELS", "true")
+		_, _ = w.Write([]byte(`{"files":[]}`))
+	case "/v0/management/codex-api-key":
+		s.handleConfigList(w, r, "codex-api-key", &s.codex)
+	case "/v0/management/openai-compatibility":
+		s.handleCompatibility(w, r)
+	case "/v0/management/api-call":
+		s.apiCalls++
+		_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{}"}`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *lifecycleGatewayState) handleConfigList(w http.ResponseWriter, r *http.Request, responseKey string, entries *[]map[string]any) {
+	switch r.Method {
+	case http.MethodGet:
+		result := make([]map[string]any, 0, len(*entries))
+		for index, entry := range *entries {
+			copyEntry := cloneTestMap(entry)
+			copyEntry["auth-index"] = fmt.Sprintf("codex-auth-%d-%v", index, entry["api-key"])
+			copyEntry["model-rule-version"] = fmt.Sprintf("codex-rule-%d", index)
+			result = append(result, copyEntry)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{responseKey: result})
+	case http.MethodPut:
+		var payload []map[string]any
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		*entries = payload
+		w.WriteHeader(http.StatusOK)
+	case http.MethodPatch:
+		var payload struct {
+			Index int            `json:"index"`
+			Value map[string]any `json:"value"`
+		}
+		if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Index < 0 || payload.Index >= len(*entries) {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for key, value := range payload.Value {
+			(*entries)[payload.Index][key] = value
+		}
+		w.WriteHeader(http.StatusOK)
+	case http.MethodDelete:
+		index, err := strconv.Atoi(r.URL.Query().Get("index"))
+		if err != nil || index < 0 || index >= len(*entries) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		*entries = append((*entries)[:index], (*entries)[index+1:]...)
+		w.WriteHeader(http.StatusOK)
+	default:
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *lifecycleGatewayState) handleCompatibility(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		providers := make([]map[string]any, 0, len(s.compat))
+		for providerIndex, provider := range s.compat {
+			copyProvider := cloneTestMap(provider)
+			keys, _ := provider["api-key-entries"].([]any)
+			if keys == nil {
+				if typed, ok := provider["api-key-entries"].([]map[string]any); ok {
+					keys = make([]any, len(typed))
+					for index := range typed {
+						keys[index] = typed[index]
+					}
+				}
+			}
+			responseKeys := make([]map[string]any, 0, len(keys))
+			for keyIndex, raw := range keys {
+				entry, _ := raw.(map[string]any)
+				copyKey := cloneTestMap(entry)
+				copyKey["auth-index"] = fmt.Sprintf("compat-auth-%d-%d-%v", providerIndex, keyIndex, entry["api-key"])
+				copyKey["model-rule-version"] = fmt.Sprintf("compat-rule-%d-%d", providerIndex, keyIndex)
+				responseKeys = append(responseKeys, copyKey)
+			}
+			copyProvider["api-key-entries"] = responseKeys
+			providers = append(providers, copyProvider)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"openai-compatibility": providers})
+	case http.MethodPut:
+		if json.NewDecoder(r.Body).Decode(&s.compat) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	case http.MethodPatch:
+		var payload struct {
+			Index    int            `json:"index"`
+			KeyIndex *int           `json:"key-index"`
+			Value    map[string]any `json:"value"`
+		}
+		if json.NewDecoder(r.Body).Decode(&payload) != nil || payload.Index < 0 || payload.Index >= len(s.compat) {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for key, value := range payload.Value {
+			if key == "allowed-models" && payload.KeyIndex != nil {
+				keys, _ := s.compat[payload.Index]["api-key-entries"].([]any)
+				if *payload.KeyIndex >= 0 && *payload.KeyIndex < len(keys) {
+					keys[*payload.KeyIndex].(map[string]any)["allowed-models"] = value
+				}
+				continue
+			}
+			s.compat[payload.Index][key] = value
+		}
+		w.WriteHeader(http.StatusOK)
+	case http.MethodDelete:
+		index, err := strconv.Atoi(r.URL.Query().Get("index"))
+		if err != nil || index < 0 || index >= len(s.compat) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		s.compat = append(s.compat[:index], s.compat[index+1:]...)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func cloneTestMap(value map[string]any) map[string]any {
+	raw, _ := json.Marshal(value)
+	result := map[string]any{}
+	_ = json.Unmarshal(raw, &result)
+	return result
+}
 
 func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

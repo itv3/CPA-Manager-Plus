@@ -69,6 +69,14 @@ func (c *Client) requestJSON(ctx context.Context, baseURL string, managementKey 
 }
 
 func (c *Client) request(ctx context.Context, baseURL string, managementKey string, method string, path string, body io.Reader) ([]byte, http.Header, error) {
+	contentType := ""
+	if body != nil {
+		contentType = "application/json"
+	}
+	return c.requestWithContentType(ctx, baseURL, managementKey, method, path, body, contentType)
+}
+
+func (c *Client) requestWithContentType(ctx context.Context, baseURL string, managementKey string, method string, path string, body io.Reader, contentType string) ([]byte, http.Header, error) {
 	baseURL = cpa.NormalizeBaseURL(baseURL)
 	managementKey = strings.TrimSpace(managementKey)
 	if baseURL == "" || managementKey == "" {
@@ -81,8 +89,8 @@ func (c *Client) request(ctx context.Context, baseURL string, managementKey stri
 		return nil, nil, fmt.Errorf("create gateway request: %w", errNew)
 	}
 	req.Header.Set("Authorization", "Bearer "+managementKey)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	response, errDo := c.httpClient.Do(req)
 	if errDo != nil {

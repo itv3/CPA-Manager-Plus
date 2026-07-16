@@ -40,6 +40,7 @@ type StartInput struct {
 
 type TransitionInput struct {
 	ExpectedVersion    int64
+	ProAccountID       string
 	State              string
 	RetryCount         int
 	CleanupDeadlineMS  int64
@@ -129,7 +130,8 @@ func (s *Service) Transition(ctx context.Context, operationID string, input Tran
 		contextValue = current.Context
 	}
 	return s.repository.Update(ctx, current.OperationID, current.Version, model.ProAccountDraftUpdate{
-		State: input.State, RetryCount: input.RetryCount, CleanupDeadlineMS: deadline,
+		ProAccountID: strings.TrimSpace(input.ProAccountID),
+		State:        input.State, RetryCount: input.RetryCount, CleanupDeadlineMS: deadline,
 		CompensationAction: strings.TrimSpace(input.CompensationAction),
 		ErrorCode:          strings.TrimSpace(input.ErrorCode),
 		ErrorSummary:       truncate(strings.TrimSpace(input.ErrorSummary), 512),
@@ -174,6 +176,9 @@ func canTransition(from string, to string) bool {
 			model.ProOperationStateEnabled: true,
 		},
 		model.ProOperationStateTested: {
+			model.ProOperationStateEnabled: true,
+		},
+		model.ProOperationStateCompensating: {
 			model.ProOperationStateEnabled: true,
 		},
 	}

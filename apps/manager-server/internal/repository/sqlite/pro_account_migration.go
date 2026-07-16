@@ -20,6 +20,7 @@ func ensureProAccountTables(db *sql.DB) error {
 			last_used_at_ms integer,
 			last_tested_at_ms integer,
 			expires_at_ms integer,
+			deleted_at_ms integer,
 			created_at_ms integer not null,
 			updated_at_ms integer not null,
 			version integer not null default 1
@@ -102,6 +103,7 @@ func ensureProAccountColumns(db *sql.DB) error {
 	}
 	hasVersion := false
 	hasModelRuleVersion := false
+	hasDeletedAt := false
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -117,6 +119,9 @@ func ensureProAccountColumns(db *sql.DB) error {
 		if name == "model_rule_version" {
 			hasModelRuleVersion = true
 		}
+		if name == "deleted_at_ms" {
+			hasDeletedAt = true
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -127,7 +132,12 @@ func ensureProAccountColumns(db *sql.DB) error {
 		}
 	}
 	if !hasModelRuleVersion {
-		_, err = db.Exec(`alter table pro_accounts add column model_rule_version text`)
+		if _, err = db.Exec(`alter table pro_accounts add column model_rule_version text`); err != nil {
+			return err
+		}
+	}
+	if !hasDeletedAt {
+		_, err = db.Exec(`alter table pro_accounts add column deleted_at_ms integer`)
 	}
 	return err
 }
