@@ -18,6 +18,7 @@ import (
 	modelpricesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/modelprice"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	panelsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/panel"
+	proaccountsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccount"
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
@@ -51,6 +52,7 @@ type Context struct {
 	AccountProcessingPolicyService *automationsvc.Service
 	ProxyService                   *proxysvc.Service
 	PanelService                   *panelsvc.Service
+	ProAccountService              *proaccountsvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
 }
 
@@ -72,6 +74,7 @@ func FromExisting(
 	collectorService := collectorsvc.New(collectorManager)
 	managerConfigService := managerconfigsvc.New(cfg, st, collectorService)
 	accountProcessingPolicyService := automationsvc.New(cfg, st)
+	proAccountService := proaccountsvc.New(st.ProAccounts, managerConfigService)
 	return &Context{
 		Config:                         cfg,
 		Store:                          st,
@@ -92,6 +95,7 @@ func FromExisting(
 		AccountProcessingPolicyService: accountProcessingPolicyService,
 		ProxyService:                   proxysvc.New(managerConfigService, st),
 		PanelService:                   panelsvc.New(cfg.PanelPath, embeddedPanel),
+		ProAccountService:              proAccountService,
 		AutomationRuntimeService:       runtimeService,
 	}
 }

@@ -1,0 +1,457 @@
+package proaccount
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+)
+
+type Repository interface {
+	List(ctx context.Context, filter model.ProAccountListFilter) (model.ProAccountListResult, error)
+	Get(ctx context.Context, id string) (model.ProAccount, bool, error)
+	Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error)
+}
+
+type repository struct {
+	db *sql.DB
+}
+
+type listCursor struct {
+	UpdatedAtMS int64  `json:"updatedAtMs"`
+	ID          string `json:"id"`
+}
+
+func New(db *sql.DB) Repository {
+	return &repository{db: db}
+}
+
+func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter) (model.ProAccountListResult, error) {
+	if filter.Limit <= 0 || filter.Limit > 200 {
+		filter.Limit = 50
+	}
+	where, args, err := buildListWhere(filter)
+	if err != nil {
+		return model.ProAccountListResult{}, err
+	}
+
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `select count(*) from pro_accounts a `+where, args...).Scan(&total); err != nil {
+		return model.ProAccountListResult{}, err
+	}
+
+	query := `select
+		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
+		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json,
+		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms,
+		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
+		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
+		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
+		from pro_accounts a
+		left join pro_account_bindings b on b.pro_account_id = a.id and b.is_current = 1 ` +
+		where + ` order by a.updated_at_ms desc, a.id desc limit ?`
+	queryArgs := append(append([]any{}, args...), filter.Limit+1)
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return model.ProAccountListResult{}, err
+	}
+	defer rows.Close()
+
+	items := make([]model.ProAccount, 0, filter.Limit)
+	for rows.Next() {
+		item, err := scanAccount(rows)
+		if err != nil {
+			return model.ProAccountListResult{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return model.ProAccountListResult{}, err
+	}
+
+	nextCursor := ""
+	if len(items) > filter.Limit {
+		last := items[filter.Limit-1]
+		items = items[:filter.Limit]
+		nextCursor = encodeCursor(listCursor{UpdatedAtMS: last.UpdatedAtMS, ID: last.ID})
+	}
+	return model.ProAccountListResult{Items: items, NextCursor: nextCursor, Total: total}, nil
+}
+
+func buildListWhere(filter model.ProAccountListFilter) (string, []any, error) {
+	clauses := make([]string, 0)
+	args := make([]any, 0)
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		clauses = append(clauses, `(lower(coalesce(a.name, '')) like ? or lower(coalesce(a.email, '')) like ? or lower(a.id) like ?)`)
+		like := "%" + strings.ToLower(search) + "%"
+		args = append(args, like, like, like)
+	}
+	if value := strings.TrimSpace(filter.Platform); value != "" {
+		clauses = append(clauses, `a.platform = ?`)
+		args = append(args, strings.ToLower(value))
+	}
+	if value := strings.TrimSpace(filter.AuthType); value != "" {
+		clauses = append(clauses, `a.auth_type = ?`)
+		args = append(args, strings.ToLower(value))
+	}
+	if filter.Enabled != nil {
+		clauses = append(clauses, `a.enabled = ?`)
+		args = append(args, boolInt(*filter.Enabled))
+	}
+	if value := strings.TrimSpace(filter.HealthStatus); value != "" {
+		clauses = append(clauses, `a.health_status = ?`)
+		args = append(args, strings.ToLower(value))
+	}
+	if raw := strings.TrimSpace(filter.Cursor); raw != "" {
+		cursor, err := decodeCursor(raw)
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+		clauses = append(clauses, `(a.updated_at_ms < ? or (a.updated_at_ms = ? and a.id < ?))`)
+		args = append(args, cursor.UpdatedAtMS, cursor.UpdatedAtMS, cursor.ID)
+	}
+	if len(clauses) == 0 {
+		return "", args, nil
+	}
+	return "where " + strings.Join(clauses, " and "), args, nil
+}
+
+func encodeCursor(cursor listCursor) string {
+	data, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func decodeCursor(raw string) (listCursor, error) {
+	data, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return listCursor{}, err
+	}
+	var cursor listCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return listCursor{}, err
+	}
+	if cursor.UpdatedAtMS <= 0 || strings.TrimSpace(cursor.ID) == "" {
+		return listCursor{}, errors.New("cursor fields are required")
+	}
+	return cursor, nil
+}
+
+func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return model.ProAccount{}, false, nil
+	}
+	row := r.db.QueryRowContext(ctx, `select
+		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
+		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json,
+		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms,
+		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
+		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
+		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
+		from pro_accounts a
+		left join pro_account_bindings b on b.pro_account_id = a.id and b.is_current = 1
+		where a.id = ?`, id)
+	item, err := scanAccount(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ProAccount{}, false, nil
+	}
+	return item, err == nil, err
+}
+
+func (r *repository) Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error) {
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	result := model.ProAccountSyncResult{DryRun: dryRun, Discovered: len(discoveries), Items: make([]model.ProAccountSyncItem, 0, len(discoveries))}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+
+	for _, discovery := range discoveries {
+		item, err := syncDiscovery(ctx, tx, discovery, nowMS)
+		if err != nil {
+			return result, err
+		}
+		result.Items = append(result.Items, item)
+		switch item.Resolution {
+		case model.ProBindingResolutionCreated:
+			result.Created++
+		case model.ProBindingResolutionExact:
+			result.Updated++
+		case model.ProBindingResolutionPending:
+			result.Pending++
+		case model.ProBindingResolutionConflict:
+			result.Conflicts++
+		}
+	}
+	if dryRun {
+		return result, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccountSyncItem, error) {
+	discovery.SourceType = strings.TrimSpace(discovery.SourceType)
+	discovery.SourceLocator = strings.TrimSpace(discovery.SourceLocator)
+	discovery.AuthIndex = strings.TrimSpace(discovery.AuthIndex)
+	item := model.ProAccountSyncItem{SourceLocator: discovery.SourceLocator, AuthIndex: discovery.AuthIndex}
+	if discovery.SourceType == "" || discovery.SourceLocator == "" {
+		return item, errors.New("source type and source locator are required")
+	}
+
+	var accountID string
+	err := tx.QueryRowContext(ctx, `select pro_account_id from pro_account_bindings
+		where source_type = ? and source_locator = ? and coalesce(auth_index, '') = ? and is_current = 1
+		limit 1`, discovery.SourceType, discovery.SourceLocator, discovery.AuthIndex).Scan(&accountID)
+	if err == nil {
+		if err := updateDiscoveredAccount(ctx, tx, accountID, discovery, nowMS); err != nil {
+			return item, err
+		}
+		if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
+			source_fingerprint = ?, binding_status = ?, last_seen_at_ms = ?, updated_at_ms = ?
+			where pro_account_id = ? and source_type = ? and source_locator = ? and coalesce(auth_index, '') = ? and is_current = 1`,
+			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS,
+			accountID, discovery.SourceType, discovery.SourceLocator, discovery.AuthIndex); err != nil {
+			return item, err
+		}
+		item.Resolution = model.ProBindingResolutionExact
+		item.ProAccountID = accountID
+		return item, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return item, err
+	}
+
+	candidates, err := findFingerprintCandidates(ctx, tx, discovery.SourceFingerprint)
+	if err != nil {
+		return item, err
+	}
+	if len(candidates) > 0 {
+		resolution := model.ProBindingResolutionPending
+		reasonCode := "binding_identity_requires_confirmation"
+		if len(candidates) > 1 {
+			resolution = model.ProBindingResolutionConflict
+			reasonCode = "binding_identity_conflict"
+		}
+		if err := upsertBindingReview(ctx, tx, discovery, candidates, resolution, reasonCode, nowMS); err != nil {
+			return item, err
+		}
+		item.Resolution = resolution
+		item.CandidateIDs = candidates
+		item.ReasonCode = reasonCode
+		return item, nil
+	}
+
+	accountID, err = newUUID()
+	if err != nil {
+		return item, err
+	}
+	allowedJSON, mappingJSON, err := marshalModelRules(discovery.AllowedModels, discovery.ModelMapping)
+	if err != nil {
+		return item, err
+	}
+	if _, err := tx.ExecContext(ctx, `insert into pro_accounts (
+		id, platform, auth_type, source_type, name, email, enabled, health_status, last_error,
+		allowed_models_json, model_mapping_json, expires_at_ms, created_at_ms, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		accountID, strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
+		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled), valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown),
+		nullString(discovery.LastError), allowedJSON, mappingJSON, nullInt64(discovery.ExpiresAtMS), nowMS, nowMS); err != nil {
+		return item, err
+	}
+	if _, err := tx.ExecContext(ctx, `insert into pro_account_bindings (
+		pro_account_id, auth_index, source_type, source_locator, source_fingerprint, binding_status,
+		is_current, valid_from_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+		accountID, nullString(discovery.AuthIndex), discovery.SourceType, discovery.SourceLocator,
+		nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, nowMS, nowMS, nowMS); err != nil {
+		return item, err
+	}
+	item.Resolution = model.ProBindingResolutionCreated
+	item.ProAccountID = accountID
+	return item, nil
+}
+
+func updateDiscoveredAccount(ctx context.Context, tx *sql.Tx, accountID string, discovery model.ProAccountDiscovery, nowMS int64) error {
+	allowedJSON, mappingJSON, err := marshalModelRules(discovery.AllowedModels, discovery.ModelMapping)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `update pro_accounts set
+		platform = ?, auth_type = ?, source_type = ?, name = ?, email = ?, enabled = ?,
+		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?,
+		expires_at_ms = ?, updated_at_ms = ? where id = ?`,
+		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
+		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
+		allowedJSON, mappingJSON, nullInt64(discovery.ExpiresAtMS), nowMS, accountID)
+	return err
+}
+
+func findFingerprintCandidates(ctx context.Context, tx *sql.Tx, fingerprint string) ([]string, error) {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `select distinct pro_account_id from pro_account_bindings
+		where source_fingerprint = ? order by pro_account_id limit 20`, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	return items, rows.Err()
+}
+
+func upsertBindingReview(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDiscovery, candidates []string, resolution string, reasonCode string, nowMS int64) error {
+	candidateJSON, err := json.Marshal(candidates)
+	if err != nil {
+		return err
+	}
+	discoveryKey := discovery.SourceType + "\x00" + discovery.SourceLocator + "\x00" + discovery.AuthIndex
+	_, err = tx.ExecContext(ctx, `insert into pro_account_binding_reviews (
+		discovery_key, source_type, source_locator, auth_index, source_fingerprint,
+		resolution_status, candidate_ids_json, reason_code, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		on conflict(discovery_key) do update set
+		source_fingerprint = excluded.source_fingerprint,
+		resolution_status = excluded.resolution_status,
+		candidate_ids_json = excluded.candidate_ids_json,
+		reason_code = excluded.reason_code,
+		last_seen_at_ms = excluded.last_seen_at_ms,
+		updated_at_ms = excluded.updated_at_ms`,
+		discoveryKey, discovery.SourceType, discovery.SourceLocator, nullString(discovery.AuthIndex),
+		nullString(discovery.SourceFingerprint), resolution, string(candidateJSON), reasonCode,
+		nowMS, nowMS, nowMS, nowMS)
+	return err
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAccount(row rowScanner) (model.ProAccount, error) {
+	var item model.ProAccount
+	var name, email, lastError, allowedJSON, mappingJSON sql.NullString
+	var lastUsed, lastTested, expires sql.NullInt64
+	var enabled int
+	var bindingID sql.NullInt64
+	var authIndex, bindingSourceType, sourceLocator, sourceFingerprint, bindingStatus sql.NullString
+	var isCurrent sql.NullInt64
+	var validFrom, validTo, firstSeen, lastSeen, bindingCreated, bindingUpdated sql.NullInt64
+	if err := row.Scan(
+		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &name, &email, &enabled,
+		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON,
+		&lastUsed, &lastTested, &expires, &item.CreatedAtMS, &item.UpdatedAtMS,
+		&bindingID, &authIndex, &bindingSourceType, &sourceLocator, &sourceFingerprint,
+		&bindingStatus, &isCurrent, &validFrom, &validTo, &firstSeen, &lastSeen, &bindingCreated, &bindingUpdated,
+	); err != nil {
+		return model.ProAccount{}, err
+	}
+	item.Name = name.String
+	item.Email = email.String
+	item.Enabled = enabled != 0
+	item.LastError = lastError.String
+	item.LastUsedAtMS = lastUsed.Int64
+	item.LastTestedAtMS = lastTested.Int64
+	item.ExpiresAtMS = expires.Int64
+	item.AllowedModels = []string{}
+	item.ModelMapping = map[string]string{}
+	if allowedJSON.Valid && allowedJSON.String != "" {
+		_ = json.Unmarshal([]byte(allowedJSON.String), &item.AllowedModels)
+	}
+	if mappingJSON.Valid && mappingJSON.String != "" {
+		_ = json.Unmarshal([]byte(mappingJSON.String), &item.ModelMapping)
+	}
+	if bindingID.Valid {
+		item.Binding = &model.ProAccountBinding{
+			ID: bindingID.Int64, ProAccountID: item.ID, AuthIndex: authIndex.String,
+			SourceType: bindingSourceType.String, SourceLocator: sourceLocator.String,
+			SourceFingerprint: sourceFingerprint.String, BindingStatus: bindingStatus.String,
+			IsCurrent: isCurrent.Int64 != 0, ValidFromMS: validFrom.Int64, ValidToMS: validTo.Int64,
+			FirstSeenAtMS: firstSeen.Int64, LastSeenAtMS: lastSeen.Int64,
+			CreatedAtMS: bindingCreated.Int64, UpdatedAtMS: bindingUpdated.Int64,
+		}
+	}
+	return item, nil
+}
+
+func marshalModelRules(allowed []string, mapping map[string]string) (string, string, error) {
+	if allowed == nil {
+		allowed = []string{}
+	}
+	if mapping == nil {
+		mapping = map[string]string{}
+	}
+	allowedData, err := json.Marshal(allowed)
+	if err != nil {
+		return "", "", err
+	}
+	mappingData, err := json.Marshal(mapping)
+	if err != nil {
+		return "", "", err
+	}
+	return string(allowedData), string(mappingData), nil
+}
+
+func newUUID() (string, error) {
+	data := make([]byte, 16)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	data[6] = (data[6] & 0x0f) | 0x40
+	data[8] = (data[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
+		hex.EncodeToString(data[0:4]), hex.EncodeToString(data[4:6]), hex.EncodeToString(data[6:8]),
+		hex.EncodeToString(data[8:10]), hex.EncodeToString(data[10:16])), nil
+}
+
+func nullString(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullInt64(value int64) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func valueOr(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return strings.ToLower(value)
+}

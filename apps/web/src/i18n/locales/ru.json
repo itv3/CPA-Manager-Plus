@@ -158,6 +158,7 @@
     "status": "Статус подключения:"
   },
   "nav": {
+    "accounts": "Единые аккаунты",
     "dashboard": "Панель",
     "dashboard_short": "Панель",
     "basic_settings": "Основные настройки",

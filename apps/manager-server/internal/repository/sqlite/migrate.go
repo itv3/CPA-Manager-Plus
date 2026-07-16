@@ -365,7 +365,10 @@ func Migrate(db *sql.DB) error {
 	if err := ensureDashboardHourlyRollupFormatVersion(db); err != nil {
 		return err
 	}
-	return ensureModelPriceColumns(db)
+	if err := ensureModelPriceColumns(db); err != nil {
+		return err
+	}
+	return ensureProAccountTables(db)
 }
 
 func ensureDashboardHourlyRollupFormatVersion(db *sql.DB) error {

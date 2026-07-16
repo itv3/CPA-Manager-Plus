@@ -158,6 +158,7 @@
     "status": "连接状态:"
   },
   "nav": {
+    "accounts": "统一账号",
     "dashboard": "仪表盘",
     "dashboard_short": "仪表盘",
     "basic_settings": "基础设置",

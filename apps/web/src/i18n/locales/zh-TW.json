@@ -158,6 +158,7 @@
     "status": "連線狀態:"
   },
   "nav": {
+    "accounts": "統一帳號",
     "dashboard": "儀表板",
     "dashboard_short": "儀表板",
     "basic_settings": "基本設定",

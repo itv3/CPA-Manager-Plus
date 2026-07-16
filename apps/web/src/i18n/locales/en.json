@@ -158,6 +158,7 @@
     "status": "Connection Status:"
   },
   "nav": {
+    "accounts": "Accounts",
     "dashboard": "Dashboard",
     "dashboard_short": "Dashboard",
     "basic_settings": "Basic Settings",

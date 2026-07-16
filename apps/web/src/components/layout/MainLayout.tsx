@@ -562,6 +562,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
   const navSections: NavItem[][] = [
     [
       dashboardNavItem,
+      {
+        path: '/accounts',
+        label: t('nav.accounts', { defaultValue: '统一账号' }),
+        shortLabel: navShortLabel('nav.accounts', t('nav.accounts', { defaultValue: '统一账号' })),
+        icon: sidebarIcons.authFiles,
+      },
       ...(usageAnalyticsNavItem ? [usageAnalyticsNavItem] : []),
       ...(monitoringNavItem ? [monitoringNavItem] : []),
     ],
