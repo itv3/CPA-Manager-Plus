@@ -19,6 +19,7 @@ type Repository interface {
 	List(ctx context.Context, filter model.ProAccountListFilter) (model.ProAccountListResult, error)
 	Get(ctx context.Context, id string) (model.ProAccount, bool, error)
 	Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error)
+	Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, error)
 }
 
 type repository struct {
@@ -164,6 +165,81 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 		return model.ProAccount{}, false, nil
 	}
 	return item, err == nil, err
+}
+
+func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, error) {
+	local := model.ProAccountLocalUsage{FromMS: fromMS, ToMS: toMS}
+	var estimatedCost sql.NullFloat64
+	var unknownPriceEvents int64
+	err := r.db.QueryRowContext(ctx, `select
+		count(e.id),
+		coalesce(sum(case when e.failed = 0 then 1 else 0 end), 0),
+		coalesce(sum(case when e.failed = 1 then 1 else 0 end), 0),
+		coalesce(sum(e.input_tokens), 0),
+		coalesce(sum(e.output_tokens), 0),
+		coalesce(sum(e.cached_tokens), 0),
+		coalesce(sum(e.cache_read_tokens), 0),
+		coalesce(sum(e.cache_creation_tokens), 0),
+		coalesce(sum(e.reasoning_tokens), 0),
+		coalesce(sum(e.total_tokens), 0),
+		coalesce(max(e.timestamp_ms), 0),
+		coalesce(sum(case when mp.model is null then 1 else 0 end), 0),
+		sum(case when mp.model is null then null else
+			(coalesce(e.input_tokens, 0) * mp.prompt_per_1m +
+			 coalesce(e.output_tokens, 0) * mp.completion_per_1m +
+			 coalesce(e.cache_read_tokens, e.cached_tokens, 0) * mp.cache_read_per_1m +
+			 coalesce(e.cache_creation_tokens, 0) * mp.cache_creation_per_1m) / 1000000.0 end)
+		from usage_events e
+		join pro_account_bindings b on b.pro_account_id = ?
+			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and e.timestamp_ms >= b.valid_from_ms
+			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
+		left join model_prices mp on mp.model = coalesce(nullif(e.resolved_model, ''), e.model)
+		where e.timestamp_ms >= ? and e.timestamp_ms < ?`, accountID, fromMS, toMS).Scan(
+		&local.Requests, &local.Successes, &local.Failures, &local.InputTokens, &local.OutputTokens,
+		&local.CachedTokens, &local.CacheReadTokens, &local.CacheCreationTokens, &local.ReasoningTokens,
+		&local.TotalTokens, &local.LastActivityAtMS, &unknownPriceEvents, &estimatedCost,
+	)
+	if err != nil {
+		return local, nil, err
+	}
+	if local.Requests > 0 && unknownPriceEvents == 0 && estimatedCost.Valid {
+		cost := estimatedCost.Float64
+		local.EstimatedCost = &cost
+		local.CostKnown = true
+	}
+
+	windows := make([]model.ProAccountUsageWindow, 0, 1)
+	var usedPercent sql.NullFloat64
+	var resetAt sql.NullInt64
+	var label sql.NullString
+	err = r.db.QueryRowContext(ctx, `select
+		e.header_quota_used_percent, e.header_quota_recover_at_ms, e.header_quota_plan_type
+		from usage_events e
+		join pro_account_bindings b on b.pro_account_id = ?
+			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and e.timestamp_ms >= b.valid_from_ms
+			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
+		where e.timestamp_ms >= ? and e.timestamp_ms < ?
+			and (e.header_quota_used_percent is not null or e.header_quota_recover_at_ms is not null)
+		order by e.timestamp_ms desc, e.id desc limit 1`, accountID, fromMS, toMS).Scan(&usedPercent, &resetAt, &label)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return local, nil, err
+	}
+	if err == nil {
+		window := model.ProAccountUsageWindow{ID: "response_header", Label: valueOr(label.String, "上游响应头"), ResetAtMS: resetAt.Int64, Source: "passive"}
+		if usedPercent.Valid {
+			used := usedPercent.Float64
+			remaining := 100 - used
+			if remaining < 0 {
+				remaining = 0
+			}
+			window.UsedPercent = &used
+			window.RemainingPercent = &remaining
+		}
+		windows = append(windows, window)
+	}
+	return local, windows, nil
 }
 
 func (r *repository) Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error) {

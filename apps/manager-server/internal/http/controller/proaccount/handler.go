@@ -29,11 +29,52 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleCollection(w, r)
 	case path == "/v0/pro/accounts/sync":
 		h.handleSync(w, r)
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/usage"):
+		h.handleUsage(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/usage"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/"):
 		h.handleItem(w, r, strings.TrimPrefix(path, "/v0/pro/accounts/"))
 	default:
 		h.writeError(w, http.StatusNotFound, "pro_route_not_found", "Pro route not found", false, nil)
 	}
+}
+
+func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		return
+	}
+	id = strings.TrimSpace(id)
+	if id == "" || strings.Contains(id, "/") {
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "Pro account not found", false, nil)
+		return
+	}
+	source := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
+	if source == "" {
+		source = "passive"
+	}
+	if source != "passive" && source != "active" {
+		h.writeError(w, http.StatusBadRequest, "invalid_usage_source", "source must be passive or active", false, nil)
+		return
+	}
+	force := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("force")); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid_force", "force must be true or false", false, nil)
+			return
+		}
+		force = value
+	}
+	result, err := h.App.ProAccountUsageService.Get(r.Context(), id, source, force)
+	if err != nil {
+		if errors.Is(err, proaccountsvc.ErrAccountNotFound) {
+			h.writeError(w, http.StatusNotFound, "pro_account_not_found", err.Error(), false, nil)
+			return
+		}
+		h.writeError(w, http.StatusInternalServerError, "pro_account_usage_failed", err.Error(), true, nil)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) handleCollection(w http.ResponseWriter, r *http.Request) {

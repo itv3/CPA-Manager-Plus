@@ -141,3 +141,48 @@ func TestRepositoryListFiltersAndCursor(t *testing.T) {
 		t.Fatalf("第二页：result=%#v err=%v", secondPage, err)
 	}
 }
+
+func TestRepositoryUsageUsesBindingValidity(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "alpha",
+		Enabled: true, AuthIndex: "auth-alpha", SourceLocator: "alpha.json",
+	}}, 1000, false)
+	if err != nil {
+		t.Fatalf("创建账号：%v", err)
+	}
+	accountID := created.Items[0].ProAccountID
+	if _, err := db.Exec(`insert into model_prices (
+		model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m,
+		cache_creation_per_1m, prompt_configured, completion_configured, cache_read_configured,
+		cache_creation_configured, updated_at_ms
+	) values ('gpt-test', 1, 2, 0, 0, 0, 1, 1, 1, 1, 1)`); err != nil {
+		t.Fatalf("写入价格：%v", err)
+	}
+	for index, timestamp := range []int64{500, 1500} {
+		if _, err := db.Exec(`insert into usage_events (
+			event_hash, timestamp_ms, timestamp, model, auth_index, input_tokens, output_tokens,
+			total_tokens, failed, created_at_ms
+		) values (?, ?, ?, 'gpt-test', 'auth-alpha', 1000000, 1000000, 2000000, ?, ?)`,
+			"event-"+string(rune('a'+index)), timestamp, "2026-07-16T00:00:00Z", index, timestamp); err != nil {
+			t.Fatalf("写入用量事件：%v", err)
+		}
+	}
+
+	usage, _, err := repo.Usage(ctx, accountID, 0, 5000)
+	if err != nil {
+		t.Fatalf("查询用量：%v", err)
+	}
+	if usage.Requests != 1 || usage.Failures != 1 || usage.TotalTokens != 2000000 {
+		t.Fatalf("用量聚合 = %#v", usage)
+	}
+	if !usage.CostKnown || usage.EstimatedCost == nil || *usage.EstimatedCost != 3 {
+		t.Fatalf("成本聚合 = %#v", usage)
+	}
+}

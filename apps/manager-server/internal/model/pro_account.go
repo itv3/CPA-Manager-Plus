@@ -103,3 +103,40 @@ type ProAccountSyncResult struct {
 	Conflicts  int                  `json:"conflicts"`
 	Items      []ProAccountSyncItem `json:"items"`
 }
+
+type ProAccountUsageWindow struct {
+	ID               string   `json:"id"`
+	Label            string   `json:"label"`
+	UsedPercent      *float64 `json:"usedPercent,omitempty"`
+	RemainingPercent *float64 `json:"remainingPercent,omitempty"`
+	ResetAtMS        int64    `json:"resetAtMs,omitempty"`
+	Source           string   `json:"source"`
+}
+
+type ProAccountLocalUsage struct {
+	FromMS              int64    `json:"fromMs"`
+	ToMS                int64    `json:"toMs"`
+	Requests            int64    `json:"requests"`
+	Successes           int64    `json:"successes"`
+	Failures            int64    `json:"failures"`
+	InputTokens         int64    `json:"inputTokens"`
+	OutputTokens        int64    `json:"outputTokens"`
+	CachedTokens        int64    `json:"cachedTokens"`
+	CacheReadTokens     int64    `json:"cacheReadTokens"`
+	CacheCreationTokens int64    `json:"cacheCreationTokens"`
+	ReasoningTokens     int64    `json:"reasoningTokens"`
+	TotalTokens         int64    `json:"totalTokens"`
+	EstimatedCost       *float64 `json:"estimatedCost,omitempty"`
+	CostKnown           bool     `json:"costKnown"`
+	LastActivityAtMS    int64    `json:"lastActivityAtMs,omitempty"`
+}
+
+type ProAccountUsageResult struct {
+	Source          string                  `json:"source"`
+	UpdatedAtMS     int64                   `json:"updatedAtMs"`
+	OfficialWindows []ProAccountUsageWindow `json:"officialWindows"`
+	Local           ProAccountLocalUsage    `json:"local"`
+	ErrorCode       string                  `json:"errorCode,omitempty"`
+	ErrorMessage    string                  `json:"errorMessage,omitempty"`
+	Retryable       bool                    `json:"retryable"`
+}

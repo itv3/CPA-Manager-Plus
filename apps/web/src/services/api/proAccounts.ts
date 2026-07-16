@@ -71,6 +71,43 @@ export interface ProAccountListParams {
   healthStatus?: string;
 }
 
+export interface ProAccountUsageWindow {
+  id: string;
+  label: string;
+  usedPercent?: number;
+  remainingPercent?: number;
+  resetAtMs?: number;
+  source: string;
+}
+
+export interface ProAccountLocalUsage {
+  fromMs: number;
+  toMs: number;
+  requests: number;
+  successes: number;
+  failures: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  estimatedCost?: number;
+  costKnown: boolean;
+  lastActivityAtMs?: number;
+}
+
+export interface ProAccountUsageResponse {
+  source: string;
+  updatedAtMs: number;
+  officialWindows: ProAccountUsageWindow[];
+  local: ProAccountLocalUsage;
+  errorCode?: string;
+  errorMessage?: string;
+  retryable: boolean;
+}
+
 const buildURL = (base: string, path: string, params?: URLSearchParams) => {
   const normalized = normalizeUsageServiceBase(base);
   return `${normalized}${path}${params && params.toString() ? `?${params.toString()}` : ''}`;
@@ -114,6 +151,25 @@ export const proAccountsApi = {
       const response = await axios.post<ProAccountSyncResponse>(
         buildURL(base, '/v0/pro/accounts/sync'),
         { dry_run: dryRun },
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async usage(
+    base: string,
+    managementKey: string,
+    id: string,
+    source: 'passive' | 'active' = 'passive',
+    force = false
+  ) {
+    const query = new URLSearchParams({ source, force: String(force) });
+    try {
+      const response = await axios.get<ProAccountUsageResponse>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(id)}/usage`, query),
         requestConfig(managementKey)
       );
       return response.data;

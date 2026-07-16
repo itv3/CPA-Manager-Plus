@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { IconRefreshCw, IconSearch } from '@/components/ui/icons';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useAuthStore, useNotificationStore } from '@/stores';
-import { proAccountsApi, type ProAccount } from '@/services/api/proAccounts';
+import {
+  proAccountsApi,
+  type ProAccount,
+  type ProAccountUsageResponse,
+} from '@/services/api/proAccounts';
 import styles from './AccountsPage.module.scss';
 
 const formatDate = (value?: number) => {
@@ -15,6 +19,103 @@ const formatDate = (value?: number) => {
 };
 
 const labelFor = (value: string) => value.replace(/_/g, ' ');
+
+const compactNumber = (value: number) =>
+  new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+
+function UsageCell({
+  account,
+  managerBase,
+  managementKey,
+}: {
+  account: ProAccount;
+  managerBase: string;
+  managementKey: string;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const attemptedRef = useRef(false);
+  const [usage, setUsage] = useState<ProAccountUsageResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(
+    async (active = false) => {
+      if (!managerBase || !managementKey || loading) return;
+      setLoading(true);
+      setError('');
+      try {
+        setUsage(await proAccountsApi.usage(managerBase, managementKey, account.id, active ? 'active' : 'passive', active));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [account.id, loading, managementKey, managerBase]
+  );
+
+  useEffect(() => {
+    const element = rootRef.current;
+    if (!element) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '160px' }
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (visible && !usage && !loading && !attemptedRef.current) {
+      attemptedRef.current = true;
+      void load(false);
+    }
+  }, [load, loading, usage, visible]);
+
+  return (
+    <div className={styles.usageCell} ref={rootRef} aria-busy={loading}>
+      {usage?.officialWindows.length ? (
+        <div className={styles.usageWindows}>
+          {usage.officialWindows.map((window) => (
+            <div className={styles.usageWindow} key={window.id}>
+              <span>{window.label}</span>
+              <div className={styles.progressTrack}>
+                <span style={{ width: `${Math.min(100, Math.max(0, window.usedPercent || 0))}%` }} />
+              </div>
+              <strong>{window.usedPercent === undefined ? '-' : `${Math.round(window.usedPercent)}%`}</strong>
+              <small>{window.resetAtMs ? formatDate(window.resetAtMs) : ''}</small>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className={styles.usagePlaceholder}>{loading ? '加载中...' : '暂无官方配额数据'}</div>
+      )}
+      {usage ? (
+        <div className={styles.localUsage}>
+          <span>{compactNumber(usage.local.requests)} 次</span>
+          <span>{compactNumber(usage.local.totalTokens)} Token</span>
+          <span>{usage.local.costKnown && usage.local.estimatedCost !== undefined ? `$${usage.local.estimatedCost.toFixed(2)}` : '成本 -'}</span>
+        </div>
+      ) : null}
+      {usage?.errorCode ? <div className={styles.usageError}>{usage.errorMessage || usage.errorCode}</div> : null}
+      {error ? <div className={styles.usageError}>{error}</div> : null}
+      <div className={styles.usageActions}>
+        <button type="button" onClick={() => void load(false)} disabled={loading}>刷新</button>
+        <button type="button" onClick={() => void load(true)} disabled={loading}>查询</button>
+      </div>
+    </div>
+  );
+}
 
 export function AccountsPage() {
   const { t } = useTranslation();
@@ -143,6 +244,7 @@ export function AccountsPage() {
                   <th>平台 / 类型</th>
                   <th>状态</th>
                   <th>允许模型</th>
+                  <th>用量窗口</th>
                   <th>绑定</th>
                   <th>最近更新</th>
                 </tr>
@@ -154,6 +256,9 @@ export function AccountsPage() {
                       <div className={styles.accountName}>{item.name || item.email || item.id}</div>
                       {item.email && item.email !== item.name ? <div className={styles.accountMeta}>{item.email}</div> : null}
                       <div className={styles.muted}>{item.id}</div>
+                    </td>
+                    <td>
+                      <UsageCell account={item} managerBase={managerBase} managementKey={managementKey} />
                     </td>
                     <td>
                       <span className={styles.badge}>{labelFor(item.platform)}</span>{' '}
