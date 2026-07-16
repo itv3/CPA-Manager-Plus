@@ -20,7 +20,14 @@ type Repository interface {
 	Get(ctx context.Context, id string) (model.ProAccount, bool, error)
 	Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error)
 	Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, error)
+	UpdateModelRules(ctx context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error)
+	RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error)
 }
+
+var (
+	ErrAccountNotFound = errors.New("pro account not found")
+	ErrVersionConflict = errors.New("pro account version conflict")
+)
 
 type repository struct {
 	db *sql.DB
@@ -51,8 +58,8 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 
 	query := `select
 		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
-		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json,
-		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms,
+		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
+		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
 		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
@@ -152,8 +159,8 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 	}
 	row := r.db.QueryRowContext(ctx, `select
 		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
-		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json,
-		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms,
+		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
+		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
 		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
@@ -341,11 +348,11 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 	}
 	if _, err := tx.ExecContext(ctx, `insert into pro_accounts (
 		id, platform, auth_type, source_type, name, email, enabled, health_status, last_error,
-		allowed_models_json, model_mapping_json, expires_at_ms, created_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		allowed_models_json, model_mapping_json, model_rule_version, expires_at_ms, created_at_ms, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		accountID, strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
 		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled), valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown),
-		nullString(discovery.LastError), allowedJSON, mappingJSON, nullInt64(discovery.ExpiresAtMS), nowMS, nowMS); err != nil {
+		nullString(discovery.LastError), allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, nowMS); err != nil {
 		return item, err
 	}
 	if _, err := tx.ExecContext(ctx, `insert into pro_account_bindings (
@@ -368,12 +375,21 @@ func updateDiscoveredAccount(ctx context.Context, tx *sql.Tx, accountID string, 
 	}
 	_, err = tx.ExecContext(ctx, `update pro_accounts set
 		platform = ?, auth_type = ?, source_type = ?, name = ?, email = ?, enabled = ?,
-		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?,
-		expires_at_ms = ?, updated_at_ms = ? where id = ?`,
+		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?, model_rule_version = ?,
+		expires_at_ms = ?, updated_at_ms = ?, version = version + 1
+		where id = ? and (
+			platform is not ? or auth_type is not ? or source_type is not ? or name is not ? or email is not ? or
+			enabled is not ? or health_status is not ? or last_error is not ? or allowed_models_json is not ? or
+			model_mapping_json is not ? or model_rule_version is not ? or expires_at_ms is not ?
+		)`,
 		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
 		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
 		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
-		allowedJSON, mappingJSON, nullInt64(discovery.ExpiresAtMS), nowMS, accountID)
+		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, accountID,
+		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
+		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
+		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS))
 	return err
 }
 
@@ -428,7 +444,7 @@ type rowScanner interface {
 
 func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var item model.ProAccount
-	var name, email, lastError, allowedJSON, mappingJSON sql.NullString
+	var name, email, lastError, allowedJSON, mappingJSON, modelRuleVersion sql.NullString
 	var lastUsed, lastTested, expires sql.NullInt64
 	var enabled int
 	var bindingID sql.NullInt64
@@ -437,8 +453,8 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var validFrom, validTo, firstSeen, lastSeen, bindingCreated, bindingUpdated sql.NullInt64
 	if err := row.Scan(
 		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &name, &email, &enabled,
-		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON,
-		&lastUsed, &lastTested, &expires, &item.CreatedAtMS, &item.UpdatedAtMS,
+		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON, &modelRuleVersion,
+		&lastUsed, &lastTested, &expires, &item.CreatedAtMS, &item.UpdatedAtMS, &item.Version,
 		&bindingID, &authIndex, &bindingSourceType, &sourceLocator, &sourceFingerprint,
 		&bindingStatus, &isCurrent, &validFrom, &validTo, &firstSeen, &lastSeen, &bindingCreated, &bindingUpdated,
 	); err != nil {
@@ -448,6 +464,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	item.Email = email.String
 	item.Enabled = enabled != 0
 	item.LastError = lastError.String
+	item.ModelRuleVersion = modelRuleVersion.String
 	item.LastUsedAtMS = lastUsed.Int64
 	item.LastTestedAtMS = lastTested.Int64
 	item.ExpiresAtMS = expires.Int64
@@ -468,6 +485,82 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 			FirstSeenAtMS: firstSeen.Int64, LastSeenAtMS: lastSeen.Int64,
 			CreatedAtMS: bindingCreated.Int64, UpdatedAtMS: bindingUpdated.Int64,
 		}
+	}
+	return item, nil
+}
+
+func (r *repository) UpdateModelRules(ctx context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	if expectedVersion <= 0 {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	allowedJSON, mappingJSON, err := marshalModelRules(allowedModels, modelMapping)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	result, err := r.db.ExecContext(ctx, `update pro_accounts set
+		allowed_models_json = ?, model_mapping_json = ?, model_rule_version = ?, updated_at_ms = ?, version = version + 1
+		where id = ? and version = ?`, allowedJSON, mappingJSON, nullString(modelRuleVersion), nowMS, accountID, expectedVersion)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if affected == 0 {
+		if _, ok, getErr := r.Get(ctx, accountID); getErr != nil {
+			return model.ProAccount{}, getErr
+		} else if !ok {
+			return model.ProAccount{}, ErrAccountNotFound
+		}
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	item, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	return item, nil
+}
+
+func (r *repository) RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	healthStatus := "error"
+	if success {
+		healthStatus = "healthy"
+		errorCode = ""
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	result, err := r.db.ExecContext(ctx, `update pro_accounts set
+		health_status = ?, last_error = ?, last_tested_at_ms = ?, updated_at_ms = ? where id = ?`,
+		healthStatus, nullString(errorCode), nowMS, nowMS, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if affected == 0 {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	item, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
 	}
 	return item, nil
 }

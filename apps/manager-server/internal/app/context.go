@@ -19,6 +19,11 @@ import (
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	panelsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/panel"
 	proaccountsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccount"
+	proaccountgatewaysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
+	proaccountmodelssvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodels"
+	proaccountoperationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountoperation"
+	proaccountprobesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
+	proaccounttestsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccounttest"
 	proaccountusagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountusage"
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
@@ -54,6 +59,11 @@ type Context struct {
 	ProxyService                   *proxysvc.Service
 	PanelService                   *panelsvc.Service
 	ProAccountService              *proaccountsvc.Service
+	ProAccountGateway              *proaccountgatewaysvc.Client
+	ProAccountModelsService        *proaccountmodelssvc.Service
+	ProAccountOperationService     *proaccountoperationsvc.Service
+	ProAccountProbeService         *proaccountprobesvc.Service
+	ProAccountTestService          *proaccounttestsvc.Service
 	ProAccountUsageService         *proaccountusagesvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
 }
@@ -76,7 +86,12 @@ func FromExisting(
 	collectorService := collectorsvc.New(collectorManager)
 	managerConfigService := managerconfigsvc.New(cfg, st, collectorService)
 	accountProcessingPolicyService := automationsvc.New(cfg, st)
-	proAccountService := proaccountsvc.New(st.ProAccounts, managerConfigService)
+	proAccountGateway := proaccountgatewaysvc.New(nil)
+	proAccountService := proaccountsvc.New(st.ProAccounts, managerConfigService, proAccountGateway)
+	proAccountOperationService := proaccountoperationsvc.New(st.ProAccountDrafts)
+	proAccountModelsService := proaccountmodelssvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
+	proAccountProbeService := proaccountprobesvc.New(nil)
+	proAccountTestService := proaccounttestsvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
 	proAccountUsageService := proaccountusagesvc.New(st.ProAccounts, proAccountService, managerConfigService)
 	return &Context{
 		Config:                         cfg,
@@ -99,6 +114,11 @@ func FromExisting(
 		ProxyService:                   proxysvc.New(managerConfigService, st),
 		PanelService:                   panelsvc.New(cfg.PanelPath, embeddedPanel),
 		ProAccountService:              proAccountService,
+		ProAccountGateway:              proAccountGateway,
+		ProAccountModelsService:        proAccountModelsService,
+		ProAccountOperationService:     proAccountOperationService,
+		ProAccountProbeService:         proAccountProbeService,
+		ProAccountTestService:          proAccountTestService,
 		ProAccountUsageService:         proAccountUsageService,
 		AutomationRuntimeService:       runtimeService,
 	}

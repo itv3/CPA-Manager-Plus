@@ -48,6 +48,13 @@ func TestRepositorySyncIsIdempotentAndSupportsDryRun(t *testing.T) {
 	if second.Created != 0 || second.Updated != 2 {
 		t.Fatalf("重复同步结果 = %#v", second)
 	}
+	firstAccount, ok, err := repo.Get(ctx, first.Items[0].ProAccountID)
+	if err != nil || !ok {
+		t.Fatalf("读取重复同步账号：ok=%v err=%v", ok, err)
+	}
+	if firstAccount.Version != 1 {
+		t.Fatalf("无变化同步不应递增资源版本，version = %d", firstAccount.Version)
+	}
 
 	list, err := repo.List(ctx, model.ProAccountListFilter{Limit: 50})
 	if err != nil {

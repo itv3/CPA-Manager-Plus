@@ -16,11 +16,13 @@ func ensureProAccountTables(db *sql.DB) error {
 			last_error text,
 			allowed_models_json text not null default '[]',
 			model_mapping_json text not null default '{}',
+			model_rule_version text,
 			last_used_at_ms integer,
 			last_tested_at_ms integer,
 			expires_at_ms integer,
 			created_at_ms integer not null,
-			updated_at_ms integer not null
+			updated_at_ms integer not null,
+			version integer not null default 1
 		)`,
 		`create index if not exists idx_pro_accounts_platform on pro_accounts(platform)`,
 		`create index if not exists idx_pro_accounts_auth_type on pro_accounts(auth_type)`,
@@ -64,11 +66,68 @@ func ensureProAccountTables(db *sql.DB) error {
 			updated_at_ms integer not null
 		)`,
 		`create index if not exists idx_pro_binding_reviews_status on pro_account_binding_reviews(resolution_status, last_seen_at_ms desc)`,
+		`create table if not exists pro_account_drafts (
+			operation_id text primary key,
+			idempotency_key text not null unique,
+			operation_type text not null,
+			pro_account_id text references pro_accounts(id) on delete set null,
+			state text not null,
+			version integer not null default 1,
+			retry_count integer not null default 0,
+			cleanup_deadline_ms integer not null,
+			compensation_action text,
+			error_code text,
+			error_summary text,
+			context_json text not null default '{}',
+			created_at_ms integer not null,
+			updated_at_ms integer not null
+		)`,
+		`create index if not exists idx_pro_account_drafts_recovery
+			on pro_account_drafts(state, cleanup_deadline_ms, updated_at_ms)`,
+		`create index if not exists idx_pro_account_drafts_account
+			on pro_account_drafts(pro_account_id, updated_at_ms desc)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			return err
 		}
 	}
-	return nil
+	return ensureProAccountColumns(db)
+}
+
+func ensureProAccountColumns(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(pro_accounts)`)
+	if err != nil {
+		return err
+	}
+	hasVersion := false
+	hasModelRuleVersion := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "version" {
+			hasVersion = true
+		}
+		if name == "model_rule_version" {
+			hasModelRuleVersion = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasVersion {
+		if _, err = db.Exec(`alter table pro_accounts add column version integer not null default 1`); err != nil {
+			return err
+		}
+	}
+	if !hasModelRuleVersion {
+		_, err = db.Exec(`alter table pro_accounts add column model_rule_version text`)
+	}
+	return err
 }

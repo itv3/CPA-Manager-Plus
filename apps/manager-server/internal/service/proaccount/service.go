@@ -15,26 +15,27 @@ import (
 	proaccountrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccount"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 )
 
 var ErrAccountNotFound = errors.New("pro account not found")
 
-type AuthFileLister interface {
-	Fetch(ctx context.Context, baseURL string, managementKey string) ([]cpaauthfiles.File, error)
+type GatewaySnapshotter interface {
+	Snapshot(ctx context.Context, baseURL string, managementKey string) (proaccountgateway.SnapshotResult, error)
 }
 
 type Service struct {
 	repository    proaccountrepo.Repository
 	managerConfig *managerconfig.Service
-	authFiles     AuthFileLister
+	gateway       GatewaySnapshotter
 }
 
-func New(repository proaccountrepo.Repository, managerConfig *managerconfig.Service, authFiles ...AuthFileLister) *Service {
-	client := AuthFileLister(cpaauthfiles.New(nil))
-	if len(authFiles) > 0 && authFiles[0] != nil {
-		client = authFiles[0]
+func New(repository proaccountrepo.Repository, managerConfig *managerconfig.Service, gateways ...GatewaySnapshotter) *Service {
+	client := GatewaySnapshotter(proaccountgateway.New(nil))
+	if len(gateways) > 0 && gateways[0] != nil {
+		client = gateways[0]
 	}
-	return &Service{repository: repository, managerConfig: managerConfig, authFiles: client}
+	return &Service{repository: repository, managerConfig: managerConfig, gateway: client}
 }
 
 func (s *Service) List(ctx context.Context, filter model.ProAccountListFilter) (model.ProAccountListResult, error) {
@@ -63,17 +64,44 @@ func (s *Service) Sync(ctx context.Context, dryRun bool) (model.ProAccountSyncRe
 	if !ok || strings.TrimSpace(setup.CPAUpstreamURL) == "" || strings.TrimSpace(setup.ManagementKey) == "" {
 		return model.ProAccountSyncResult{}, errors.New("usage service is not configured")
 	}
-	files, err := s.authFiles.Fetch(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+	snapshot, err := s.gateway.Snapshot(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	if err != nil {
 		return model.ProAccountSyncResult{}, fmt.Errorf("fetch gateway accounts: %w", err)
 	}
-	discoveries := make([]model.ProAccountDiscovery, 0, len(files))
-	for _, file := range files {
-		if discovery, ok := discoveryFromAuthFile(file); ok {
-			discoveries = append(discoveries, discovery)
-		}
+	discoveries := make([]model.ProAccountDiscovery, 0, len(snapshot.Accounts))
+	for _, account := range snapshot.Accounts {
+		discoveries = append(discoveries, discoveryFromSnapshot(account))
 	}
-	return s.repository.Sync(ctx, discoveries, time.Now().UnixMilli(), dryRun)
+	result, err := s.repository.Sync(ctx, discoveries, time.Now().UnixMilli(), dryRun)
+	if err != nil {
+		return result, err
+	}
+	result.Capabilities = model.ProAccountCapabilities{
+		CredentialDraft: snapshot.Capabilities.CredentialDraft,
+		AllowedModels:   snapshot.Capabilities.AllowedModels,
+	}
+	result.Warnings = append([]string(nil), snapshot.Warnings...)
+	return result, nil
+}
+
+func discoveryFromSnapshot(account proaccountgateway.AccountSnapshot) model.ProAccountDiscovery {
+	return model.ProAccountDiscovery{
+		Platform: account.Platform, AuthType: account.AuthType, SourceType: account.SourceType,
+		Name: account.Name, Email: account.Email, Enabled: account.Enabled,
+		HealthStatus: account.HealthStatus, LastError: account.LastError,
+		AllowedModels: append([]string(nil), account.AllowedModels...), ModelMapping: cloneStringMap(account.ModelMapping),
+		ModelRuleVersion: account.ModelRuleVersion, ExpiresAtMS: account.ExpiresAtMS,
+		AuthIndex: account.AuthIndex, SourceLocator: account.SourceLocator,
+		SourceFingerprint: account.SourceFingerprint,
+	}
+}
+
+func cloneStringMap(value map[string]string) map[string]string {
+	result := make(map[string]string, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
 }
 
 func discoveryFromAuthFile(file cpaauthfiles.File) (model.ProAccountDiscovery, bool) {

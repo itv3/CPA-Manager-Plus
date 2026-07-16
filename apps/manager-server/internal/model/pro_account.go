@@ -11,27 +11,76 @@ const (
 	ProBindingResolutionCreated  = "created"
 	ProBindingResolutionPending  = "pending_confirmation"
 	ProBindingResolutionConflict = "conflict"
+
+	ProOperationStateDraftCreated            = "draft_created"
+	ProOperationStateCredentialSavedDisabled = "credential_saved_disabled"
+	ProOperationStateProbed                  = "probed"
+	ProOperationStateModelsConfigured        = "models_configured"
+	ProOperationStateTested                  = "tested"
+	ProOperationStateEnabled                 = "enabled"
+	ProOperationStateCancelled               = "cancelled"
+	ProOperationStateCompensating            = "compensating"
+	ProOperationStateFailed                  = "failed"
 )
 
 // ProAccount 是管理端维护的统一账号视图，不改变 Gateway 的底层账号结构。
 type ProAccount struct {
-	ID             string             `json:"id"`
-	Platform       string             `json:"platform"`
-	AuthType       string             `json:"authType"`
-	SourceType     string             `json:"sourceType"`
-	Name           string             `json:"name,omitempty"`
-	Email          string             `json:"email,omitempty"`
-	Enabled        bool               `json:"enabled"`
-	HealthStatus   string             `json:"healthStatus"`
-	LastError      string             `json:"lastError,omitempty"`
-	AllowedModels  []string           `json:"allowedModels"`
-	ModelMapping   map[string]string  `json:"modelMapping"`
-	LastUsedAtMS   int64              `json:"lastUsedAtMs,omitempty"`
-	LastTestedAtMS int64              `json:"lastTestedAtMs,omitempty"`
-	ExpiresAtMS    int64              `json:"expiresAtMs,omitempty"`
-	CreatedAtMS    int64              `json:"createdAtMs"`
-	UpdatedAtMS    int64              `json:"updatedAtMs"`
-	Binding        *ProAccountBinding `json:"binding,omitempty"`
+	ID               string             `json:"id"`
+	Platform         string             `json:"platform"`
+	AuthType         string             `json:"authType"`
+	SourceType       string             `json:"sourceType"`
+	Name             string             `json:"name,omitempty"`
+	Email            string             `json:"email,omitempty"`
+	Enabled          bool               `json:"enabled"`
+	HealthStatus     string             `json:"healthStatus"`
+	LastError        string             `json:"lastError,omitempty"`
+	AllowedModels    []string           `json:"allowedModels"`
+	ModelMapping     map[string]string  `json:"modelMapping"`
+	ModelRuleVersion string             `json:"modelRuleVersion,omitempty"`
+	LastUsedAtMS     int64              `json:"lastUsedAtMs,omitempty"`
+	LastTestedAtMS   int64              `json:"lastTestedAtMs,omitempty"`
+	ExpiresAtMS      int64              `json:"expiresAtMs,omitempty"`
+	CreatedAtMS      int64              `json:"createdAtMs"`
+	UpdatedAtMS      int64              `json:"updatedAtMs"`
+	Version          int64              `json:"version"`
+	Binding          *ProAccountBinding `json:"binding,omitempty"`
+}
+
+// ProAccountDraft 保存跨 Gateway Management API 调用的可恢复操作状态，不保存凭证明文。
+type ProAccountDraft struct {
+	OperationID        string         `json:"operationId"`
+	IdempotencyKey     string         `json:"idempotencyKey"`
+	OperationType      string         `json:"operationType"`
+	ProAccountID       string         `json:"proAccountId,omitempty"`
+	State              string         `json:"state"`
+	Version            int64          `json:"version"`
+	RetryCount         int            `json:"retryCount"`
+	CleanupDeadlineMS  int64          `json:"cleanupDeadlineMs"`
+	CompensationAction string         `json:"compensationAction,omitempty"`
+	ErrorCode          string         `json:"errorCode,omitempty"`
+	ErrorSummary       string         `json:"errorSummary,omitempty"`
+	Context            map[string]any `json:"context,omitempty"`
+	CreatedAtMS        int64          `json:"createdAtMs"`
+	UpdatedAtMS        int64          `json:"updatedAtMs"`
+}
+
+type ProAccountDraftCreate struct {
+	OperationID       string
+	IdempotencyKey    string
+	OperationType     string
+	ProAccountID      string
+	CleanupDeadlineMS int64
+	Context           map[string]any
+}
+
+type ProAccountDraftUpdate struct {
+	State              string
+	RetryCount         int
+	CleanupDeadlineMS  int64
+	CompensationAction string
+	ErrorCode          string
+	ErrorSummary       string
+	Context            map[string]any
 }
 
 // ProAccountBinding 保存统一账号与 Gateway 运行时凭证标识之间的历史关系。
@@ -63,6 +112,7 @@ type ProAccountDiscovery struct {
 	LastError         string
 	AllowedModels     []string
 	ModelMapping      map[string]string
+	ModelRuleVersion  string
 	ExpiresAtMS       int64
 	AuthIndex         string
 	SourceLocator     string
@@ -95,13 +145,21 @@ type ProAccountSyncItem struct {
 }
 
 type ProAccountSyncResult struct {
-	DryRun     bool                 `json:"dryRun"`
-	Discovered int                  `json:"discovered"`
-	Created    int                  `json:"created"`
-	Updated    int                  `json:"updated"`
-	Pending    int                  `json:"pending"`
-	Conflicts  int                  `json:"conflicts"`
-	Items      []ProAccountSyncItem `json:"items"`
+	DryRun       bool                   `json:"dryRun"`
+	Discovered   int                    `json:"discovered"`
+	Created      int                    `json:"created"`
+	Updated      int                    `json:"updated"`
+	Pending      int                    `json:"pending"`
+	Conflicts    int                    `json:"conflicts"`
+	Items        []ProAccountSyncItem   `json:"items"`
+	Capabilities ProAccountCapabilities `json:"capabilities"`
+	Warnings     []string               `json:"warnings,omitempty"`
+}
+
+// ProAccountCapabilities 描述当前 Gateway 是否具备 Pro 流程依赖的通用能力。
+type ProAccountCapabilities struct {
+	CredentialDraft bool `json:"credentialDraft"`
+	AllowedModels   bool `json:"allowedModels"`
 }
 
 type ProAccountUsageWindow struct {
