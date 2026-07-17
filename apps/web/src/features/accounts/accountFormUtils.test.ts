@@ -14,7 +14,34 @@ describe('统一账号表单规则', () => {
   it('严格限制各平台可用认证方式', () => {
     expect(authTypesForPlatform('openai')).toEqual(['oauth', 'api']);
     expect(authTypesForPlatform('anthropic')).toEqual(['oauth', 'api']);
-    expect(authTypesForPlatform('gemini')).toEqual(['oauth', 'api', 'vertex']);
+    expect(authTypesForPlatform('gemini')).toEqual(['api', 'vertex']);
+    expect(
+      authTypesForPlatform('gemini', {
+        credentialDraft: true,
+        allowedModels: true,
+        stores: {},
+        platforms: {
+          gemini: {
+            oauth: { status: 'supported' },
+            api: { status: 'supported' },
+            vertex: { status: 'supported' },
+          },
+        },
+      })
+    ).toEqual(['oauth', 'api', 'vertex']);
+    expect(
+      authTypesForPlatform('openai', {
+        credentialDraft: false,
+        allowedModels: false,
+        stores: {},
+        platforms: {
+          openai: {
+            oauth: { status: 'unsupported' },
+            api: { status: 'unsupported' },
+          },
+        },
+      })
+    ).toEqual([]);
     expect(authTypesForPlatform('antigravity')).toEqual(['oauth']);
     expect(authTypesForPlatform('xai')).toEqual(['oauth']);
     expect(ACCOUNT_PLATFORMS).toHaveLength(5);

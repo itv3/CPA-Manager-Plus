@@ -29,6 +29,18 @@ type Capabilities struct {
 	AllowedModels   bool `json:"allowedModels"`
 }
 
+type AuthCapability struct {
+	Status     string `json:"status"`
+	ReasonCode string `json:"reasonCode,omitempty"`
+	PluginID   string `json:"pluginId,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Version    string `json:"version,omitempty"`
+}
+
+type PlatformCapabilities struct {
+	GeminiOAuth AuthCapability `json:"geminiOAuth"`
+}
+
 type AccountSnapshot struct {
 	Platform          string
 	AuthType          string

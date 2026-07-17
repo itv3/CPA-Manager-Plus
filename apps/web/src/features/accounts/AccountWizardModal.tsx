@@ -131,7 +131,7 @@ export function AccountWizardModal({
 
   const selectPlatform = (value: AccountPlatform) => {
     const option = platformOption(value);
-    const nextAuthType = option?.authTypes[0] ?? 'oauth';
+    const nextAuthType = authTypesForPlatform(value, capabilities)[0] ?? 'api';
     setPlatform(value);
     setAuthType(nextAuthType);
     setBaseUrl(option?.defaultBaseUrl ?? '');
@@ -144,7 +144,7 @@ export function AccountWizardModal({
   };
 
   const advanceFromType = () => {
-    if (!authTypesForPlatform(platform).includes(authType)) {
+    if (!authTypesForPlatform(platform, capabilities).includes(authType)) {
       setError('当前平台不支持所选认证方式');
       return;
     }
@@ -503,7 +503,7 @@ export function AccountWizardModal({
             <div className={styles.field}>
               <h3 className={styles.sectionTitle}>认证方式</h3>
               <div className={styles.authTypes}>
-                {authTypesForPlatform(platform).map((type) => (
+                {authTypesForPlatform(platform, capabilities).map((type) => (
                   <button
                     key={type}
                     type="button"
@@ -514,6 +514,12 @@ export function AccountWizardModal({
                   </button>
                 ))}
               </div>
+              {platform === 'gemini' &&
+              capabilities?.platforms?.gemini?.oauth?.status !== 'supported' ? (
+                <div className={styles.notice}>
+                  Gemini OAuth 需要已启用并成功注册的 gemini-cli 插件，当前仅提供 API 和 Vertex。
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}

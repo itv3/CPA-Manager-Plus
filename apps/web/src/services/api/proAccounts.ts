@@ -193,6 +193,15 @@ export interface ProAccountCapabilitiesResponse {
   credentialDraft: boolean;
   allowedModels: boolean;
   stores: Record<string, 'supported' | 'unsupported' | 'unknown'>;
+  platforms?: Record<string, Record<string, ProAccountAuthCapability | undefined> | undefined>;
+}
+
+export interface ProAccountAuthCapability {
+  status: 'supported' | 'unsupported' | 'unknown';
+  reasonCode?: string;
+  pluginId?: string;
+  provider?: string;
+  version?: string;
 }
 
 export interface ProAccountOAuthResult {

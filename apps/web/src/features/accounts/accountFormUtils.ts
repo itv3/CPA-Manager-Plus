@@ -1,3 +1,5 @@
+import type { ProAccountCapabilitiesResponse } from '@/services/api/proAccounts';
+
 export type AccountPlatform = 'openai' | 'anthropic' | 'gemini' | 'antigravity' | 'xai';
 export type AccountAuthType = 'oauth' | 'api' | 'vertex';
 
@@ -60,8 +62,18 @@ export const createRequestIdentity = (prefix: string): RequestIdentity => {
 export const platformOption = (platform: string) =>
   ACCOUNT_PLATFORMS.find((item) => item.id === platform);
 
-export const authTypesForPlatform = (platform: string): AccountAuthType[] =>
-  platformOption(platform)?.authTypes ?? [];
+export const authTypesForPlatform = (
+  platform: string,
+  capabilities?: ProAccountCapabilitiesResponse | null
+): AccountAuthType[] => {
+  const authTypes = platformOption(platform)?.authTypes ?? [];
+  const platformCapabilities = capabilities?.platforms?.[platform];
+  if (platformCapabilities) {
+    return authTypes.filter((authType) => platformCapabilities[authType]?.status === 'supported');
+  }
+  if (platform !== 'gemini') return authTypes;
+  return authTypes.filter((authType) => authType !== 'oauth');
+};
 
 const uniqueValues = (values: string[]) => {
   const seen = new Set<string>();

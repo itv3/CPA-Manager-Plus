@@ -408,6 +408,8 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 			_, _ = w.Write([]byte(`{"files":[]}`))
 		case "/v0/management/gemini-api-key":
 			_, _ = w.Write([]byte(`{"gemini-api-key":[{"api-key":"secret-not-persisted","base-url":"https://gemini.example/v1beta","auth-index":"auth-gemini","allowed-models":["gemini-test"],"model-rule-version":"rule-gemini"}]}`))
+		case "/v0/management/plugins":
+			_, _ = w.Write([]byte(`{"plugins_enabled":true,"plugins":[{"id":"gemini-cli","registered":true,"enabled":true,"effective_enabled":true,"supports_oauth":true,"oauth_provider":"gemini-cli","metadata":{"version":"1.0.5"}}]}`))
 		case "/v0/management/auth-files/models":
 			if r.URL.Query().Get("name") != "auth-gemini" {
 				http.Error(w, "invalid auth index", http.StatusBadRequest)
@@ -425,7 +427,7 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 
 	capabilitiesRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts/capabilities", "", testutil.AdminKey)
 	testutil.RequireStatus(t, capabilitiesRR, http.StatusOK)
-	if !strings.Contains(capabilitiesRR.Body.String(), `"credentialDraft":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"allowedModels":true`) {
+	if !strings.Contains(capabilitiesRR.Body.String(), `"credentialDraft":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"allowedModels":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"version":"1.0.5"`) {
 		t.Fatalf("capabilities body = %s", capabilitiesRR.Body.String())
 	}
 	syncRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/sync", `{}`, testutil.AdminKey)

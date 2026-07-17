@@ -107,6 +107,7 @@ type SetupResolver interface {
 
 type Gateway interface {
 	Capabilities(ctx context.Context, baseURL string, managementKey string) (proaccountgateway.Capabilities, error)
+	PlatformCapabilities(ctx context.Context, baseURL string, managementKey string) (proaccountgateway.PlatformCapabilities, error)
 	Snapshot(ctx context.Context, baseURL string, managementKey string) (proaccountgateway.SnapshotResult, error)
 	CreateDisabledAPI(ctx context.Context, baseURL string, managementKey string, input proaccountgateway.CreateAPIInput) (proaccountgateway.AccountSnapshot, error)
 	SetAccountEnabled(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, enabled bool) (proaccountgateway.AccountSnapshot, error)

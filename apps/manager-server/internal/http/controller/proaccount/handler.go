@@ -280,10 +280,30 @@ func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadGateway, "gateway_capabilities_failed", "无法读取 Gateway 能力", true, nil)
 		return
 	}
+	platformCapabilities, platformErr := h.App.ProAccountGateway.PlatformCapabilities(r.Context(), setup.CPAUpstreamURL, setup.ManagementKey)
+	geminiOAuth := platformCapabilities.GeminiOAuth
+	if platformErr != nil {
+		geminiOAuth = proaccountgateway.AuthCapability{
+			Status: proaccountgateway.CapabilityUnknown, ReasonCode: "plugin_capability_unavailable", Provider: "gemini-cli",
+		}
+	}
+	nativeCapability := proaccountgateway.AuthCapability{Status: proaccountgateway.CapabilitySupported}
+	if !capabilities.CredentialDraft || !capabilities.AllowedModels {
+		nativeCapability = proaccountgateway.AuthCapability{
+			Status: proaccountgateway.CapabilityUnsupported, ReasonCode: "gateway_account_draft_unavailable",
+		}
+	}
 	response.JSON(w, http.StatusOK, map[string]any{
 		"credentialDraft": capabilities.CredentialDraft,
 		"allowedModels":   capabilities.AllowedModels,
 		"stores":          map[string]string{"file": "supported", "object": "supported", "postgresql": "supported", "git": "supported"},
+		"platforms": map[string]any{
+			"openai":      map[string]any{"oauth": nativeCapability, "api": nativeCapability},
+			"anthropic":   map[string]any{"oauth": nativeCapability, "api": nativeCapability},
+			"gemini":      map[string]any{"oauth": geminiOAuth, "api": nativeCapability, "vertex": nativeCapability},
+			"antigravity": map[string]any{"oauth": nativeCapability},
+			"xai":         map[string]any{"oauth": nativeCapability},
+		},
 	})
 }
 

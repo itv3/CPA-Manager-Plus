@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 )
 
 func (s *Service) StartOAuth(ctx context.Context, input OAuthStartInput) (OAuthResult, error) {
@@ -22,6 +23,12 @@ func (s *Service) StartOAuth(ctx context.Context, input OAuthStartInput) (OAuthR
 	capabilities, err := s.gateway.Capabilities(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	if err != nil || !capabilities.CredentialDraft {
 		return OAuthResult{}, ErrGatewayCapability
+	}
+	if input.Platform == "gemini" {
+		platformCapabilities, capabilityErr := s.gateway.PlatformCapabilities(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+		if capabilityErr != nil || platformCapabilities.GeminiOAuth.Status != proaccountgateway.CapabilitySupported {
+			return OAuthResult{}, ErrGatewayCapability
+		}
 	}
 	snapshot, err := s.gateway.Snapshot(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	if err != nil {
