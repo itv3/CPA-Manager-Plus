@@ -573,6 +573,9 @@ func TestProAccountsSyncAndList(t *testing.T) {
 			ID       string `json:"id"`
 			Platform string `json:"platform"`
 			Email    string `json:"email"`
+			Binding  *struct {
+				AttributionQuality string `json:"attributionQuality"`
+			} `json:"binding"`
 		} `json:"items"`
 	}
 	testutil.DecodeJSON(t, listRR, &listResult)
@@ -581,6 +584,9 @@ func TestProAccountsSyncAndList(t *testing.T) {
 	}
 	if listResult.Items[0].ID == "" || listResult.Items[0].Email != "alpha@example.com" {
 		t.Fatalf("account = %#v", listResult.Items[0])
+	}
+	if listResult.Items[0].Binding == nil || listResult.Items[0].Binding.AttributionQuality != "exact" {
+		t.Fatalf("binding attribution = %#v", listResult.Items[0].Binding)
 	}
 }
 

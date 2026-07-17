@@ -66,7 +66,7 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
 		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
-		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
+		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms, b.attribution_quality,
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
 		from pro_accounts a
 		left join pro_account_bindings b on b.pro_account_id = a.id and b.is_current = 1 ` +
@@ -164,7 +164,7 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
 		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
-		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms,
+		b.binding_status, b.is_current, b.valid_from_ms, b.valid_to_ms, b.attribution_quality,
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
 		from pro_accounts a
 		left join pro_account_bindings b on b.pro_account_id = a.id and b.is_current = 1
@@ -201,10 +201,11 @@ func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, 
 		from usage_events e
 		join pro_account_bindings b on b.pro_account_id = ?
 			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and b.attribution_quality <> ?
 			and e.timestamp_ms >= b.valid_from_ms
 			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
 		left join model_prices mp on mp.model = coalesce(nullif(e.resolved_model, ''), e.model)
-		where e.timestamp_ms >= ? and e.timestamp_ms < ?`, accountID, fromMS, toMS).Scan(
+		where e.timestamp_ms >= ? and e.timestamp_ms < ?`, accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS).Scan(
 		&local.Requests, &local.Successes, &local.Failures, &local.InputTokens, &local.OutputTokens,
 		&local.CachedTokens, &local.CacheReadTokens, &local.CacheCreationTokens, &local.ReasoningTokens,
 		&local.TotalTokens, &local.LastActivityAtMS, &unknownPriceEvents, &estimatedCost,
@@ -227,11 +228,12 @@ func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, 
 		from usage_events e
 		join pro_account_bindings b on b.pro_account_id = ?
 			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and b.attribution_quality <> ?
 			and e.timestamp_ms >= b.valid_from_ms
 			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
 		where e.timestamp_ms >= ? and e.timestamp_ms < ?
 			and (e.header_quota_used_percent is not null or e.header_quota_recover_at_ms is not null)
-		order by e.timestamp_ms desc, e.id desc limit 1`, accountID, fromMS, toMS).Scan(&usedPercent, &resetAt, &label)
+		order by e.timestamp_ms desc, e.id desc limit 1`, accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS).Scan(&usedPercent, &resetAt, &label)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return local, nil, err
 	}
@@ -262,8 +264,16 @@ func (r *repository) Sync(ctx context.Context, discoveries []model.ProAccountDis
 	}
 	defer tx.Rollback()
 
+	authIndexCounts := make(map[string]int, len(discoveries))
 	for _, discovery := range discoveries {
-		item, err := syncDiscovery(ctx, tx, discovery, nowMS)
+		if authIndex := strings.TrimSpace(discovery.AuthIndex); authIndex != "" {
+			authIndexCounts[authIndex]++
+		}
+	}
+	for _, discovery := range discoveries {
+		authIndex := strings.TrimSpace(discovery.AuthIndex)
+		uniqueAuthIndex := authIndex == "" || authIndexCounts[authIndex] == 1
+		item, err := syncDiscovery(ctx, tx, discovery, nowMS, uniqueAuthIndex)
 		if err != nil {
 			return result, err
 		}
@@ -288,7 +298,7 @@ func (r *repository) Sync(ctx context.Context, discoveries []model.ProAccountDis
 	return result, nil
 }
 
-func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccountSyncItem, error) {
+func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDiscovery, nowMS int64, uniqueAuthIndex bool) (model.ProAccountSyncItem, error) {
 	discovery.SourceType = strings.TrimSpace(discovery.SourceType)
 	discovery.SourceLocator = strings.TrimSpace(discovery.SourceLocator)
 	discovery.AuthIndex = strings.TrimSpace(discovery.AuthIndex)
@@ -310,6 +320,12 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 			where pro_account_id = ? and source_type = ? and source_locator = ? and coalesce(auth_index, '') = ? and is_current = 1`,
 			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS,
 			accountID, discovery.SourceType, discovery.SourceLocator, discovery.AuthIndex); err != nil {
+			return item, err
+		}
+		if err := repairCurrentBindingAttribution(ctx, tx, accountID, discovery.AuthIndex, nowMS, uniqueAuthIndex); err != nil {
+			return item, err
+		}
+		if err := backfillAccountUsageSummary(ctx, tx, accountID); err != nil {
 			return item, err
 		}
 		item.Resolution = model.ProBindingResolutionExact
@@ -357,17 +373,151 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 		nullString(discovery.LastError), allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, nowMS); err != nil {
 		return item, err
 	}
+	attribution, err := resolveInitialAttribution(ctx, tx, accountID, discovery.AuthIndex, nowMS, uniqueAuthIndex)
+	if err != nil {
+		return item, err
+	}
 	if _, err := tx.ExecContext(ctx, `insert into pro_account_bindings (
 		pro_account_id, auth_index, source_type, source_locator, source_fingerprint, binding_status,
-		is_current, valid_from_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+		is_current, valid_from_ms, attribution_quality, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+	) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
 		accountID, nullString(discovery.AuthIndex), discovery.SourceType, discovery.SourceLocator,
-		nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, nowMS, nowMS, nowMS); err != nil {
+		nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent,
+		attribution.ValidFromMS, attribution.Quality, nowMS, nowMS, nowMS, nowMS); err != nil {
+		return item, err
+	}
+	if err := backfillAccountUsageSummary(ctx, tx, accountID); err != nil {
 		return item, err
 	}
 	item.Resolution = model.ProBindingResolutionCreated
 	item.ProAccountID = accountID
 	return item, nil
+}
+
+type bindingAttribution struct {
+	ValidFromMS int64
+	Quality     string
+}
+
+func resolveInitialAttribution(ctx context.Context, tx *sql.Tx, accountID string, authIndex string, nowMS int64, uniqueAuthIndex bool) (bindingAttribution, error) {
+	authIndex = strings.TrimSpace(authIndex)
+	result := bindingAttribution{ValidFromMS: nowMS, Quality: model.ProAttributionQualityExact}
+	if authIndex == "" {
+		return result, nil
+	}
+	if !uniqueAuthIndex {
+		result.Quality = model.ProAttributionQualityAmbiguous
+		return result, nil
+	}
+	duplicate, err := hasOtherCurrentBinding(ctx, tx, accountID, authIndex)
+	if err != nil {
+		return bindingAttribution{}, err
+	}
+	if duplicate {
+		result.Quality = model.ProAttributionQualityAmbiguous
+		return result, nil
+	}
+
+	var rawFrom sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `select min(timestamp_ms) from usage_events
+		where auth_index = ? and timestamp_ms > 0`, authIndex).Scan(&rawFrom); err != nil {
+		return bindingAttribution{}, err
+	}
+	if rawFrom.Valid && rawFrom.Int64 < result.ValidFromMS {
+		result.ValidFromMS = rawFrom.Int64
+		result.Quality = model.ProAttributionQualityRetainedHistory
+	}
+
+	var rollupFrom sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `select min(first_seen_ms) from usage_account_model_rollups
+		where auth_index = ? and first_seen_ms > 0`, authIndex).Scan(&rollupFrom); err != nil {
+		return bindingAttribution{}, err
+	}
+	if rollupFrom.Valid && rollupFrom.Int64 < result.ValidFromMS {
+		result.Quality = model.ProAttributionQualityPartial
+	}
+	return result, nil
+}
+
+func repairCurrentBindingAttribution(ctx context.Context, tx *sql.Tx, accountID string, authIndex string, nowMS int64, uniqueAuthIndex bool) error {
+	var bindingID, validFromMS int64
+	var quality string
+	err := tx.QueryRowContext(ctx, `select id, valid_from_ms, attribution_quality
+		from pro_account_bindings where pro_account_id = ? and is_current = 1
+			and coalesce(auth_index, '') = ? limit 1`, accountID, strings.TrimSpace(authIndex)).Scan(&bindingID, &validFromMS, &quality)
+	if err != nil {
+		return err
+	}
+	attribution, err := resolveInitialAttribution(ctx, tx, accountID, authIndex, nowMS, uniqueAuthIndex)
+	if err != nil {
+		return err
+	}
+	quality = valueOr(strings.TrimSpace(quality), model.ProAttributionQualityUnknown)
+	if attribution.Quality == model.ProAttributionQualityAmbiguous {
+		quality = model.ProAttributionQualityAmbiguous
+	} else {
+		switch quality {
+		case model.ProAttributionQualityUnknown:
+			if attribution.ValidFromMS < validFromMS {
+				validFromMS = attribution.ValidFromMS
+				quality = attribution.Quality
+			} else if attribution.Quality == model.ProAttributionQualityPartial {
+				quality = model.ProAttributionQualityPartial
+			} else {
+				quality = model.ProAttributionQualityExact
+			}
+		case model.ProAttributionQualityRetainedHistory:
+			if attribution.ValidFromMS < validFromMS {
+				validFromMS = attribution.ValidFromMS
+			}
+			if attribution.Quality == model.ProAttributionQualityPartial {
+				quality = model.ProAttributionQualityPartial
+			}
+		case model.ProAttributionQualityPartial:
+			if attribution.ValidFromMS < validFromMS {
+				validFromMS = attribution.ValidFromMS
+			}
+		}
+	}
+	_, err = tx.ExecContext(ctx, `update pro_account_bindings set
+		valid_from_ms = ?, attribution_quality = ?, updated_at_ms = ? where id = ?`,
+		validFromMS, quality, nowMS, bindingID)
+	return err
+}
+
+func managedAttributionQuality(ctx context.Context, tx *sql.Tx, accountID string, authIndex string) (string, error) {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return model.ProAttributionQualityExact, nil
+	}
+	duplicate, err := hasOtherCurrentBinding(ctx, tx, accountID, authIndex)
+	if err != nil {
+		return "", err
+	}
+	if duplicate {
+		return model.ProAttributionQualityAmbiguous, nil
+	}
+	return model.ProAttributionQualityExact, nil
+}
+
+func hasOtherCurrentBinding(ctx context.Context, tx *sql.Tx, accountID string, authIndex string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `select count(*) from pro_account_bindings
+		where is_current = 1 and coalesce(auth_index, '') = ? and pro_account_id <> ?`,
+		strings.TrimSpace(authIndex), strings.TrimSpace(accountID)).Scan(&count)
+	return count > 0, err
+}
+
+func backfillAccountUsageSummary(ctx context.Context, tx *sql.Tx, accountID string) error {
+	_, err := tx.ExecContext(ctx, `update pro_accounts set last_used_at_ms = (
+		select max(e.timestamp_ms) from usage_events e
+		join pro_account_bindings b on b.pro_account_id = pro_accounts.id
+			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and b.attribution_quality <> ?
+			and e.timestamp_ms >= b.valid_from_ms
+			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
+		) where id = ?`, model.ProAttributionQualityAmbiguous, accountID)
+	return err
 }
 
 func bindingDriftReason(sourceType string, conflict bool) string {
@@ -461,7 +611,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var lastUsed, lastTested, expires, deletedAt sql.NullInt64
 	var enabled int
 	var bindingID sql.NullInt64
-	var authIndex, bindingSourceType, sourceLocator, sourceFingerprint, bindingStatus sql.NullString
+	var authIndex, bindingSourceType, sourceLocator, sourceFingerprint, bindingStatus, attributionQuality sql.NullString
 	var isCurrent sql.NullInt64
 	var validFrom, validTo, firstSeen, lastSeen, bindingCreated, bindingUpdated sql.NullInt64
 	if err := row.Scan(
@@ -469,7 +619,8 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON, &modelRuleVersion,
 		&lastUsed, &lastTested, &expires, &deletedAt, &item.CreatedAtMS, &item.UpdatedAtMS, &item.Version,
 		&bindingID, &authIndex, &bindingSourceType, &sourceLocator, &sourceFingerprint,
-		&bindingStatus, &isCurrent, &validFrom, &validTo, &firstSeen, &lastSeen, &bindingCreated, &bindingUpdated,
+		&bindingStatus, &isCurrent, &validFrom, &validTo, &attributionQuality,
+		&firstSeen, &lastSeen, &bindingCreated, &bindingUpdated,
 	); err != nil {
 		return model.ProAccount{}, err
 	}
@@ -496,7 +647,8 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 			SourceType: bindingSourceType.String, SourceLocator: sourceLocator.String,
 			SourceFingerprint: sourceFingerprint.String, BindingStatus: bindingStatus.String,
 			IsCurrent: isCurrent.Int64 != 0, ValidFromMS: validFrom.Int64, ValidToMS: validTo.Int64,
-			FirstSeenAtMS: firstSeen.Int64, LastSeenAtMS: lastSeen.Int64,
+			AttributionQuality: valueOr(attributionQuality.String, model.ProAttributionQualityUnknown),
+			FirstSeenAtMS:      firstSeen.Int64, LastSeenAtMS: lastSeen.Int64,
 			CreatedAtMS: bindingCreated.Int64, UpdatedAtMS: bindingUpdated.Int64,
 		}
 	}
@@ -644,6 +796,9 @@ func rebindManagedTx(ctx context.Context, tx *sql.Tx, accountID string, expected
 			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, bindingID); err != nil {
 			return err
 		}
+		if err := repairCurrentBindingAttribution(ctx, tx, accountID, discovery.AuthIndex, nowMS, true); err != nil {
+			return err
+		}
 	} else {
 		if err == nil {
 			if _, err := tx.ExecContext(ctx, `update pro_account_bindings set
@@ -651,12 +806,17 @@ func rebindManagedTx(ctx context.Context, tx *sql.Tx, accountID string, expected
 				return err
 			}
 		}
+		quality, err := managedAttributionQuality(ctx, tx, accountID, discovery.AuthIndex)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `insert into pro_account_bindings (
 			pro_account_id, auth_index, source_type, source_locator, source_fingerprint, binding_status,
-			is_current, valid_from_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
-		) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+			is_current, valid_from_ms, attribution_quality, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+		) values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
 			accountID, nullString(discovery.AuthIndex), discovery.SourceType, discovery.SourceLocator,
-			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent, nowMS, nowMS, nowMS, nowMS, nowMS); err != nil {
+			nullString(discovery.SourceFingerprint), model.ProBindingStatusCurrent,
+			nowMS, quality, nowMS, nowMS, nowMS, nowMS); err != nil {
 			return err
 		}
 	}
@@ -678,6 +838,9 @@ func rebindManagedTx(ctx context.Context, tx *sql.Tx, accountID string, expected
 			return err
 		}
 		return ErrVersionConflict
+	}
+	if err := backfillAccountUsageSummary(ctx, tx, accountID); err != nil {
+		return err
 	}
 	return nil
 }

@@ -41,6 +41,7 @@ func ensureProAccountTables(db *sql.DB) error {
 			is_current integer not null default 1,
 			valid_from_ms integer not null,
 			valid_to_ms integer,
+			attribution_quality text not null default 'unknown',
 			first_seen_at_ms integer not null,
 			last_seen_at_ms integer not null,
 			created_at_ms integer not null,
@@ -98,6 +99,9 @@ func ensureProAccountTables(db *sql.DB) error {
 	if err := ensureProAccountColumns(db); err != nil {
 		return err
 	}
+	if err := ensureProBindingColumns(db); err != nil {
+		return err
+	}
 	return ensureProBindingReviewColumns(db)
 }
 
@@ -144,6 +148,35 @@ func ensureProAccountColumns(db *sql.DB) error {
 	if !hasDeletedAt {
 		_, err = db.Exec(`alter table pro_accounts add column deleted_at_ms integer`)
 	}
+	return err
+}
+
+func ensureProBindingColumns(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(pro_account_bindings)`)
+	if err != nil {
+		return err
+	}
+	hasAttributionQuality := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "attribution_quality" {
+			hasAttributionQuality = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if hasAttributionQuality {
+		return nil
+	}
+	_, err = db.Exec(`alter table pro_account_bindings add column attribution_quality text not null default 'unknown'`)
 	return err
 }
 

@@ -79,6 +79,16 @@ func TestBackupRestorePreservesUnifiedAccountState(t *testing.T) {
 	if bindingCount != 2 || currentBindingCount != 1 {
 		t.Fatalf("绑定历史=count:%d current:%d", bindingCount, currentBindingCount)
 	}
+	var exactQualityCount, retainedQualityCount int
+	if err := db.QueryRow(`select
+		sum(case when attribution_quality = 'exact' then 1 else 0 end),
+		sum(case when attribution_quality = 'retained_history' then 1 else 0 end)
+		from pro_account_bindings where pro_account_id = 'account-stable-uuid'`).Scan(&exactQualityCount, &retainedQualityCount); err != nil {
+		t.Fatalf("读取归属质量：%v", err)
+	}
+	if exactQualityCount != 1 || retainedQualityCount != 1 {
+		t.Fatalf("归属质量=exact:%d retained:%d", exactQualityCount, retainedQualityCount)
+	}
 	var draftState string
 	if err := db.QueryRow(`select state from pro_account_drafts where operation_id = 'operation-draft'`).Scan(&draftState); err != nil {
 		t.Fatalf("读取草稿：%v", err)
@@ -289,14 +299,14 @@ func insertBackupFixture(t *testing.T, db *sql.DB) {
 			'["gpt-test"]', '{}', 1000, 2000, 2)`,
 		`insert into pro_account_bindings (
 			pro_account_id, auth_index, source_type, source_locator, binding_status, is_current,
-			valid_from_ms, valid_to_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+			valid_from_ms, valid_to_ms, attribution_quality, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
 		) values ('account-stable-uuid', 'auth-old', 'auth_file', '/old.json', 'historical', 0,
-			1000, 2000, 1000, 1999, 1000, 2000)`,
+			1000, 2000, 'exact', 1000, 1999, 1000, 2000)`,
 		`insert into pro_account_bindings (
 			pro_account_id, auth_index, source_type, source_locator, binding_status, is_current,
-			valid_from_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+			valid_from_ms, attribution_quality, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
 		) values ('account-stable-uuid', 'auth-new', 'auth_file', '/new.json', 'current', 1,
-			2000, 2000, 3000, 2000, 3000)`,
+			2000, 'retained_history', 2000, 3000, 2000, 3000)`,
 		`insert into pro_account_drafts (
 			operation_id, idempotency_key, operation_type, pro_account_id, state, version,
 			retry_count, cleanup_deadline_ms, context_json, created_at_ms, updated_at_ms

@@ -12,6 +12,12 @@ const (
 	ProBindingResolutionPending  = "pending_confirmation"
 	ProBindingResolutionConflict = "conflict"
 
+	ProAttributionQualityExact           = "exact"
+	ProAttributionQualityRetainedHistory = "retained_history"
+	ProAttributionQualityPartial         = "partial"
+	ProAttributionQualityAmbiguous       = "ambiguous"
+	ProAttributionQualityUnknown         = "unknown"
+
 	ProOperationStateDraftCreated            = "draft_created"
 	ProOperationStateCredentialSavedDisabled = "credential_saved_disabled"
 	ProOperationStateProbed                  = "probed"
@@ -87,20 +93,21 @@ type ProAccountDraftUpdate struct {
 
 // ProAccountBinding 保存统一账号与 Gateway 运行时凭证标识之间的历史关系。
 type ProAccountBinding struct {
-	ID                int64  `json:"id"`
-	ProAccountID      string `json:"proAccountId"`
-	AuthIndex         string `json:"authIndex,omitempty"`
-	SourceType        string `json:"sourceType"`
-	SourceLocator     string `json:"sourceLocator"`
-	SourceFingerprint string `json:"sourceFingerprint,omitempty"`
-	BindingStatus     string `json:"bindingStatus"`
-	IsCurrent         bool   `json:"isCurrent"`
-	ValidFromMS       int64  `json:"validFromMs"`
-	ValidToMS         int64  `json:"validToMs,omitempty"`
-	FirstSeenAtMS     int64  `json:"firstSeenAtMs"`
-	LastSeenAtMS      int64  `json:"lastSeenAtMs"`
-	CreatedAtMS       int64  `json:"createdAtMs"`
-	UpdatedAtMS       int64  `json:"updatedAtMs"`
+	ID                 int64  `json:"id"`
+	ProAccountID       string `json:"proAccountId"`
+	AuthIndex          string `json:"authIndex,omitempty"`
+	SourceType         string `json:"sourceType"`
+	SourceLocator      string `json:"sourceLocator"`
+	SourceFingerprint  string `json:"sourceFingerprint,omitempty"`
+	BindingStatus      string `json:"bindingStatus"`
+	IsCurrent          bool   `json:"isCurrent"`
+	ValidFromMS        int64  `json:"validFromMs"`
+	ValidToMS          int64  `json:"validToMs,omitempty"`
+	AttributionQuality string `json:"attributionQuality"`
+	FirstSeenAtMS      int64  `json:"firstSeenAtMs"`
+	LastSeenAtMS       int64  `json:"lastSeenAtMs"`
+	CreatedAtMS        int64  `json:"createdAtMs"`
+	UpdatedAtMS        int64  `json:"updatedAtMs"`
 }
 
 type ProAccountDiscovery struct {

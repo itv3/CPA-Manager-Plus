@@ -150,7 +150,7 @@ func TestRepositoryListFiltersAndCursor(t *testing.T) {
 	}
 }
 
-func TestRepositoryUsageUsesBindingValidity(t *testing.T) {
+func TestRepositoryUsageBackfillsRetainedHistoryAndUsesBindingValidity(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("打开 SQLite：%v", err)
@@ -158,14 +158,6 @@ func TestRepositoryUsageUsesBindingValidity(t *testing.T) {
 	defer db.Close()
 	repo := proaccount.New(db)
 	ctx := context.Background()
-	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
-		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "alpha",
-		Enabled: true, AuthIndex: "auth-alpha", SourceLocator: "alpha.json",
-	}}, 1000, false)
-	if err != nil {
-		t.Fatalf("创建账号：%v", err)
-	}
-	accountID := created.Items[0].ProAccountID
 	if _, err := db.Exec(`insert into model_prices (
 		model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m,
 		cache_creation_per_1m, prompt_configured, completion_configured, cache_read_configured,
@@ -182,16 +174,203 @@ func TestRepositoryUsageUsesBindingValidity(t *testing.T) {
 			t.Fatalf("写入用量事件：%v", err)
 		}
 	}
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "alpha",
+		Enabled: true, AuthIndex: "auth-alpha", SourceLocator: "alpha.json",
+	}}, 1000, false)
+	if err != nil {
+		t.Fatalf("创建账号：%v", err)
+	}
+	accountID := created.Items[0].ProAccountID
 
 	usage, _, err := repo.Usage(ctx, accountID, 0, 5000)
 	if err != nil {
 		t.Fatalf("查询用量：%v", err)
 	}
-	if usage.Requests != 1 || usage.Failures != 1 || usage.TotalTokens != 2000000 {
+	if usage.Requests != 2 || usage.Successes != 1 || usage.Failures != 1 || usage.TotalTokens != 4000000 {
 		t.Fatalf("用量聚合 = %#v", usage)
 	}
-	if !usage.CostKnown || usage.EstimatedCost == nil || *usage.EstimatedCost != 3 {
+	if !usage.CostKnown || usage.EstimatedCost == nil || *usage.EstimatedCost != 6 {
 		t.Fatalf("成本聚合 = %#v", usage)
+	}
+	account, ok, err := repo.Get(ctx, accountID)
+	if err != nil || !ok || account.Binding == nil {
+		t.Fatalf("读取回填账号：item=%#v ok=%v err=%v", account, ok, err)
+	}
+	if account.Binding.ValidFromMS != 500 || account.Binding.AttributionQuality != model.ProAttributionQualityRetainedHistory || account.LastUsedAtMS != 1500 {
+		t.Fatalf("首次归属回填错误：%#v", account)
+	}
+}
+
+func TestRepositoryMarksPartialWhenRollupPredatesRetainedEvents(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`insert into usage_events (
+		event_hash, timestamp_ms, timestamp, model, auth_index, total_tokens, created_at_ms
+	) values ('retained-event', 500, 'retained', 'gpt-test', 'auth-partial', 10, 500)`); err != nil {
+		t.Fatalf("写入保留事件：%v", err)
+	}
+	if _, err := db.Exec(`insert into usage_account_model_rollups (
+		account_key, auth_index, model, billing_model, service_tier, first_seen_ms, last_seen_ms, updated_at_ms
+	) values ('legacy-account', 'auth-partial', 'gpt-test', 'gpt-test', '', 100, 500, 500)`); err != nil {
+		t.Fatalf("写入历史汇总：%v", err)
+	}
+	repo := proaccount.New(db)
+	created, err := repo.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "partial",
+		AuthIndex: "auth-partial", SourceLocator: "partial.json",
+	}}, 1000, false)
+	if err != nil {
+		t.Fatalf("同步部分历史账号：%v", err)
+	}
+	account, ok, err := repo.Get(context.Background(), created.Items[0].ProAccountID)
+	if err != nil || !ok || account.Binding == nil {
+		t.Fatalf("读取部分历史账号：item=%#v ok=%v err=%v", account, ok, err)
+	}
+	if account.Binding.ValidFromMS != 500 || account.Binding.AttributionQuality != model.ProAttributionQualityPartial {
+		t.Fatalf("部分归属标记错误：%#v", account.Binding)
+	}
+	usage, _, err := repo.Usage(context.Background(), account.ID, 0, 2000)
+	if err != nil || usage.Requests != 1 {
+		t.Fatalf("部分历史只能聚合保留事件：usage=%#v err=%v", usage, err)
+	}
+}
+
+func TestRepositoryDoesNotAttributeAmbiguousAuthIndex(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`insert into usage_events (
+		event_hash, timestamp_ms, timestamp, model, auth_index, total_tokens, created_at_ms
+	) values ('ambiguous-event', 500, 'ambiguous', 'gpt-test', 'auth-shared', 10, 500)`); err != nil {
+		t.Fatalf("写入歧义事件：%v", err)
+	}
+	repo := proaccount.New(db)
+	result, err := repo.Sync(context.Background(), []model.ProAccountDiscovery{
+		{Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "first", AuthIndex: "auth-shared", SourceLocator: "first.json"},
+		{Platform: "anthropic", AuthType: "oauth", SourceType: "auth_file", Name: "second", AuthIndex: "auth-shared", SourceLocator: "second.json"},
+	}, 1000, false)
+	if err != nil || result.Created != 2 {
+		t.Fatalf("同步歧义账号：result=%#v err=%v", result, err)
+	}
+	for _, item := range result.Items {
+		account, ok, getErr := repo.Get(context.Background(), item.ProAccountID)
+		if getErr != nil || !ok || account.Binding == nil {
+			t.Fatalf("读取歧义账号：item=%#v ok=%v err=%v", account, ok, getErr)
+		}
+		if account.Binding.ValidFromMS != 1000 || account.Binding.AttributionQuality != model.ProAttributionQualityAmbiguous {
+			t.Fatalf("歧义绑定不应回溯：%#v", account.Binding)
+		}
+		usage, _, usageErr := repo.Usage(context.Background(), account.ID, 0, 2000)
+		if usageErr != nil || usage.Requests != 0 {
+			t.Fatalf("歧义事件不应归属：usage=%#v err=%v", usage, usageErr)
+		}
+	}
+}
+
+func TestRepositoryRepairsLegacyUnknownCurrentBindingOnExactSync(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	statements := []string{
+		`insert into pro_accounts (
+			id, platform, auth_type, source_type, name, enabled, health_status, created_at_ms, updated_at_ms
+		) values ('legacy-account', 'openai', 'oauth', 'auth_file', 'legacy', 1, 'unknown', 1000, 1000)`,
+		`insert into pro_account_bindings (
+			pro_account_id, auth_index, source_type, source_locator, binding_status, is_current,
+			valid_from_ms, first_seen_at_ms, last_seen_at_ms, created_at_ms, updated_at_ms
+		) values ('legacy-account', 'auth-legacy', 'auth_file', 'legacy.json', 'current', 1,
+			1000, 1000, 1000, 1000, 1000)`,
+		`insert into usage_events (
+			event_hash, timestamp_ms, timestamp, model, auth_index, total_tokens, created_at_ms
+		) values ('legacy-before-sync', 500, 'legacy', 'gpt-test', 'auth-legacy', 10, 500)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("写入旧绑定夹具：%v", err)
+		}
+	}
+	repo := proaccount.New(db)
+	result, err := repo.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "legacy",
+		Enabled: true, AuthIndex: "auth-legacy", SourceLocator: "legacy.json",
+	}}, 2000, false)
+	if err != nil || result.Updated != 1 || result.Items[0].ProAccountID != "legacy-account" {
+		t.Fatalf("修复旧绑定同步：result=%#v err=%v", result, err)
+	}
+	account, ok, err := repo.Get(context.Background(), "legacy-account")
+	if err != nil || !ok || account.Binding == nil {
+		t.Fatalf("读取修复账号：item=%#v ok=%v err=%v", account, ok, err)
+	}
+	if account.Binding.ValidFromMS != 500 || account.Binding.AttributionQuality != model.ProAttributionQualityRetainedHistory || account.LastUsedAtMS != 500 {
+		t.Fatalf("旧绑定修复错误：%#v", account)
+	}
+}
+
+func TestRepositoryManagedRebindRebuildsSummaryAcrossBindingHistory(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`insert into usage_events (
+		event_hash, timestamp_ms, timestamp, model, auth_index, total_tokens, created_at_ms
+	) values ('old-binding-event', 500, 'old', 'gpt-test', 'old-auth', 10, 500)`); err != nil {
+		t.Fatalf("写入旧绑定事件：%v", err)
+	}
+	repo := proaccount.New(db)
+	created, err := repo.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "api", SourceType: "config_codex_api_key",
+		Name: "OpenAI API", Enabled: true, AuthIndex: "old-auth", SourceLocator: "index:0",
+	}}, 1000, false)
+	if err != nil {
+		t.Fatalf("创建账号：%v", err)
+	}
+	accountID := created.Items[0].ProAccountID
+	rebound, err := repo.RebindManaged(context.Background(), accountID, 1, model.ProAccountDiscovery{
+		Platform: "openai", AuthType: "api", SourceType: "config_openai_compatibility",
+		Name: "OpenAI API", Enabled: true, AuthIndex: "new-auth", SourceLocator: "provider:0:key:0",
+	}, 2000)
+	if err != nil {
+		t.Fatalf("轮换绑定：%v", err)
+	}
+	if _, err := db.Exec(`insert into usage_events (
+		event_hash, timestamp_ms, timestamp, model, auth_index, total_tokens, created_at_ms
+	) values ('new-binding-event', 2500, 'new', 'gpt-test', 'new-auth', 20, 2500)`); err != nil {
+		t.Fatalf("写入新绑定事件：%v", err)
+	}
+	if _, err := repo.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "api", SourceType: "config_openai_compatibility",
+		Name: "OpenAI API", Enabled: true, AuthIndex: "new-auth", SourceLocator: "provider:0:key:0",
+	}}, 3000, false); err != nil {
+		t.Fatalf("刷新新绑定汇总：%v", err)
+	}
+	account, ok, err := repo.Get(context.Background(), accountID)
+	if err != nil || !ok || account.Binding == nil {
+		t.Fatalf("读取轮换账号：item=%#v ok=%v err=%v", account, ok, err)
+	}
+	if account.ID != rebound.ID || account.LastUsedAtMS != 2500 || account.Binding.AttributionQuality != model.ProAttributionQualityExact {
+		t.Fatalf("轮换后汇总错误：%#v", account)
+	}
+	usage, _, err := repo.Usage(context.Background(), accountID, 0, 4000)
+	if err != nil || usage.Requests != 2 || usage.TotalTokens != 30 {
+		t.Fatalf("绑定历史聚合错误：usage=%#v err=%v", usage, err)
+	}
+	var oldValidFrom, oldValidTo int64
+	var oldQuality string
+	if err := db.QueryRow(`select valid_from_ms, valid_to_ms, attribution_quality from pro_account_bindings
+		where pro_account_id = ? and auth_index = 'old-auth'`, accountID).Scan(&oldValidFrom, &oldValidTo, &oldQuality); err != nil {
+		t.Fatalf("读取旧绑定历史：%v", err)
+	}
+	if oldValidFrom != 500 || oldValidTo != 2000 || oldQuality != model.ProAttributionQualityRetainedHistory {
+		t.Fatalf("旧绑定时间窗错误：from=%d to=%d quality=%s", oldValidFrom, oldValidTo, oldQuality)
 	}
 }
 

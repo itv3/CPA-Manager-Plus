@@ -12,6 +12,7 @@ export interface ProAccountBinding {
   isCurrent: boolean;
   validFromMs: number;
   validToMs?: number;
+  attributionQuality: 'exact' | 'retained_history' | 'partial' | 'ambiguous' | 'unknown';
   firstSeenAtMs: number;
   lastSeenAtMs: number;
 }
