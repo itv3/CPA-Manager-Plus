@@ -676,18 +676,6 @@ func removeQuarantinedFiles(files []quarantinedFile) error {
 	return removeErr
 }
 
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
-		return err
-	}
-	return nil
-}
-
 func removeStaleBackupTemps(directory string) error {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
