@@ -57,6 +57,59 @@ type xaiBillingProbe struct {
 	Healthy  bool
 }
 
+type XAIUsageError struct {
+	Classification string
+	Retryable      bool
+}
+
+func (e *XAIUsageError) Error() string {
+	if e == nil || strings.TrimSpace(e.Classification) == "" {
+		return "xAI 官方用量查询失败"
+	}
+	return "xAI 官方用量查询失败：" + e.Classification
+}
+
+func (e *XAIUsageError) UsageRetryable() bool {
+	return e != nil && e.Retryable
+}
+
+func (s *Service) QueryXAIUsage(ctx context.Context, authIndex string) ([]model.CodexInspectionQuotaWindow, bool, error) {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return nil, false, &XAIUsageError{Classification: "missing_auth_index"}
+	}
+	settings, setup, err := s.resolveRuntime(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	item := account{AuthIndex: authIndex}
+	var probe xaiBillingProbe
+	for attempt := 0; attempt <= settings.Retries; attempt++ {
+		probe, err = s.requestXAIBilling(ctx, setup, settings, item)
+		if err == nil && (!xaiProbeShouldRetry(probe) || attempt == settings.Retries) {
+			break
+		}
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if probe.Summary == nil {
+		failure, ok := xaiRelevantFailure(probe.Failures, true)
+		if !ok {
+			return nil, false, &XAIUsageError{Classification: "empty_usage_response", Retryable: true}
+		}
+		return nil, false, &XAIUsageError{
+			Classification: failure.Classification,
+			Retryable:      xaiFailureRetryable(failure.Classification),
+		}
+	}
+	windows := xaiSummaryWindows(probe.Summary)
+	if len(windows) == 0 {
+		return nil, false, &XAIUsageError{Classification: "empty_usage_response", Retryable: true}
+	}
+	return windows, probe.Partial, nil
+}
+
 func (s *Service) inspectSingleXAIAccount(
 	ctx context.Context,
 	setup store.Setup,
@@ -498,7 +551,11 @@ func xaiProbeShouldRetry(probe xaiBillingProbe) bool {
 	if !ok {
 		return false
 	}
-	switch failure.Classification {
+	return xaiFailureRetryable(failure.Classification)
+}
+
+func xaiFailureRetryable(classification string) bool {
+	switch classification {
 	case "upstream_error", "rate_limited", "probe_invalid", "model_unavailable", "protocol_changed":
 		return true
 	default:

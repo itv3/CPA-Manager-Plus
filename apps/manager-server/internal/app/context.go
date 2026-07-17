@@ -104,7 +104,9 @@ func FromExisting(
 	proAccountBatchService := proaccountbatchsvc.New(proAccountLifecycleService, proAccountTestService)
 	proAccountRebindService := proaccountrebindsvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
 	proAccountResetService := proaccountresetsvc.New(proAccountService, managerConfigService, proAccountGateway, proAccountOperationService)
+	codexInspectionService := codexinspectionsvc.New(st, managerConfigService)
 	proAccountUsageService := proaccountusagesvc.New(st.ProAccounts, proAccountService, managerConfigService)
+	proAccountUsageService.SetXAIUsageQuerier(codexInspectionService)
 	return &Context{
 		Config:                         cfg,
 		Store:                          st,
@@ -117,7 +119,7 @@ func FromExisting(
 		CollectorService:               collectorService,
 		UsageService:                   usagesvc.New(st),
 		DashboardService:               dashboardsvc.New(st, cfg.DashboardHourlyRollupEnabled),
-		CodexInspectionService:         codexinspectionsvc.New(st, managerConfigService),
+		CodexInspectionService:         codexInspectionService,
 		MonitoringService:              monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
 		ModelPriceService:              modelpricesvc.NewMultiSource(st, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
 		APIKeyAliasService:             apikeyaliassvc.New(st),

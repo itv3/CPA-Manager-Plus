@@ -34,10 +34,16 @@ func (c *Client) ResolveAccountRuntime(ctx context.Context, baseURL string, mana
 				accountBaseURL = "https://" + location + "-aiplatform.googleapis.com/v1/projects/" + url.PathEscape(projectID) + "/locations/" + url.PathEscape(location) + "/publishers/google"
 			}
 		}
+		projectID := accountRuntimeString(file.Raw, []string{"project_id", "projectId", "gemini_virtual_project", "geminiVirtualProject"})
+		if projectID == "" && platform == "antigravity" {
+			projectID = strings.TrimSpace(file.AccountID)
+		}
 		return AccountRuntime{
-			Platform: platform,
-			BaseURL:  accountBaseURL,
-			Headers:  mapStringMap(file.Raw, "headers"),
+			Platform:  platform,
+			BaseURL:   accountBaseURL,
+			Headers:   mapStringMap(file.Raw, "headers"),
+			ProjectID: projectID,
+			UserAgent: accountRuntimeString(file.Raw, []string{"user_agent", "userAgent"}),
 		}, nil
 	case SourceOpenAICompatibility:
 		providerIndex, _, err := parseOpenAICompatibilityLocator(sourceLocator)
@@ -101,9 +107,27 @@ func defaultBaseURL(platform string, sourceType string) string {
 		return "https://generativelanguage.googleapis.com/v1beta"
 	case "xai":
 		return "https://api.x.ai/v1"
+	case "antigravity":
+		return "https://daily-cloudcode-pa.googleapis.com"
 	default:
 		return ""
 	}
+}
+
+func accountRuntimeString(raw map[string]any, keys []string) string {
+	if value := mapString(raw, keys...); value != "" {
+		return value
+	}
+	for _, containerKey := range []string{"metadata", "attributes", "installed", "web"} {
+		container, ok := raw[containerKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		if value := mapString(container, keys...); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func joinAPIPath(baseURL string, suffix string) (string, error) {

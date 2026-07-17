@@ -2,11 +2,14 @@ package proaccountgateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+const defaultAntigravityUserAgent = "antigravity/hub/2.2.1 darwin/arm64"
 
 func (c *Client) TestAccount(ctx context.Context, gatewayBaseURL string, managementKey string, account AccountReference, modelName string) (ConnectivityResult, error) {
 	runtime, err := c.ResolveAccountRuntime(ctx, gatewayBaseURL, managementKey, account.SourceType, account.SourceLocator)
@@ -82,6 +85,25 @@ func connectivityRequest(runtime AccountRuntime, account AccountReference, model
 		return APICallRequest{AuthIndex: account.AuthIndex, Method: http.MethodPost, URL: target, Headers: headers, Body: map[string]any{
 			"model": modelName, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}}, "max_tokens": 8, "stream": false,
 		}}, "chat_completions", err
+	case "antigravity":
+		if strings.TrimSpace(runtime.ProjectID) == "" {
+			return APICallRequest{}, "", errors.New("antigravity account project id is unavailable")
+		}
+		setHeader(headers, "Authorization", "Bearer $TOKEN$")
+		setHeader(headers, "Accept", "*/*")
+		setHeader(headers, "User-Agent", valueOr(runtime.UserAgent, defaultAntigravityUserAgent))
+		target, err := joinAPIPath(runtime.BaseURL, "v1internal:generateContent")
+		requestBody := map[string]any{
+			"contents": []map[string]any{{"role": "user", "parts": []map[string]string{{"text": "Reply with OK."}}}},
+		}
+		if strings.Contains(strings.ToLower(modelName), "claude") {
+			requestBody["generationConfig"] = map[string]any{"maxOutputTokens": 8}
+		}
+		return APICallRequest{AuthIndex: account.AuthIndex, Method: http.MethodPost, URL: target, Headers: headers, Body: map[string]any{
+			"project": runtime.ProjectID,
+			"model":   modelName,
+			"request": requestBody,
+		}}, "generate_content", err
 	default:
 		return APICallRequest{}, "", fmt.Errorf("%w: connectivity test for %s", ErrUnsupportedSource, platform)
 	}

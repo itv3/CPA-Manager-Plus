@@ -1,0 +1,766 @@
+package proaccountusage
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
+)
+
+const (
+	codexUsageURL                = "https://chatgpt.com/backend-api/wham/usage"
+	anthropicUsageURL            = "https://api.anthropic.com/api/oauth/usage"
+	antigravityLoadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	antigravityUsageUserAgent    = "antigravity/hub/2.2.1 darwin/arm64"
+)
+
+var antigravityQuotaURLs = []string{
+	"https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+	"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+	"https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+	"https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+	"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
+	"https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+}
+
+type officialUsageAdapter interface {
+	Query(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error)
+}
+
+type officialUsageAdapterFunc func(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error)
+
+func (f officialUsageAdapterFunc) Query(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+	return f(ctx, account)
+}
+
+type usageQueryError struct {
+	message   string
+	retryable bool
+}
+
+func (e *usageQueryError) Error() string {
+	if e == nil || strings.TrimSpace(e.message) == "" {
+		return "官方用量查询失败"
+	}
+	return e.message
+}
+
+func (e *usageQueryError) UsageRetryable() bool {
+	return e != nil && e.retryable
+}
+
+func newOfficialUsageAdapters(service *Service) map[string]officialUsageAdapter {
+	return map[string]officialUsageAdapter{
+		"openai:oauth":      officialUsageAdapterFunc(service.queryOpenAIUsage),
+		"anthropic:oauth":   officialUsageAdapterFunc(service.queryAnthropicUsage),
+		"antigravity:oauth": officialUsageAdapterFunc(service.queryAntigravityUsage),
+		"xai:oauth":         officialUsageAdapterFunc(service.queryXAIUsage),
+	}
+}
+
+func officialUsageAdapterKey(account model.ProAccount) string {
+	return strings.ToLower(strings.TrimSpace(account.Platform)) + ":" + strings.ToLower(strings.TrimSpace(account.AuthType))
+}
+
+func (s *Service) queryOpenAIUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+	result, err := s.gatewayUsageCall(ctx, account, proaccountgateway.APICallRequest{
+		Method: http.MethodGet,
+		URL:    codexUsageURL,
+		Headers: map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+			"Content-Type":  "application/json",
+			"User-Agent":    "CLIProxyAPI-Pro/1.0",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, err := decodeUsageObject(result.Body)
+	if err != nil {
+		return nil, err
+	}
+	windows := parseCodexWindows(payload, time.Now())
+	if len(windows) == 0 {
+		return nil, &usageQueryError{message: "OpenAI 官方用量响应没有可识别的配额窗口", retryable: true}
+	}
+	return windows, nil
+}
+
+func (s *Service) queryAnthropicUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+	result, err := s.gatewayUsageCall(ctx, account, proaccountgateway.APICallRequest{
+		Method: http.MethodGet,
+		URL:    anthropicUsageURL,
+		Headers: map[string]string{
+			"Authorization":  "Bearer $TOKEN$",
+			"Content-Type":   "application/json",
+			"anthropic-beta": "oauth-2025-04-20",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, err := decodeUsageObject(result.Body)
+	if err != nil {
+		return nil, err
+	}
+	windows := parseAnthropicWindows(payload)
+	if len(windows) == 0 {
+		return nil, &usageQueryError{message: "Anthropic 官方用量响应没有可识别的配额窗口", retryable: true}
+	}
+	return windows, nil
+}
+
+func (s *Service) queryAntigravityUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+	setup, err := s.resolveGatewaySetup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.gateway.ResolveAccountRuntime(ctx, setup.baseURL, setup.managementKey, account.Binding.SourceType, account.Binding.SourceLocator)
+	if err != nil {
+		return nil, err
+	}
+	userAgent := strings.TrimSpace(runtime.UserAgent)
+	if userAgent == "" {
+		userAgent = antigravityUsageUserAgent
+	}
+	projectID := strings.TrimSpace(runtime.ProjectID)
+	if projectID == "" {
+		projectID, err = s.resolveAntigravityProject(ctx, account, userAgent)
+		if err != nil {
+			return nil, err
+		}
+	}
+	request := proaccountgateway.APICallRequest{
+		Method: http.MethodPost,
+		Headers: map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+			"Content-Type":  "application/json",
+			"User-Agent":    userAgent,
+		},
+		Body: map[string]string{"project": projectID},
+	}
+	var lastStatus int
+	var hadSuccess bool
+	for _, targetURL := range antigravityQuotaURLs {
+		request.URL = targetURL
+		result, callErr := s.gatewayUsageCallAllowStatus(ctx, account, request)
+		if callErr != nil {
+			continue
+		}
+		lastStatus = result.StatusCode
+		if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+			continue
+		}
+		hadSuccess = true
+		payload, decodeErr := decodeUsageObject(result.Body)
+		if decodeErr != nil {
+			continue
+		}
+		if windows := parseAntigravityWindows(payload); len(windows) > 0 {
+			return windows, nil
+		}
+	}
+	if hadSuccess {
+		return nil, &usageQueryError{message: "Antigravity 官方用量响应没有可识别的模型配额", retryable: true}
+	}
+	if lastStatus > 0 {
+		return nil, statusUsageError("Antigravity", lastStatus)
+	}
+	return nil, &usageQueryError{message: "Antigravity 官方用量请求失败", retryable: true}
+}
+
+func (s *Service) resolveAntigravityProject(ctx context.Context, account model.ProAccount, userAgent string) (string, error) {
+	result, err := s.gatewayUsageCall(ctx, account, proaccountgateway.APICallRequest{
+		Method: http.MethodPost,
+		URL:    antigravityLoadCodeAssistURL,
+		Headers: map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+			"Accept":        "*/*",
+			"Content-Type":  "application/json",
+			"User-Agent":    userAgent,
+		},
+		Body: map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}},
+	})
+	if err != nil {
+		return "", err
+	}
+	payload, err := decodeUsageObject(result.Body)
+	if err != nil {
+		return "", err
+	}
+	for _, key := range []string{"cloudaicompanionProject", "projectId", "project"} {
+		switch value := payload[key].(type) {
+		case string:
+			if value = strings.TrimSpace(value); value != "" {
+				return value, nil
+			}
+		case map[string]any:
+			if id := stringValue(value, "id"); id != "" {
+				return id, nil
+			}
+		}
+	}
+	return "", &usageQueryError{message: "Antigravity 账号缺少可用的项目标识", retryable: false}
+}
+
+func (s *Service) queryXAIUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+	if s.xaiUsage == nil {
+		return nil, &usageQueryError{message: "xAI 官方用量 Adapter 未初始化", retryable: false}
+	}
+	windows, _, err := s.xaiUsage.QueryXAIUsage(ctx, account.Binding.AuthIndex)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]model.ProAccountUsageWindow, 0, len(windows))
+	for _, window := range windows {
+		label := xaiWindowLabel(window)
+		item := model.ProAccountUsageWindow{
+			ID:        strings.TrimSpace(window.ID),
+			Label:     label,
+			ResetAtMS: parseUsageTimeMS(window.ResetLabel),
+			Source:    "official",
+		}
+		if window.UsedPercent != nil {
+			used := clampPercent(*window.UsedPercent)
+			remaining := clampPercent(100 - used)
+			item.UsedPercent = &used
+			item.RemainingPercent = &remaining
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil, &usageQueryError{message: "xAI 官方用量响应没有可识别的配额窗口", retryable: true}
+	}
+	return result, nil
+}
+
+type gatewaySetup struct {
+	baseURL       string
+	managementKey string
+}
+
+func (s *Service) resolveGatewaySetup(ctx context.Context) (gatewaySetup, error) {
+	setup, _, ok, err := s.managerConfig.ResolveSetupWithSource(ctx)
+	if err != nil {
+		return gatewaySetup{}, err
+	}
+	if !ok || strings.TrimSpace(setup.CPAUpstreamURL) == "" || strings.TrimSpace(setup.ManagementKey) == "" {
+		return gatewaySetup{}, &usageQueryError{message: "官方用量服务尚未配置 Gateway 连接", retryable: false}
+	}
+	return gatewaySetup{baseURL: setup.CPAUpstreamURL, managementKey: setup.ManagementKey}, nil
+}
+
+func (s *Service) gatewayUsageCall(ctx context.Context, account model.ProAccount, request proaccountgateway.APICallRequest) (proaccountgateway.APICallResult, error) {
+	result, err := s.gatewayUsageCallAllowStatus(ctx, account, request)
+	if err != nil {
+		return proaccountgateway.APICallResult{}, err
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return proaccountgateway.APICallResult{}, statusUsageError(account.Platform, result.StatusCode)
+	}
+	return result, nil
+}
+
+func (s *Service) gatewayUsageCallAllowStatus(ctx context.Context, account model.ProAccount, request proaccountgateway.APICallRequest) (proaccountgateway.APICallResult, error) {
+	setup, err := s.resolveGatewaySetup(ctx)
+	if err != nil {
+		return proaccountgateway.APICallResult{}, err
+	}
+	request.AuthIndex = account.Binding.AuthIndex
+	return s.gateway.APICall(ctx, setup.baseURL, setup.managementKey, request)
+}
+
+func statusUsageError(platform string, statusCode int) error {
+	retryable := statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+	return &usageQueryError{
+		message:   fmt.Sprintf("%s 官方用量接口返回 HTTP %d", strings.TrimSpace(platform), statusCode),
+		retryable: retryable,
+	}
+}
+
+func safeUsageError(err error) string {
+	message := strings.TrimSpace(err.Error())
+	message = strings.Join(strings.Fields(message), " ")
+	if len(message) > 300 {
+		message = message[:300]
+	}
+	if message == "" {
+		return "官方用量查询失败"
+	}
+	return message
+}
+
+func usageErrorRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var classified interface{ UsageRetryable() bool }
+	if errors.As(err, &classified) {
+		return classified.UsageRetryable()
+	}
+	var gatewayErr *proaccountgateway.GatewayError
+	if errors.As(err, &gatewayErr) {
+		return gatewayErr.Retryable
+	}
+	return true
+}
+
+func decodeUsageObject(raw string) (map[string]any, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	payload := map[string]any{}
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, &usageQueryError{message: "官方用量响应不是有效的 JSON 对象", retryable: true}
+	}
+	return payload, nil
+}
+
+func parseCodexWindows(payload map[string]any, now time.Time) []model.ProAccountUsageWindow {
+	rateLimit := mapValue(payload, "rate_limit", "rateLimit")
+	windows := make([]model.ProAccountUsageWindow, 0, 2)
+	for index, key := range []string{"primary_window", "secondary_window"} {
+		window := mapValue(rateLimit, key)
+		if len(window) == 0 {
+			camel := "primaryWindow"
+			if index == 1 {
+				camel = "secondaryWindow"
+			}
+			window = mapValue(rateLimit, camel)
+		}
+		if len(window) == 0 {
+			continue
+		}
+		used, hasUsed := numberPointer(window, "used_percent", "usedPercent")
+		resetAt := int64(0)
+		if raw, ok := numberPointer(window, "reset_at", "resetAt"); ok {
+			resetAt = normalizeUnixTimeMS(*raw)
+		} else if raw, ok := numberPointer(window, "reset_after_seconds", "resetAfterSeconds"); ok {
+			resetAt = now.Add(time.Duration(*raw * float64(time.Second))).UnixMilli()
+		}
+		label := "5h"
+		id := "five_hour"
+		if seconds, ok := numberPointer(window, "limit_window_seconds", "limitWindowSeconds"); ok {
+			switch {
+			case *seconds >= 28*24*60*60:
+				label, id = "30d", "monthly"
+			case *seconds >= 6*24*60*60:
+				label, id = "7d", "weekly"
+			case *seconds >= 4*60*60 && *seconds <= 6*60*60:
+				label, id = "5h", "five_hour"
+			default:
+				label, id = fmt.Sprintf("%.0fh", *seconds/3600), fmt.Sprintf("window_%d", index+1)
+			}
+		} else if index == 1 {
+			label, id = "7d", "weekly"
+		}
+		item := model.ProAccountUsageWindow{ID: id, Label: label, ResetAtMS: resetAt, Source: "official"}
+		applyUsedPercent(&item, used, hasUsed)
+		windows = append(windows, item)
+	}
+	return windows
+}
+
+func parseAnthropicWindows(payload map[string]any) []model.ProAccountUsageWindow {
+	definitions := []struct {
+		key   string
+		id    string
+		label string
+	}{
+		{key: "five_hour", id: "five_hour", label: "5h"},
+		{key: "seven_day", id: "seven_day", label: "7d"},
+		{key: "seven_day_oauth_apps", id: "seven_day_oauth_apps", label: "7d OAuth"},
+		{key: "seven_day_opus", id: "seven_day_opus", label: "7d Opus"},
+		{key: "seven_day_sonnet", id: "seven_day_sonnet", label: "7d Sonnet"},
+		{key: "seven_day_cowork", id: "seven_day_cowork", label: "7d Cowork"},
+		{key: "iguana_necktie", id: "iguana_necktie", label: "Iguana"},
+	}
+	windows := make([]model.ProAccountUsageWindow, 0, len(definitions))
+	seen := map[string]int{}
+	for _, definition := range definitions {
+		window := mapValue(payload, definition.key)
+		if len(window) == 0 {
+			continue
+		}
+		used, hasUsed := numberPointer(window, "utilization", "used_percent", "usedPercent")
+		resetAt := parseUsageTimeMS(firstValue(window, "resets_at", "resetsAt", "reset_at", "resetAt"))
+		if !hasUsed && resetAt == 0 {
+			continue
+		}
+		item := model.ProAccountUsageWindow{ID: definition.id, Label: definition.label, ResetAtMS: resetAt, Source: "official"}
+		applyUsedPercent(&item, used, hasUsed)
+		seen[item.ID] = len(windows)
+		windows = append(windows, item)
+	}
+	for index, raw := range sliceValue(payload, "limits") {
+		limit, ok := raw.(map[string]any)
+		if !ok || explicitFalse(limit, "is_active", "isActive") {
+			continue
+		}
+		used, hasUsed := numberPointer(limit, "percent", "utilization", "used_percent", "usedPercent")
+		resetAt := parseUsageTimeMS(firstValue(limit, "resets_at", "resetsAt", "reset_at", "resetAt"))
+		if !hasUsed && resetAt == 0 {
+			continue
+		}
+		id, label := anthropicLimitIdentity(limit, index)
+		if id == "" {
+			continue
+		}
+		item := model.ProAccountUsageWindow{ID: id, Label: label, ResetAtMS: resetAt, Source: "official"}
+		applyUsedPercent(&item, used, hasUsed)
+		if existing, exists := seen[id]; exists {
+			if windows[existing].ResetAtMS == 0 || item.ResetAtMS > windows[existing].ResetAtMS {
+				windows[existing] = item
+			}
+			continue
+		}
+		seen[id] = len(windows)
+		windows = append(windows, item)
+	}
+	return windows
+}
+
+func anthropicLimitIdentity(limit map[string]any, index int) (string, string) {
+	kind := normalizeToken(stringValue(limit, "kind"))
+	group := normalizeToken(stringValue(limit, "group"))
+	scope := mapValue(limit, "scope")
+	if len(scope) == 0 {
+		switch {
+		case kind == "session" && (group == "" || group == "session"):
+			return "five_hour", "5h"
+		case (kind == "weekly" || kind == "weekly_all") && (group == "" || group == "weekly" || group == "weekly_all"):
+			return "seven_day", "7d"
+		default:
+			return "", ""
+		}
+	}
+	modelScope := mapValue(scope, "model")
+	if len(modelScope) == 0 || !strings.Contains(kind+"_"+group, "weekly") {
+		return "", ""
+	}
+	modelID := stringValue(modelScope, "id", "model_id", "modelId")
+	label := stringValue(modelScope, "display_name", "displayName")
+	if label == "" {
+		label = modelID
+	}
+	if label == "" {
+		return "", ""
+	}
+	idPart := stableUsageID(modelID)
+	if idPart == "" {
+		idPart = stableUsageID(label)
+	}
+	if idPart == "" {
+		idPart = strconv.Itoa(index + 1)
+	}
+	return "weekly_model_" + idPart, label
+}
+
+func parseAntigravityWindows(payload map[string]any) []model.ProAccountUsageWindow {
+	windows := make([]model.ProAccountUsageWindow, 0)
+	seen := map[string]struct{}{}
+	for groupIndex, rawGroup := range sliceValue(payload, "groups") {
+		group, ok := rawGroup.(map[string]any)
+		if !ok {
+			continue
+		}
+		groupLabel := stringValue(group, "displayName", "display_name")
+		if groupLabel == "" {
+			groupLabel = fmt.Sprintf("Quota Group %d", groupIndex+1)
+		}
+		for bucketIndex, rawBucket := range sliceValue(group, "buckets") {
+			bucket, ok := rawBucket.(map[string]any)
+			if !ok {
+				continue
+			}
+			remaining, ok := remainingFraction(bucket, "remainingFraction", "remaining_fraction")
+			if !ok {
+				continue
+			}
+			id := stringValue(bucket, "bucketId", "bucket_id")
+			if id == "" {
+				id = fmt.Sprintf("group_%d_bucket_%d", groupIndex+1, bucketIndex+1)
+			}
+			label := stringValue(bucket, "displayName", "display_name")
+			if label == "" {
+				label = groupLabel
+			} else if !strings.EqualFold(label, groupLabel) {
+				label = groupLabel + " · " + label
+			}
+			appendRemainingWindow(&windows, seen, id, label, remaining, firstValue(bucket, "resetTime", "reset_time"))
+		}
+	}
+	models := mapValue(payload, "models")
+	modelIDs := make([]string, 0, len(models))
+	for modelID := range models {
+		modelIDs = append(modelIDs, modelID)
+	}
+	sort.Strings(modelIDs)
+	for _, modelID := range modelIDs {
+		entry, ok := models[modelID].(map[string]any)
+		if !ok {
+			continue
+		}
+		quota := mapValue(entry, "quotaInfo", "quota_info")
+		remaining, ok := remainingFraction(quota, "remainingFraction", "remaining_fraction", "remaining")
+		if !ok {
+			continue
+		}
+		label := stringValue(entry, "displayName", "display_name")
+		if label == "" {
+			label = modelID
+		}
+		appendRemainingWindow(&windows, seen, "model_"+stableUsageID(modelID), label, remaining, firstValue(quota, "resetTime", "reset_time"))
+	}
+	return windows
+}
+
+func appendRemainingWindow(windows *[]model.ProAccountUsageWindow, seen map[string]struct{}, id string, label string, remaining float64, reset any) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	if _, exists := seen[id]; exists {
+		return
+	}
+	seen[id] = struct{}{}
+	remainingPercent := clampPercent(remaining * 100)
+	usedPercent := clampPercent(100 - remainingPercent)
+	*windows = append(*windows, model.ProAccountUsageWindow{
+		ID: id, Label: label, UsedPercent: &usedPercent, RemainingPercent: &remainingPercent,
+		ResetAtMS: parseUsageTimeMS(reset), Source: "official",
+	})
+}
+
+func xaiWindowLabel(window model.CodexInspectionQuotaWindow) string {
+	switch window.LabelKey {
+	case "xai_quota.weekly_limit":
+		return "7d"
+	case "xai_quota.monthly_limit":
+		return "30d"
+	case "xai_quota.on_demand_cap":
+		return "按需"
+	case "xai_quota.product_usage":
+		if product := strings.TrimSpace(fmt.Sprint(window.LabelParams["product"])); product != "" && product != "<nil>" {
+			return product
+		}
+	}
+	if label := strings.TrimSpace(window.LabelKey); label != "" {
+		return label
+	}
+	return strings.TrimSpace(window.ID)
+}
+
+func mapValue(raw map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if value, ok := raw[key].(map[string]any); ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func sliceValue(raw map[string]any, keys ...string) []any {
+	for _, key := range keys {
+		if value, ok := raw[key].([]any); ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstValue(raw map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func stringValue(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			switch typed := value.(type) {
+			case string:
+				if typed = strings.TrimSpace(typed); typed != "" {
+					return typed
+				}
+			case json.Number:
+				return typed.String()
+			}
+		}
+	}
+	return ""
+}
+
+func numberPointer(raw map[string]any, keys ...string) (*float64, bool) {
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			if number, valid := numberValue(value); valid {
+				return &number, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func numberValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func remainingFraction(raw map[string]any, keys ...string) (float64, bool) {
+	for _, key := range keys {
+		value, exists := raw[key]
+		if !exists {
+			continue
+		}
+		if text, ok := value.(string); ok && strings.HasSuffix(strings.TrimSpace(text), "%") {
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), "%")), 64)
+			if err == nil {
+				return clampFraction(parsed / 100), true
+			}
+		}
+		parsed, ok := numberValue(value)
+		if !ok {
+			continue
+		}
+		if parsed > 1 && parsed <= 100 {
+			parsed /= 100
+		}
+		return clampFraction(parsed), true
+	}
+	return 0, false
+}
+
+func explicitFalse(raw map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		value, exists := raw[key]
+		if !exists {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return !typed
+		case string:
+			parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+			return err == nil && !parsed
+		}
+	}
+	return false
+}
+
+func applyUsedPercent(window *model.ProAccountUsageWindow, used *float64, ok bool) {
+	if !ok || used == nil {
+		return
+	}
+	usedPercent := clampPercent(*used)
+	remainingPercent := clampPercent(100 - usedPercent)
+	window.UsedPercent = &usedPercent
+	window.RemainingPercent = &remainingPercent
+}
+
+func parseUsageTimeMS(value any) int64 {
+	if value == nil {
+		return 0
+	}
+	if number, ok := numberValue(value); ok {
+		return normalizeUnixTimeMS(number)
+	}
+	text, ok := value.(string)
+	if !ok {
+		return 0
+	}
+	text = strings.TrimSpace(text)
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, text); err == nil {
+			return parsed.UnixMilli()
+		}
+	}
+	return 0
+}
+
+func normalizeUnixTimeMS(value float64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	if value < 10_000_000_000 {
+		return int64(value * 1000)
+	}
+	return int64(value)
+}
+
+func clampPercent(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func clampFraction(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
+func normalizeToken(value string) string {
+	var result strings.Builder
+	for index, current := range strings.TrimSpace(value) {
+		if unicode.IsUpper(current) && index > 0 {
+			result.WriteByte('_')
+		}
+		if unicode.IsLetter(current) || unicode.IsDigit(current) {
+			result.WriteRune(unicode.ToLower(current))
+		} else if result.Len() > 0 && !strings.HasSuffix(result.String(), "_") {
+			result.WriteByte('_')
+		}
+	}
+	return strings.Trim(result.String(), "_")
+}
+
+func stableUsageID(value string) string {
+	var result strings.Builder
+	for _, current := range strings.ToLower(strings.TrimSpace(value)) {
+		if (current >= 'a' && current <= 'z') || (current >= '0' && current <= '9') {
+			result.WriteRune(current)
+		} else if result.Len() > 0 {
+			text := result.String()
+			if text[len(text)-1] != '_' {
+				result.WriteByte('_')
+			}
+		}
+	}
+	return strings.Trim(result.String(), "_")
+}

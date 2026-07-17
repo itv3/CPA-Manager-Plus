@@ -625,7 +625,7 @@ func TestProAccountActiveUsageUsesGatewayAPICall(t *testing.T) {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			_, _ = w.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":62,"limit_window_seconds":18000,"reset_after_seconds":3600},"secondary_window":{"used_percent":4,"limit_window_seconds":604800,"reset_after_seconds":7200}}}}`))
+			_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{\"rate_limit\":{\"primary_window\":{\"used_percent\":62,\"limit_window_seconds\":18000,\"reset_after_seconds\":3600},\"secondary_window\":{\"used_percent\":4,\"limit_window_seconds\":604800,\"reset_after_seconds\":7200}}}"}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -696,5 +696,195 @@ func TestUnsupportedActiveUsageDoesNotCallUpstream(t *testing.T) {
 	}
 	if apiCalls.Load() != 0 {
 		t.Fatalf("不支持的账号不应请求上游，api-call count = %d", apiCalls.Load())
+	}
+}
+
+func TestProAccountActiveUsageSupportsAnthropicAntigravityAndXAI(t *testing.T) {
+	var mu sync.Mutex
+	callCounts := map[string]int{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_, _ = w.Write([]byte(`{"files":[
+				{"name":"claude-alpha.json","auth_index":"auth-claude","provider":"claude","account":"claude@example.com"},
+				{"name":"antigravity-alpha.json","auth_index":"auth-antigravity","provider":"antigravity","account":"antigravity@example.com","project_id":"project-alpha"},
+				{"name":"xai-alpha.json","auth_index":"auth-xai","provider":"xai","account":"xai@example.com"},
+				{"name":"gemini-alpha.json","auth_index":"auth-gemini","provider":"gemini","account":"gemini@example.com"}
+			]}`))
+		case "/v0/management/api-call":
+			var request struct {
+				AuthIndex string            `json:"authIndex"`
+				URL       string            `json:"url"`
+				Header    map[string]string `json:"header"`
+				Data      string            `json:"data"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if request.Header["Authorization"] != "Bearer $TOKEN$" {
+				http.Error(w, "token placeholder required", http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			callCounts[request.URL]++
+			mu.Unlock()
+			body := ""
+			switch {
+			case request.URL == "https://api.anthropic.com/api/oauth/usage" && request.AuthIndex == "auth-claude":
+				if request.Header["anthropic-beta"] != "oauth-2025-04-20" {
+					http.Error(w, "anthropic beta header required", http.StatusBadRequest)
+					return
+				}
+				body = `{"five_hour":{"utilization":12,"resets_at":"2026-07-17T12:00:00Z"},"seven_day":{"utilization":34,"resets_at":"2026-07-24T12:00:00Z"}}`
+			case strings.Contains(request.URL, "retrieveUserQuotaSummary") && request.AuthIndex == "auth-antigravity":
+				var data struct {
+					Project string `json:"project"`
+				}
+				if json.Unmarshal([]byte(request.Data), &data) != nil || data.Project != "project-alpha" {
+					http.Error(w, "project required", http.StatusBadRequest)
+					return
+				}
+				body = `{"models":{"gemini-3-flash":{"displayName":"Gemini 3 Flash","quotaInfo":{"remainingFraction":0.7,"resetTime":"2026-07-17T13:00:00Z"}}}}`
+			case request.URL == "https://cli-chat-proxy.grok.com/v1/billing?format=credits" && request.AuthIndex == "auth-xai":
+				body = `{"config":{"credit_usage_percent":25,"current_period":{"type":"weekly","end":"2026-07-24T00:00:00Z"}}}`
+			case request.URL == "https://cli-chat-proxy.grok.com/v1/billing" && request.AuthIndex == "auth-xai":
+				body = `{"config":{"monthly_limit":10000,"used":4000,"billing_period_end":"2026-08-01T00:00:00Z"}}`
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": http.StatusNotFound, "header": map[string][]string{}, "body": `{}`})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_code": http.StatusOK, "header": map[string][]string{}, "body": body})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	handler := newTestHandler(t, upstream.URL, true)
+
+	syncRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/sync", `{}`, testutil.AdminKey)
+	testutil.RequireStatus(t, syncRR, http.StatusOK)
+	listRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts?limit=100", "", testutil.AdminKey)
+	testutil.RequireStatus(t, listRR, http.StatusOK)
+	var listResult struct {
+		Items []struct {
+			ID       string `json:"id"`
+			Platform string `json:"platform"`
+		} `json:"items"`
+	}
+	testutil.DecodeJSON(t, listRR, &listResult)
+	accountIDs := map[string]string{}
+	for _, account := range listResult.Items {
+		accountIDs[account.Platform] = account.ID
+	}
+	for _, platform := range []string{"anthropic", "antigravity", "xai", "gemini"} {
+		if accountIDs[platform] == "" {
+			t.Fatalf("同步后缺少 %s 账号：%s", platform, listRR.Body.String())
+		}
+	}
+
+	type usageResponse struct {
+		Source          string `json:"source"`
+		ErrorCode       string `json:"errorCode"`
+		OfficialWindows []struct {
+			ID               string   `json:"id"`
+			UsedPercent      *float64 `json:"usedPercent"`
+			RemainingPercent *float64 `json:"remainingPercent"`
+		} `json:"officialWindows"`
+	}
+	requestUsage := func(platform string, query string) usageResponse {
+		t.Helper()
+		rr := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts/"+accountIDs[platform]+"/usage?"+query, "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+		var response usageResponse
+		testutil.DecodeJSON(t, rr, &response)
+		return response
+	}
+
+	anthropic := requestUsage("anthropic", "source=active")
+	if anthropic.Source != "official" || len(anthropic.OfficialWindows) != 2 || anthropic.OfficialWindows[0].ID != "five_hour" {
+		t.Fatalf("Anthropic 用量响应错误：%#v", anthropic)
+	}
+	_ = requestUsage("anthropic", "source=active")
+	mu.Lock()
+	if callCounts["https://api.anthropic.com/api/oauth/usage"] != 1 {
+		mu.Unlock()
+		t.Fatalf("Anthropic 成功缓存未生效：%#v", callCounts)
+	}
+	mu.Unlock()
+	_ = requestUsage("anthropic", "source=active&force=true")
+	mu.Lock()
+	if callCounts["https://api.anthropic.com/api/oauth/usage"] != 2 {
+		mu.Unlock()
+		t.Fatalf("force=true 未绕过成功缓存：%#v", callCounts)
+	}
+	mu.Unlock()
+
+	antigravity := requestUsage("antigravity", "source=active&force=true")
+	if antigravity.Source != "official" || len(antigravity.OfficialWindows) != 1 || antigravity.OfficialWindows[0].RemainingPercent == nil || *antigravity.OfficialWindows[0].RemainingPercent != 70 {
+		t.Fatalf("Antigravity 用量响应错误：%#v", antigravity)
+	}
+	xai := requestUsage("xai", "source=active&force=true")
+	if xai.Source != "official" || len(xai.OfficialWindows) != 2 {
+		t.Fatalf("xAI 用量响应错误：%#v", xai)
+	}
+
+	mu.Lock()
+	beforeUnsupported := 0
+	for _, count := range callCounts {
+		beforeUnsupported += count
+	}
+	mu.Unlock()
+	gemini := requestUsage("gemini", "source=active&force=true")
+	if gemini.ErrorCode != "official_usage_unsupported" || len(gemini.OfficialWindows) != 0 {
+		t.Fatalf("Gemini 降级响应错误：%#v", gemini)
+	}
+	mu.Lock()
+	afterUnsupported := 0
+	for _, count := range callCounts {
+		afterUnsupported += count
+	}
+	mu.Unlock()
+	if afterUnsupported != beforeUnsupported {
+		t.Fatalf("不支持的账号触发了上游请求：before=%d after=%d", beforeUnsupported, afterUnsupported)
+	}
+}
+
+func TestProAccountActiveUsageCachesRecoverableErrorEvenWhenForced(t *testing.T) {
+	var apiCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_, _ = w.Write([]byte(`{"files":[{"name":"claude-error.json","auth_index":"auth-claude-error","provider":"claude","account":"error@example.com"}]}`))
+		case "/v0/management/api-call":
+			apiCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_code": http.StatusServiceUnavailable, "header": map[string][]string{}, "body": `{}`})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	handler := newTestHandler(t, upstream.URL, true)
+	syncRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/sync", `{}`, testutil.AdminKey)
+	testutil.RequireStatus(t, syncRR, http.StatusOK)
+	var syncResult struct {
+		Items []struct {
+			ID string `json:"proAccountId"`
+		} `json:"items"`
+	}
+	testutil.DecodeJSON(t, syncRR, &syncResult)
+	if len(syncResult.Items) != 1 {
+		t.Fatalf("同步响应错误：%s", syncRR.Body.String())
+	}
+	path := "/v0/pro/accounts/" + syncResult.Items[0].ID + "/usage?source=active&force=true"
+	for range 2 {
+		rr := testutil.Request(t, handler, http.MethodGet, path, "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+		if !strings.Contains(rr.Body.String(), `"errorCode":"official_usage_unknown"`) || !strings.Contains(rr.Body.String(), `"retryable":true`) {
+			t.Fatalf("可恢复错误响应错误：%s", rr.Body.String())
+		}
+	}
+	if apiCalls.Load() != 1 {
+		t.Fatalf("可恢复错误缓存未生效，api-call 次数 = %d", apiCalls.Load())
 	}
 }

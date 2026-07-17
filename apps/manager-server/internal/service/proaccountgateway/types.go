@@ -79,9 +79,11 @@ type APICallResult struct {
 }
 
 type AccountRuntime struct {
-	Platform string
-	BaseURL  string
-	Headers  map[string]string
+	Platform  string
+	BaseURL   string
+	Headers   map[string]string
+	ProjectID string
+	UserAgent string
 }
 
 type AccountReference struct {
