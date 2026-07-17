@@ -7,6 +7,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
 func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) error {
@@ -36,7 +37,9 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 		}
 		if sourceType == "" || sourceLocator == "" {
 			if operation.CompensationAction == "delete_replacement_credential" {
-				return ErrInvalidRequest
+				_, err = s.transition(ctx, operation, model.ProOperationStateFailed, operation.ProAccountID, operation.Context,
+					valueOr(operation.ErrorCode, "replacement_not_created"), "替换凭证尚未创建，旧配置保持不变", "replacement_cleanup_completed")
+				return err
 			}
 			if account.Binding != nil {
 				sourceType = account.Binding.SourceType
@@ -48,7 +51,7 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 				return deleteErr
 			}
 		}
-		if account.ID != "" {
+		if account.ID != "" && operation.CompensationAction != "delete_replacement_credential" {
 			if account.DeletedAtMS == 0 {
 				if _, deleteErr := s.repository.SoftDelete(ctx, account.ID, account.Version, s.now().UnixMilli()); deleteErr != nil && !errors.Is(deleteErr, ErrResourceVersionConflict) {
 					return deleteErr
@@ -61,26 +64,20 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 		}
 		_, err = s.transition(ctx, operation, terminal, operation.ProAccountID, operation.Context, operation.ErrorCode, "补偿清理已完成", operation.CompensationAction+"_completed")
 		return err
-	case "enable_replacement_credential":
-		authIndex := contextString(operation.Context, "replacementAuthIndex")
-		snapshot, findErr := s.gateway.FindAccountByAuthIndex(ctx, setup.CPAUpstreamURL, setup.ManagementKey, authIndex)
-		if findErr != nil {
-			return findErr
+	case "rollback_replacement_switch":
+		account, getErr := s.accounts.Get(ctx, operation.ProAccountID)
+		if getErr != nil {
+			return getErr
 		}
-		snapshot, err = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey, snapshot.SourceType, snapshot.SourceLocator, true)
-		if err != nil {
+		if account.Binding != nil && account.Binding.AuthIndex == contextString(operation.Context, "replacementAuthIndex") {
+			if err = s.deleteAccountByAuthIndex(ctx, setup, contextString(operation.Context, "oldAuthIndex")); err != nil {
+				return err
+			}
+			_, err = s.transition(ctx, operation, model.ProOperationStateEnabled, operation.ProAccountID, operation.Context,
+				"", "替换凭证切换已完成", "")
 			return err
 		}
-		account, err := s.accounts.Get(ctx, operation.ProAccountID)
-		if err != nil {
-			return err
-		}
-		discovery := discoveryFromSnapshot(snapshot)
-		discovery.Name = account.Name
-		if _, err = s.repository.RebindManaged(ctx, account.ID, account.Version, discovery, s.now().UnixMilli()); err != nil {
-			return err
-		}
-		_, err = s.transition(ctx, operation, model.ProOperationStateEnabled, operation.ProAccountID, operation.Context, "", "替换凭证已恢复并启用", "")
+		_, err = s.rollbackReplacementSwitch(ctx, setup, operation)
 		return err
 	case "restore_model_rules":
 		account, err := s.accounts.Get(ctx, operation.ProAccountID)
@@ -102,6 +99,55 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 	default:
 		return ErrOperationState
 	}
+}
+
+func (s *Service) rollbackReplacementSwitch(ctx context.Context, setup store.Setup, operation model.ProAccountDraft) (model.ProAccountDraft, error) {
+	replacementAuthIndex := contextString(operation.Context, "replacementAuthIndex")
+	if replacement, err := s.gateway.FindAccountByAuthIndex(ctx, setup.CPAUpstreamURL, setup.ManagementKey, replacementAuthIndex); err == nil {
+		_, _ = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey, replacement.SourceType, replacement.SourceLocator, false)
+	} else if !errors.Is(err, proaccountgateway.ErrGatewayAccountNotFound) {
+		return operation, err
+	}
+	oldAuthIndex := contextString(operation.Context, "oldAuthIndex")
+	if contextBool(operation.Context, "oldStatusChanged") {
+		oldAccount, err := s.gateway.FindAccountByAuthIndex(ctx, setup.CPAUpstreamURL, setup.ManagementKey, oldAuthIndex)
+		if err != nil {
+			return operation, err
+		}
+		if _, err = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey,
+			oldAccount.SourceType, oldAccount.SourceLocator, contextBool(operation.Context, "oldEnabled")); err != nil {
+			return operation, err
+		}
+	}
+	if deleteErr := s.deleteAccountByAuthIndex(ctx, setup, replacementAuthIndex); deleteErr != nil {
+		return operation, deleteErr
+	}
+	updated, err := s.transition(ctx, operation, model.ProOperationStateFailed, operation.ProAccountID, operation.Context,
+		valueOr(operation.ErrorCode, "replacement_switch_rolled_back"), "替换凭证切换失败，旧配置已恢复", "rollback_replacement_switch_completed")
+	if err != nil {
+		return operation, err
+	}
+	return updated, nil
+}
+
+func (s *Service) deleteAccountByAuthIndex(ctx context.Context, setup store.Setup, authIndex string) error {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return ErrInvalidRequest
+	}
+	account, err := s.gateway.FindAccountByAuthIndex(ctx, setup.CPAUpstreamURL, setup.ManagementKey, authIndex)
+	if errors.Is(err, proaccountgateway.ErrGatewayAccountNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, account.SourceType, account.SourceLocator)
+}
+
+func contextBool(value map[string]any, key string) bool {
+	result, _ := value[key].(bool)
+	return result
 }
 
 func valueOr(value string, fallback string) string {

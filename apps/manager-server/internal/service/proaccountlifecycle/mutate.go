@@ -173,6 +173,10 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	}
 	contextValue := operation.Context
 	contextValue["newSourceType"] = probe.SourceType
+	contextValue["oldSourceType"] = account.Binding.SourceType
+	contextValue["oldSourceLocator"] = account.Binding.SourceLocator
+	contextValue["oldAuthIndex"] = account.Binding.AuthIndex
+	contextValue["oldEnabled"] = account.Enabled
 	operation, err = s.transition(ctx, operation, model.ProOperationStateProbed, account.ID, contextValue, "", "", "delete_replacement_credential")
 	if err != nil {
 		return Result{Account: account, Operation: operation, Probe: &probe}, err
@@ -217,20 +221,43 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	if err != nil {
 		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
 	}
-	if err := s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, account.Binding.SourceType, account.Binding.SourceLocator); err != nil {
-		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator)
-		operation = s.fail(ctx, operation, "old_credential_delete_failed", "旧凭证删除失败，替换凭证已清理")
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
-	}
-	currentSnapshot, err := s.gateway.FindAccountByAuthIndex(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.AuthIndex)
+	snapshot, err := s.gateway.Snapshot(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	if err != nil {
 		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
 	}
-	enabledSnapshot, err := s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey, currentSnapshot.SourceType, currentSnapshot.SourceLocator, true)
+	projectedLocator, err := proaccountgateway.ProjectedLocatorAfterDelete(snapshot.Accounts,
+		proaccountgateway.AccountSnapshot{SourceType: account.Binding.SourceType, SourceLocator: account.Binding.SourceLocator}, newSnapshot)
 	if err != nil {
-		operation, _ = s.transition(ctx, operation, model.ProOperationStateCompensating, account.ID, contextValue, "replacement_enable_failed", "旧凭证已删除，等待重试启用替换凭证", "enable_replacement_credential")
 		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
 	}
+	contextValue["replacementProjectedLocator"] = projectedLocator
+	oldStatusChanged := !proaccountgateway.SharesEnabledState(snapshot.Accounts,
+		proaccountgateway.AccountSnapshot{SourceType: account.Binding.SourceType, SourceLocator: account.Binding.SourceLocator})
+	contextValue["oldStatusChanged"] = oldStatusChanged
+	operation, err = s.transition(ctx, operation, model.ProOperationStateCompensating, account.ID, contextValue,
+		"replacement_switch_pending", "正在切换到已测试的替换凭证", "rollback_replacement_switch")
+	if err != nil {
+		_ = s.deleteAccountByAuthIndex(ctx, setup, newSnapshot.AuthIndex)
+		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+	}
+
+	if oldStatusChanged {
+		if _, err = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey,
+			account.Binding.SourceType, account.Binding.SourceLocator, false); err != nil {
+			operation, _ = s.rollbackReplacementSwitch(ctx, setup, operation)
+			return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		}
+	}
+	enabledSnapshot := newSnapshot
+	if account.Enabled {
+		enabledSnapshot, err = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey,
+			newSnapshot.SourceType, newSnapshot.SourceLocator, true)
+		if err != nil {
+			operation, _ = s.rollbackReplacementSwitch(ctx, setup, operation)
+			return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		}
+	}
+	enabledSnapshot.SourceLocator = projectedLocator
 	discovery := discoveryFromSnapshot(enabledSnapshot)
 	if input.Name != nil {
 		discovery.Name = strings.TrimSpace(*input.Name)
@@ -239,8 +266,11 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	}
 	updated, err := s.repository.RebindManaged(ctx, account.ID, input.ExpectedVersion, discovery, s.now().UnixMilli())
 	if err != nil {
-		_, _ = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey, enabledSnapshot.SourceType, enabledSnapshot.SourceLocator, false)
+		operation, _ = s.rollbackReplacementSwitch(ctx, setup, operation)
 		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+	}
+	if err = s.deleteAccountByAuthIndex(ctx, setup, account.Binding.AuthIndex); err != nil {
+		return Result{Account: updated, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
 	}
 	operation, err = s.transition(ctx, operation, model.ProOperationStateEnabled, account.ID, contextValue, "", "", "")
 	return Result{Account: updated, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err

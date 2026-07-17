@@ -38,12 +38,42 @@ type recoveryGatewayStub struct {
 	deletedSourceType string
 	deletedLocator    string
 	restoredRules     proaccountgateway.ModelRules
+	accounts          map[string]proaccountgateway.AccountSnapshot
+	enabled           map[string]bool
 }
 
 func (s *recoveryGatewayStub) DeleteAccount(_ context.Context, _ string, _ string, sourceType string, sourceLocator string) error {
 	s.deletedSourceType = sourceType
 	s.deletedLocator = sourceLocator
+	for authIndex, account := range s.accounts {
+		if account.SourceType == sourceType && account.SourceLocator == sourceLocator {
+			delete(s.accounts, authIndex)
+		}
+	}
 	return nil
+}
+
+func (s *recoveryGatewayStub) FindAccountByAuthIndex(_ context.Context, _ string, _ string, authIndex string) (proaccountgateway.AccountSnapshot, error) {
+	account, ok := s.accounts[authIndex]
+	if !ok {
+		return proaccountgateway.AccountSnapshot{}, proaccountgateway.ErrGatewayAccountNotFound
+	}
+	return account, nil
+}
+
+func (s *recoveryGatewayStub) SetAccountEnabled(_ context.Context, _ string, _ string, sourceType string, sourceLocator string, enabled bool) (proaccountgateway.AccountSnapshot, error) {
+	for authIndex, account := range s.accounts {
+		if account.SourceType == sourceType && account.SourceLocator == sourceLocator {
+			account.Enabled = enabled
+			s.accounts[authIndex] = account
+			if s.enabled == nil {
+				s.enabled = map[string]bool{}
+			}
+			s.enabled[authIndex] = enabled
+			return account, nil
+		}
+	}
+	return proaccountgateway.AccountSnapshot{}, proaccountgateway.ErrGatewayAccountNotFound
 }
 
 func (s *recoveryGatewayStub) RestoreModelRules(_ context.Context, _ string, _ string, _ string, _ string, previous proaccountgateway.ModelRules) error {
@@ -114,11 +144,70 @@ func TestRecoverReplacementWithoutLocatorDoesNotDeleteCurrentBinding(t *testing.
 		State: model.ProOperationStateCompensating, Version: 2,
 		CompensationAction: "delete_replacement_credential", Context: map[string]any{},
 	})
-	if !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("错误 = %v", err)
+	if err != nil {
+		t.Fatalf("恢复未创建的替换凭证：%v", err)
 	}
 	if gateway.deletedLocator != "" {
 		t.Fatalf("不应删除当前绑定，实际删除 = %s", gateway.deletedLocator)
+	}
+}
+
+func TestRecoverReplacementSwitchRollsBackWhenManagerStillUsesOldBinding(t *testing.T) {
+	account := recoveryAccount()
+	gateway := &recoveryGatewayStub{accounts: map[string]proaccountgateway.AccountSnapshot{
+		"auth-1": {SourceType: "config_codex_api_key", SourceLocator: "index:0", AuthIndex: "auth-1", Enabled: false},
+		"auth-2": {SourceType: "config_codex_api_key", SourceLocator: "index:1", AuthIndex: "auth-2", Enabled: true},
+	}}
+	operations := &recoveryOperationStub{}
+	service := New(recoveryAccountReaderStub{account: account}, &recoveryRepositoryStub{}, recoverySetupStub{}, gateway, nil, operations)
+	err := service.Recover(context.Background(), replacementSwitchOperation(account.ID))
+	if err != nil {
+		t.Fatalf("回滚替换切换：%v", err)
+	}
+	if _, exists := gateway.accounts["auth-2"]; exists {
+		t.Fatal("回滚后替换凭证仍然存在")
+	}
+	if !gateway.enabled["auth-1"] {
+		t.Fatal("回滚后旧凭证未恢复启用")
+	}
+	if operations.lastTransition.State != model.ProOperationStateFailed || operations.lastTransition.CompensationAction != "rollback_replacement_switch_completed" {
+		t.Fatalf("回滚终态 = %#v", operations.lastTransition)
+	}
+}
+
+func TestRecoverReplacementSwitchFinishesForwardWhenManagerUsesReplacement(t *testing.T) {
+	account := recoveryAccount()
+	account.Binding = &model.ProAccountBinding{SourceType: "config_codex_api_key", SourceLocator: "index:0", AuthIndex: "auth-2"}
+	gateway := &recoveryGatewayStub{accounts: map[string]proaccountgateway.AccountSnapshot{
+		"auth-1": {SourceType: "config_codex_api_key", SourceLocator: "index:0", AuthIndex: "auth-1", Enabled: false},
+		"auth-2": {SourceType: "config_codex_api_key", SourceLocator: "index:1", AuthIndex: "auth-2", Enabled: true},
+	}}
+	operations := &recoveryOperationStub{}
+	service := New(recoveryAccountReaderStub{account: account}, &recoveryRepositoryStub{}, recoverySetupStub{}, gateway, nil, operations)
+	err := service.Recover(context.Background(), replacementSwitchOperation(account.ID))
+	if err != nil {
+		t.Fatalf("向前完成替换切换：%v", err)
+	}
+	if _, exists := gateway.accounts["auth-1"]; exists {
+		t.Fatal("向前恢复后旧凭证仍然存在")
+	}
+	if _, exists := gateway.accounts["auth-2"]; !exists {
+		t.Fatal("向前恢复误删替换凭证")
+	}
+	if operations.lastTransition.State != model.ProOperationStateEnabled {
+		t.Fatalf("向前恢复终态 = %#v", operations.lastTransition)
+	}
+}
+
+func replacementSwitchOperation(accountID string) model.ProAccountDraft {
+	return model.ProAccountDraft{
+		OperationID: "replacement-switch", OperationType: "edit", ProAccountID: accountID,
+		State: model.ProOperationStateCompensating, Version: 5, CompensationAction: "rollback_replacement_switch",
+		Context: map[string]any{
+			"oldAuthIndex": "auth-1", "oldEnabled": true, "oldStatusChanged": true,
+			"replacementAuthIndex": "auth-2", "replacementSourceType": "config_codex_api_key",
+			"replacementSourceLocator": "index:1", "replacementProjectedLocator": "index:0",
+		},
 	}
 }
 

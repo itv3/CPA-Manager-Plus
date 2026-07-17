@@ -269,6 +269,77 @@ func (c *Client) FindAccountByAuthIndex(ctx context.Context, baseURL string, man
 	return AccountSnapshot{}, ErrGatewayAccountNotFound
 }
 
+// ProjectedLocatorAfterDelete 计算删除旧配置后替换凭证的稳定定位。
+// 配置列表使用数组下标作为 Management API 定位，因此删除较早的元素时必须提前修正新定位。
+func ProjectedLocatorAfterDelete(accounts []AccountSnapshot, oldAccount AccountSnapshot, replacement AccountSnapshot) (string, error) {
+	if oldAccount.SourceType != replacement.SourceType || oldAccount.SourceType == SourceAuthFile {
+		return replacement.SourceLocator, nil
+	}
+	if oldAccount.SourceType != SourceOpenAICompatibility {
+		oldIndex, err := parseIndexLocator(oldAccount.SourceLocator)
+		if err != nil {
+			return "", err
+		}
+		replacementIndex, err := parseIndexLocator(replacement.SourceLocator)
+		if err != nil {
+			return "", err
+		}
+		if oldIndex < replacementIndex {
+			replacementIndex--
+		}
+		return fmt.Sprintf("index:%d", replacementIndex), nil
+	}
+
+	oldProvider, oldKey, err := parseOpenAICompatibilityLocator(oldAccount.SourceLocator)
+	if err != nil {
+		return "", err
+	}
+	replacementProvider, replacementKey, err := parseOpenAICompatibilityLocator(replacement.SourceLocator)
+	if err != nil {
+		return "", err
+	}
+	providerAccountCount := 0
+	for _, account := range accounts {
+		if account.SourceType != SourceOpenAICompatibility {
+			continue
+		}
+		providerIndex, _, parseErr := parseOpenAICompatibilityLocator(account.SourceLocator)
+		if parseErr == nil && providerIndex == oldProvider {
+			providerAccountCount++
+		}
+	}
+	if oldProvider == replacementProvider {
+		if providerAccountCount > 1 && oldKey >= 0 && oldKey < replacementKey {
+			replacementKey--
+		}
+	} else if providerAccountCount <= 1 && oldProvider < replacementProvider {
+		replacementProvider--
+	}
+	return fmt.Sprintf("provider:%d:key:%d", replacementProvider, replacementKey), nil
+}
+
+// SharesEnabledState 判断账号启停是否会同时影响同一共享 Provider 的其他 Key。
+func SharesEnabledState(accounts []AccountSnapshot, account AccountSnapshot) bool {
+	if account.SourceType != SourceOpenAICompatibility {
+		return false
+	}
+	providerIndex, _, err := parseOpenAICompatibilityLocator(account.SourceLocator)
+	if err != nil {
+		return false
+	}
+	count := 0
+	for _, candidate := range accounts {
+		if candidate.SourceType != SourceOpenAICompatibility {
+			continue
+		}
+		candidateProvider, _, parseErr := parseOpenAICompatibilityLocator(candidate.SourceLocator)
+		if parseErr == nil && candidateProvider == providerIndex {
+			count++
+		}
+	}
+	return count > 1
+}
+
 func (c *Client) loadConfigEntries(ctx context.Context, baseURL string, managementKey string, path string, responseKey string) ([]map[string]any, error) {
 	raw, _, err := c.get(ctx, baseURL, managementKey, path)
 	if err != nil {
