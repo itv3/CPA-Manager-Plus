@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
   IconCheck,
@@ -46,6 +46,36 @@ const AUTO_REFRESH_INTERVAL_MS = 60_000;
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
 const usageCache = new Map<string, { value: ProAccountUsageResponse; updatedAt: number }>();
 
+const PLATFORM_FILTER_OPTIONS = [
+  { value: '', label: '全部平台' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'xai', label: 'Grok / xAI' },
+];
+
+const AUTH_TYPE_FILTER_OPTIONS = [
+  { value: '', label: '全部认证方式' },
+  { value: 'oauth', label: 'OAuth' },
+  { value: 'api', label: 'API' },
+  { value: 'vertex', label: 'Vertex' },
+];
+
+const ENABLED_FILTER_OPTIONS = [
+  { value: '', label: '全部启用状态' },
+  { value: 'true', label: '已启用' },
+  { value: 'false', label: '已停用' },
+];
+
+const HEALTH_FILTER_OPTIONS = [
+  { value: '', label: '全部健康状态' },
+  { value: 'healthy', label: '健康' },
+  { value: 'error', label: '错误' },
+  { value: 'reauth_required', label: '需要重新授权' },
+  { value: 'unknown', label: '未知' },
+];
+
 const formatDate = (value?: number) => {
   if (!value) return '-';
   const date = new Date(value);
@@ -53,6 +83,14 @@ const formatDate = (value?: number) => {
 };
 
 const labelFor = (value: string) => value.replace(/_/g, ' ');
+
+const healthLabel = (value: string) => {
+  if (value === 'healthy') return '健康';
+  if (value === 'error') return '错误';
+  if (value === 'reauth_required') return '需要重新授权';
+  if (value === 'unknown') return '未知';
+  return labelFor(value);
+};
 
 const compactNumber = (value: number) =>
   new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
@@ -494,135 +532,125 @@ export function AccountsPage() {
     <div className={styles.page}>
       <header className={styles.header}>
         <h1 className={styles.title}>{t('accounts.title', { defaultValue: '统一账号管理' })}</h1>
-        <div className={styles.headerActions}>
-          {bindingReviews.length > 0 ? (
-            <Button variant="secondary" size="sm" onClick={() => setBindingReviewOpen(true)}>
-              <IconSettings size={15} />
-              待确认绑定 {bindingReviews.length}
-            </Button>
-          ) : null}
-          <Button variant="secondary" size="sm" onClick={syncAccounts} loading={syncing}>
-            <IconRefreshCw size={15} />
-            {t('accounts.sync', { defaultValue: '同步存量' })}
-          </Button>
-          <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
-            <IconPlus size={15} />
-            添加账号
-          </Button>
-        </div>
       </header>
 
       <section className={styles.toolbar} aria-label="账号筛选">
-        <Input
-          className={styles.search}
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder={t('accounts.search', { defaultValue: '搜索名称、邮箱或账号 ID' })}
-          rightElement={<IconSearch size={15} />}
-          aria-label={t('accounts.search', { defaultValue: '搜索名称、邮箱或账号 ID' })}
-        />
-        <select
-          className={styles.select}
-          value={platform}
-          onChange={(event) => setPlatform(event.target.value)}
-          aria-label="平台筛选"
-        >
-          <option value="">全部平台</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-          <option value="gemini">Gemini</option>
-          <option value="antigravity">Antigravity</option>
-          <option value="xai">Grok / xAI</option>
-        </select>
-        <select
-          className={styles.select}
-          value={authType}
-          onChange={(event) => setAuthType(event.target.value)}
-          aria-label="认证方式筛选"
-        >
-          <option value="">全部认证方式</option>
-          <option value="oauth">OAuth</option>
-          <option value="api">API</option>
-          <option value="vertex">Vertex</option>
-        </select>
-        <select
-          className={styles.select}
-          value={enabled}
-          onChange={(event) => setEnabled(event.target.value)}
-          aria-label="启用状态筛选"
-        >
-          <option value="">全部启用状态</option>
-          <option value="true">已启用</option>
-          <option value="false">已停用</option>
-        </select>
-        <select
-          className={styles.select}
-          value={healthStatus}
-          onChange={(event) => setHealthStatus(event.target.value)}
-          aria-label="健康状态筛选"
-        >
-          <option value="">全部健康状态</option>
-          <option value="healthy">健康</option>
-          <option value="error">错误</option>
-          <option value="reauth_required">需要重新授权</option>
-          <option value="unknown">未知</option>
-        </select>
-        <ToggleSwitch
-          checked={autoRefresh}
-          onChange={setAutoRefresh}
-          label="自动刷新"
-          ariaLabel="自动刷新账号与被动用量"
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          iconOnly
-          onClick={() => void loadAccounts()}
-          loading={loading}
-          title="刷新账号列表"
-          aria-label="刷新账号列表"
-        >
-          <IconRefreshCw size={16} />
-        </Button>
-      </section>
-
-      <section className={styles.bulkToolbar} aria-label="批量账号操作">
-        <span>已选择 {selectedAccounts.length}</span>
-        <Button
-          variant="secondary"
-          size="xs"
-          onClick={() => setBatchAction('enable')}
-          disabled={selectedAccounts.length === 0}
-        >
-          <IconCheck size={14} /> 启用
-        </Button>
-        <Button
-          variant="secondary"
-          size="xs"
-          onClick={() => setBatchAction('disable')}
-          disabled={selectedAccounts.length === 0}
-        >
-          <IconX size={14} /> 停用
-        </Button>
-        <Button
-          variant="secondary"
-          size="xs"
-          onClick={() => setBatchAction('test')}
-          disabled={selectedAccounts.length === 0}
-        >
-          <IconCrosshair size={14} /> 测试
-        </Button>
-        <Button
-          variant="danger"
-          size="xs"
-          onClick={() => setBatchAction('delete')}
-          disabled={selectedAccounts.length === 0}
-        >
-          <IconTrash2 size={14} /> 删除
-        </Button>
+        <div className={styles.filterGroup}>
+          <label className={styles.searchField}>
+            <IconSearch size={17} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t('accounts.search', { defaultValue: '搜索名称、邮箱或账号 ID' })}
+              aria-label={t('accounts.search', { defaultValue: '搜索名称、邮箱或账号 ID' })}
+            />
+          </label>
+          <Select
+            value={platform}
+            options={PLATFORM_FILTER_OPTIONS}
+            onChange={setPlatform}
+            className={styles.filterSelect}
+            ariaLabel="平台筛选"
+          />
+          <Select
+            value={authType}
+            options={AUTH_TYPE_FILTER_OPTIONS}
+            onChange={setAuthType}
+            className={styles.filterSelect}
+            ariaLabel="认证方式筛选"
+          />
+          <Select
+            value={enabled}
+            options={ENABLED_FILTER_OPTIONS}
+            onChange={setEnabled}
+            className={styles.filterSelect}
+            ariaLabel="启用状态筛选"
+          />
+          <Select
+            value={healthStatus}
+            options={HEALTH_FILTER_OPTIONS}
+            onChange={setHealthStatus}
+            className={styles.filterSelectWide}
+            ariaLabel="健康状态筛选"
+          />
+        </div>
+        <div className={styles.toolbarActions}>
+          <Button
+            variant="secondary"
+            iconOnly
+            onClick={() => void loadAccounts()}
+            loading={loading}
+            title="刷新账号列表"
+            aria-label="刷新账号列表"
+          >
+            <IconRefreshCw size={17} />
+          </Button>
+          <div className={styles.autoRefreshControl}>
+            <ToggleSwitch
+              checked={autoRefresh}
+              onChange={setAutoRefresh}
+              label="自动刷新"
+              ariaLabel="自动刷新账号与被动用量"
+            />
+          </div>
+          {bindingReviews.length > 0 ? (
+            <Button variant="secondary" onClick={() => setBindingReviewOpen(true)}>
+              <IconSettings size={16} />
+              待确认绑定 {bindingReviews.length}
+            </Button>
+          ) : null}
+          <Button variant="secondary" onClick={syncAccounts} loading={syncing}>
+            <IconRefreshCw size={16} />
+            {t('accounts.sync', { defaultValue: '同步存量' })}
+          </Button>
+          <Button variant="primary" onClick={() => setWizardOpen(true)}>
+            <IconPlus size={16} />
+            添加账号
+          </Button>
+        </div>
       </section>
 
       <section className={styles.panel}>
+        <div className={styles.bulkToolbar} aria-label="批量账号操作">
+          <div className={styles.bulkSummary}>
+            <strong>批量编辑账号</strong>
+            <span>已选择 {selectedAccounts.length} 个账号</span>
+          </div>
+          <div className={styles.bulkActions}>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setBatchAction('enable')}
+              disabled={selectedAccounts.length === 0}
+            >
+              <IconCheck size={14} /> 启用
+            </Button>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setBatchAction('disable')}
+              disabled={selectedAccounts.length === 0}
+            >
+              <IconX size={14} /> 停用
+            </Button>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setBatchAction('test')}
+              disabled={selectedAccounts.length === 0}
+            >
+              <IconCrosshair size={14} /> 测试
+            </Button>
+            <Button
+              variant="danger"
+              size="xs"
+              onClick={() => setBatchAction('delete')}
+              disabled={selectedAccounts.length === 0}
+            >
+              <IconTrash2 size={14} /> 删除
+            </Button>
+          </div>
+        </div>
         {error ? <div className={styles.error}>{error}</div> : null}
         {loading && rows.length === 0 ? <div className={styles.state}>加载中...</div> : null}
         {!loading && !error && rows.length === 0 ? (
@@ -675,7 +703,10 @@ export function AccountsPage() {
                         </div>
                       </td>
                       <td>
-                        <span className={styles.badge}>
+                        <span
+                          className={`${styles.badge} ${styles.platformBadge}`}
+                          data-platform={item.platform}
+                        >
                           {accountDisplayName(item.platform, item.authType)}
                         </span>
                         <div className={styles.accountMeta}>
@@ -689,9 +720,14 @@ export function AccountsPage() {
                           {item.enabled ? '已启用' : '已停用'}
                         </span>
                         <div
-                          className={`${styles.accountMeta} ${item.healthStatus === 'error' ? styles.textError : ''}`}
+                          className={`${styles.healthStatus} ${
+                            item.healthStatus === 'error' || item.healthStatus === 'reauth_required'
+                              ? styles.textError
+                              : ''
+                          }`}
                         >
-                          {labelFor(item.healthStatus)}
+                          <span />
+                          {healthLabel(item.healthStatus)}
                         </div>
                       </td>
                       <td>
@@ -742,6 +778,7 @@ export function AccountsPage() {
                             aria-label="编辑账号"
                           >
                             <IconPencil size={15} />
+                            <span>编辑</span>
                           </button>
                           <button
                             type="button"
@@ -750,6 +787,7 @@ export function AccountsPage() {
                             aria-label="测试账号"
                           >
                             <IconCrosshair size={15} />
+                            <span>测试</span>
                           </button>
                           <button
                             type="button"
@@ -759,6 +797,7 @@ export function AccountsPage() {
                             aria-label={item.enabled ? '停用账号' : '启用账号'}
                           >
                             {item.enabled ? <IconX size={15} /> : <IconCheck size={15} />}
+                            <span>{item.enabled ? '停用' : '启用'}</span>
                           </button>
                           <button
                             type="button"
@@ -769,6 +808,7 @@ export function AccountsPage() {
                             aria-label="删除账号"
                           >
                             <IconTrash2 size={15} />
+                            <span>删除</span>
                           </button>
                           <Link
                             to={advancedPath}
@@ -777,6 +817,7 @@ export function AccountsPage() {
                             aria-label="高级管理"
                           >
                             <IconSettings size={15} />
+                            <span>高级</span>
                           </Link>
                         </div>
                       </td>
