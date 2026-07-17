@@ -4,9 +4,19 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 )
+
+type builtInStub struct {
+	models []string
+	err    error
+}
+
+func (s builtInStub) BuiltIn(context.Context, string, string) ([]string, error) {
+	return s.models, s.err
+}
 
 func TestOpenAIProbePrefersResponsesAndRequiresFunctionCall(t *testing.T) {
 	var chatCalls atomic.Int64
@@ -40,6 +50,32 @@ func TestOpenAIProbePrefersResponsesAndRequiresFunctionCall(t *testing.T) {
 	}
 	if chatCalls.Load() != 0 {
 		t.Fatalf("Responses 支持时不应探测 Chat，调用次数 = %d", chatCalls.Load())
+	}
+}
+
+func TestProbeMergesUpstreamBuiltInAndManualModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"upstream"},{"id":"shared"}]}`))
+		case "/v1/responses":
+			_, _ = w.Write([]byte(`{"output":[{"type":"function_call"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := New(nil, builtInStub{models: []string{"shared", "built-in"}}).ProbeCandidate(context.Background(), Input{
+		Platform: "openai", AuthType: "api", BaseURL: server.URL, APIKey: "candidate-secret", Model: "manual",
+		AllowedModels: []string{"manual"}, ModelMapping: map[string]string{"alias": "target"},
+	})
+	if err != nil {
+		t.Fatalf("探测：%v", err)
+	}
+	want := []string{"shared", "upstream", "built-in", "manual", "alias", "target"}
+	if !reflect.DeepEqual(result.Models, want) {
+		t.Fatalf("模型目录 = %#v，期望 %#v", result.Models, want)
 	}
 }
 

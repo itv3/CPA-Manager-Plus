@@ -31,6 +31,7 @@ import { AccountBindingReviewModal } from './AccountBindingReviewModal';
 import { AccountEditModal } from './AccountEditModal';
 import { AccountTestModal } from './AccountTestModal';
 import { AccountWizardModal } from './AccountWizardModal';
+import { createAccountLoadSequence, loadAllAccountPages } from './loadAllAccountPages';
 import {
   accountDisplayName,
   accountSourceLabel,
@@ -298,32 +299,39 @@ export function AccountsPage() {
   const [batchAction, setBatchAction] = useState<ProAccountBatchAction | null>(null);
   const [bindingReviews, setBindingReviews] = useState<ProAccountBindingReviewItem[]>([]);
   const [bindingReviewOpen, setBindingReviewOpen] = useState(false);
+  const loadSequenceRef = useRef(createAccountLoadSequence());
 
   const managerBase = featureAvailability.managerServiceBase;
 
   const loadAccounts = useCallback(
     async (background = false) => {
       if (!managerBase || !managementKey) return;
+      const requestID = loadSequenceRef.current.begin();
       if (!background) setLoading(true);
       setError('');
       try {
-        const result = await proAccountsApi.list(managerBase, managementKey, {
-          limit: 100,
-          search,
-          platform,
-          authType,
-          enabled: enabled === '' ? undefined : enabled === 'true',
-          healthStatus,
-        });
-        setItems(result.items);
-        const availableIDs = new Set(result.items.map((item) => item.id));
+        const nextItems = await loadAllAccountPages((page) =>
+          proAccountsApi.list(managerBase, managementKey, {
+            limit: 100,
+            cursor: page.cursor,
+            search,
+            platform,
+            authType,
+            enabled: enabled === '' ? undefined : enabled === 'true',
+            healthStatus,
+          })
+        );
+        if (!loadSequenceRef.current.isLatest(requestID)) return;
+        setItems(nextItems);
+        const availableIDs = new Set(nextItems.map((item) => item.id));
         setSelectedIDs((current) => new Set([...current].filter((id) => availableIDs.has(id))));
         if (background) setPassiveRefreshToken((value) => value + 1);
       } catch (loadError) {
+        if (!loadSequenceRef.current.isLatest(requestID)) return;
         const message = loadError instanceof Error ? loadError.message : String(loadError);
         if (!background) setError(message);
       } finally {
-        if (!background) setLoading(false);
+        if (!background && loadSequenceRef.current.isLatest(requestID)) setLoading(false);
       }
     },
     [authType, enabled, healthStatus, managementKey, managerBase, platform, search]

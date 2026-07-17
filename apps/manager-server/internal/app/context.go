@@ -22,6 +22,7 @@ import (
 	proaccountbatchsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountbatch"
 	proaccountgatewaysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 	proaccountlifecyclesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountlifecycle"
+	proaccountmodelcatalogsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodelcatalog"
 	proaccountmodelssvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodels"
 	proaccountoperationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountoperation"
 	proaccountprobesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
@@ -66,6 +67,7 @@ type Context struct {
 	ProAccountBatchService         *proaccountbatchsvc.Service
 	ProAccountGateway              *proaccountgatewaysvc.Client
 	ProAccountLifecycleService     *proaccountlifecyclesvc.Service
+	ProAccountModelCatalogService  *proaccountmodelcatalogsvc.Service
 	ProAccountModelsService        *proaccountmodelssvc.Service
 	ProAccountOperationService     *proaccountoperationsvc.Service
 	ProAccountProbeService         *proaccountprobesvc.Service
@@ -97,8 +99,9 @@ func FromExisting(
 	proAccountGateway := proaccountgatewaysvc.New(nil)
 	proAccountService := proaccountsvc.New(st.ProAccounts, managerConfigService, proAccountGateway)
 	proAccountOperationService := proaccountoperationsvc.New(st.ProAccountDrafts)
+	proAccountModelCatalogService := proaccountmodelcatalogsvc.New(proAccountService, managerConfigService, proAccountGateway)
 	proAccountModelsService := proaccountmodelssvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
-	proAccountProbeService := proaccountprobesvc.New(nil)
+	proAccountProbeService := proaccountprobesvc.New(nil, proAccountModelCatalogService)
 	proAccountLifecycleService := proaccountlifecyclesvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountProbeService, proAccountOperationService)
 	proAccountTestService := proaccounttestsvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
 	proAccountBatchService := proaccountbatchsvc.New(proAccountLifecycleService, proAccountTestService)
@@ -131,6 +134,7 @@ func FromExisting(
 		ProAccountBatchService:         proAccountBatchService,
 		ProAccountGateway:              proAccountGateway,
 		ProAccountLifecycleService:     proAccountLifecycleService,
+		ProAccountModelCatalogService:  proAccountModelCatalogService,
 		ProAccountModelsService:        proAccountModelsService,
 		ProAccountOperationService:     proAccountOperationService,
 		ProAccountProbeService:         proAccountProbeService,

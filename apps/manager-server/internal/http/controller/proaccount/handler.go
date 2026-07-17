@@ -19,6 +19,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountbatch"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountlifecycle"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodelcatalog"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountmodels"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountoperation"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
@@ -41,6 +42,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleCollection(w, r)
 	case path == "/v0/pro/accounts/capabilities":
 		h.handleCapabilities(w, r)
+	case path == "/v0/pro/accounts/model-catalog":
+		h.handleStaticModelCatalog(w, r)
 	case path == "/v0/pro/accounts/batch":
 		h.handleBatch(w, r)
 	case path == "/v0/pro/accounts/binding-reviews":
@@ -61,6 +64,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleOAuthStatus(w, r)
 	case path == "/v0/pro/accounts/oauth/cancel":
 		h.handleOAuthCancel(w, r)
+	case path == "/v0/pro/accounts/drafts/cancel":
+		h.handleDraftCancel(w, r)
 	case path == "/v0/pro/accounts/sync":
 		h.handleSync(w, r)
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/usage"):
@@ -80,6 +85,25 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.writeError(w, http.StatusNotFound, "pro_route_not_found", "Pro route not found", false, nil)
 	}
+}
+
+func (h *Handler) handleStaticModelCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	platform := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("platform")))
+	authType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("auth_type")))
+	if platform == "" || authType == "" {
+		h.writeError(w, http.StatusBadRequest, "invalid_model_catalog_request", "平台和认证方式不能为空", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountModelCatalogService.StaticCatalog(r.Context(), platform, authType)
+	if err != nil {
+		h.writeError(w, http.StatusBadGateway, "model_catalog_unavailable", "模型目录同步失败", true, nil)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +434,10 @@ func (h *Handler) handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleOAuthCancel(w http.ResponseWriter, r *http.Request) {
+	h.handleDraftCancel(w, r)
+}
+
+func (h *Handler) handleDraftCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
 		return
@@ -421,7 +449,7 @@ func (h *Handler) handleOAuthCancel(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "OAuth 取消请求无效", false, nil)
 		return
 	}
-	result, err := h.App.ProAccountLifecycleService.CancelOAuth(r.Context(), request.OperationID)
+	result, err := h.App.ProAccountLifecycleService.CancelDraft(r.Context(), request.OperationID)
 	if err != nil {
 		h.writeLifecycleOAuthError(w, err, result)
 		return
@@ -459,8 +487,28 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request, account
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request, accountID string) {
-	if r.Method != http.MethodPut || !validPathID(accountID) {
+	if !validPathID(accountID) {
 		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+		return
+	}
+	if r.Method == http.MethodGet {
+		result, err := h.App.ProAccountModelCatalogService.SyncAccount(r.Context(), accountID)
+		if err != nil {
+			switch {
+			case errors.Is(err, proaccountsvc.ErrAccountNotFound):
+				h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, nil)
+			case errors.Is(err, proaccountmodelcatalog.ErrAccountBindingMissing):
+				h.writeError(w, http.StatusConflict, "account_binding_missing", "账号缺少当前底层绑定", false, nil)
+			default:
+				h.writeError(w, http.StatusBadGateway, "model_catalog_unavailable", "模型目录同步失败", true, nil)
+			}
+			return
+		}
+		response.JSON(w, http.StatusOK, result)
+		return
+	}
+	if r.Method != http.MethodPut {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
 		return
 	}
 	var request struct {
@@ -698,11 +746,12 @@ func (h *Handler) handleCreateVertex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	saveDisabled, _ := strconv.ParseBool(strings.TrimSpace(r.FormValue("save_disabled_on_test_failure")))
+	draftOnly, _ := strconv.ParseBool(strings.TrimSpace(r.FormValue("draft_only")))
 	result, err := h.App.ProAccountLifecycleService.CreateVertex(r.Context(), proaccountlifecycle.CreateVertexInput{
 		OperationID: r.FormValue("operation_id"), IdempotencyKey: idempotencyKey(r, r.FormValue("idempotency_key")),
 		FileName: header.Filename, ServiceAccount: raw, Location: r.FormValue("location"),
 		AllowedModels: allowedModels, ModelMapping: modelMapping,
-		TestModel: r.FormValue("test_model"), SaveDisabled: saveDisabled,
+		TestModel: r.FormValue("test_model"), SaveDisabled: saveDisabled, DraftOnly: draftOnly,
 	})
 	if err != nil {
 		h.writeLifecycleError(w, err, result)

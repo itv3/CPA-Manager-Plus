@@ -51,7 +51,11 @@ type Result struct {
 	SourceType        string         `json:"sourceType,omitempty"`
 	TestModel         string         `json:"testModel,omitempty"`
 	Models            []string       `json:"models"`
+	UpstreamModels    []string       `json:"upstreamModels"`
+	BuiltInModels     []string       `json:"builtInModels"`
+	ManualModels      []string       `json:"manualModels"`
 	ModelsStatus      string         `json:"modelsStatus"`
+	Warnings          []string       `json:"warnings"`
 	Responses         ProtocolResult `json:"responses"`
 	ChatCompletions   ProtocolResult `json:"chatCompletions"`
 	BasicConnectivity ProtocolResult `json:"basicConnectivity"`
@@ -62,13 +66,22 @@ type Result struct {
 type Service struct {
 	httpClient *http.Client
 	timeout    time.Duration
+	builtIn    BuiltInProvider
 }
 
-func New(client *http.Client) *Service {
+type BuiltInProvider interface {
+	BuiltIn(ctx context.Context, platform string, authType string) ([]string, error)
+}
+
+func New(client *http.Client, providers ...BuiltInProvider) *Service {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Service{httpClient: client, timeout: 20 * time.Second}
+	var builtIn BuiltInProvider
+	if len(providers) > 0 {
+		builtIn = providers[0]
+	}
+	return &Service{httpClient: client, timeout: 20 * time.Second, builtIn: builtIn}
 }
 
 func (s *Service) ProbeCandidate(ctx context.Context, input Input) (Result, error) {
@@ -97,16 +110,29 @@ func (s *Service) ProbeCandidate(ctx context.Context, input Input) (Result, erro
 	requestCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	client := s.sameOriginClient(base)
-	result := Result{Platform: input.Platform, Models: []string{}, ModelsStatus: CapabilityUnknown}
+	result := Result{
+		Platform: input.Platform, Models: []string{}, UpstreamModels: []string{}, BuiltInModels: []string{},
+		ManualModels: []string{}, ModelsStatus: CapabilityUnknown, Warnings: []string{},
+	}
 
 	models, modelErr := s.syncModels(requestCtx, client, base, input)
 	if modelErr == nil {
-		result.Models = models
+		result.UpstreamModels = models
 		result.ModelsStatus = CapabilitySupported
 	} else if errors.Is(modelErr, errModelsUnsupported) {
 		result.ModelsStatus = CapabilityUnsupported
 	}
-	testModel := chooseTestModel(input.Model, models, input.Platform)
+	if s.builtIn != nil {
+		builtIn, builtInErr := s.builtIn.BuiltIn(requestCtx, input.Platform, input.AuthType)
+		if builtInErr == nil {
+			result.BuiltInModels = normalizeModels(builtIn)
+		} else {
+			result.Warnings = append(result.Warnings, "built_in_models_unavailable")
+		}
+	}
+	result.ManualModels = manualModels(input.AllowedModels, input.ModelMapping)
+	result.Models = mergeModels(result.UpstreamModels, result.BuiltInModels, result.ManualModels)
+	testModel := chooseRuleAwareTestModel(input.Model, result.Models, input.Platform, rules)
 	if !proaccountgateway.ModelAllowed(testModel, rules) {
 		return Result{}, fmt.Errorf("%w: test model is outside allowed models", proaccountgateway.ErrInvalidModelRule)
 	}
@@ -399,6 +425,28 @@ func chooseTestModel(requested string, models []string, platform string) string 
 	}
 }
 
+func chooseRuleAwareTestModel(requested string, models []string, platform string, rules proaccountgateway.ModelRules) string {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		return requested
+	}
+	for _, modelName := range rules.AllowedModels {
+		if value := strings.TrimSpace(modelName); value != "" && !strings.Contains(value, "*") {
+			return value
+		}
+	}
+	aliases := make([]string, 0, len(rules.ModelMapping))
+	for alias := range rules.ModelMapping {
+		if value := strings.TrimSpace(alias); value != "" && !strings.Contains(value, "*") {
+			aliases = append(aliases, value)
+		}
+	}
+	sort.Strings(aliases)
+	if len(aliases) > 0 {
+		return aliases[0]
+	}
+	return chooseTestModel("", models, platform)
+}
+
 func containsFunctionCall(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -440,4 +488,46 @@ func resultError(result ProtocolResult) (string, bool) {
 		return "", false
 	}
 	return result.ErrorCode, result.Retryable
+}
+
+func manualModels(allowed []string, mapping map[string]string) []string {
+	items := make([]string, 0, len(allowed)+len(mapping)*2)
+	for _, item := range allowed {
+		if !strings.Contains(item, "*") {
+			items = append(items, item)
+		}
+	}
+	aliases := make([]string, 0, len(mapping))
+	for alias := range mapping {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		items = append(items, alias, mapping[alias])
+	}
+	return normalizeModels(items)
+}
+
+func normalizeModels(items []string) []string {
+	return mergeModels(items)
+}
+
+func mergeModels(groups ...[]string) []string {
+	result := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, group := range groups {
+		for _, raw := range group {
+			value := strings.TrimSpace(raw)
+			if value == "" {
+				continue
+			}
+			key := strings.ToLower(value)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, value)
+		}
+	}
+	return result
 }

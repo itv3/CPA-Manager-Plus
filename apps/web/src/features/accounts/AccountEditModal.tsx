@@ -42,6 +42,8 @@ export function AccountEditModal({
   const [headerLines, setHeaderLines] = useState('');
   const [originalHeaderLines, setOriginalHeaderLines] = useState('');
   const [allowAll, setAllowAll] = useState(true);
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [manualModels, setManualModels] = useState('');
   const [mappingLines, setMappingLines] = useState('');
   const [testModel, setTestModel] = useState('');
@@ -56,11 +58,22 @@ export function AccountEditModal({
     setLoading(true);
     setError('');
     setApiKey('');
-    void proAccountsApi
-      .details(managerBase, managementKey, account.id)
-      .then((result) => {
+    void Promise.all([
+      proAccountsApi.details(managerBase, managementKey, account.id),
+      proAccountsApi.modelCatalog(managerBase, managementKey, account.id).catch(() => null),
+    ])
+      .then(([result, catalog]) => {
         if (cancelled) return;
         const headers = formatHeaderLines(result.editable.headers ?? {});
+        const discovered = catalog?.models ?? [];
+        const discoveredKeys = new Set(discovered.map((model) => model.toLowerCase()));
+        const selected = result.item.allowedModels.filter(
+          (model) => !model.includes('*') && discoveredKeys.has(model.toLowerCase())
+        );
+        const selectedKeys = new Set(selected.map((model) => model.toLowerCase()));
+        const manual = result.item.allowedModels.filter(
+          (model) => !selectedKeys.has(model.toLowerCase())
+        );
         setCurrent(result.item);
         setName(result.item.name ?? '');
         setBaseUrl(result.editable.baseUrl ?? '');
@@ -68,9 +81,13 @@ export function AccountEditModal({
         setHeaderLines(headers);
         setOriginalHeaderLines(headers);
         setAllowAll(result.item.allowedModels.length === 0);
-        setManualModels(formatModelLines(result.item.allowedModels));
+        setDiscoveredModels(discovered);
+        setSelectedModels(selected);
+        setManualModels(formatModelLines(manual));
         setMappingLines(formatMappingLines(result.item.modelMapping));
-        setTestModel(suggestedTestModel('', result.item.allowedModels, result.item.modelMapping));
+        setTestModel(
+          suggestedTestModel('', result.item.allowedModels, result.item.modelMapping, discovered)
+        );
         setSharedProvider(result.editable.sharedProvider);
       })
       .catch((loadError) => {
@@ -100,7 +117,9 @@ export function AccountEditModal({
       return;
     }
     try {
-      const allowedModels = allowAll ? [] : parseModelLines(manualModels);
+      const allowedModels = allowAll
+        ? []
+        : [...new Set([...selectedModels, ...parseModelLines(manualModels)])];
       const modelMapping = parseMappingLines(mappingLines);
       const headers = parseHeaderLines(headerLines);
       const resolvedTestModel = suggestedTestModel(testModel, allowedModels, modelMapping);
@@ -236,9 +255,9 @@ export function AccountEditModal({
             <AccountModelRulesEditor
               allowAll={allowAll}
               onAllowAllChange={setAllowAll}
-              discoveredModels={[]}
-              selectedModels={[]}
-              onSelectedModelsChange={() => undefined}
+              discoveredModels={discoveredModels}
+              selectedModels={selectedModels}
+              onSelectedModelsChange={setSelectedModels}
               manualModels={manualModels}
               onManualModelsChange={setManualModels}
               mappingLines={mappingLines}

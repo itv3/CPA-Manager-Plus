@@ -140,12 +140,25 @@ export interface ProAccountProbeResult {
   sourceType?: string;
   testModel?: string;
   models: string[];
+  upstreamModels: string[];
+  builtInModels: string[];
+  manualModels: string[];
   modelsStatus: 'supported' | 'unsupported' | 'unknown';
+  warnings: string[];
   responses: ProAccountProtocolResult;
   chatCompletions: ProAccountProtocolResult;
   basicConnectivity: ProAccountProtocolResult;
   errorCode?: string;
   retryable: boolean;
+}
+
+export interface ProAccountModelCatalog {
+  models: string[];
+  upstream: string[];
+  builtIn: string[];
+  manual: string[];
+  upstreamStatus: 'supported' | 'unknown';
+  warnings: string[];
 }
 
 export interface ProAccountConnectivityResult {
@@ -301,6 +314,7 @@ export interface ProAccountCreateVertexInput {
   modelMapping: Record<string, string>;
   testModel: string;
   saveDisabledOnTestFailure: boolean;
+  draftOnly?: boolean;
 }
 
 export interface ProAccountUpdateInput {
@@ -424,6 +438,36 @@ export const proAccountsApi = {
     }
   },
 
+  async modelCatalog(base: string, managementKey: string, id: string) {
+    try {
+      const response = await axios.get<ProAccountModelCatalog>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(id)}/models`),
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async staticModelCatalog(
+    base: string,
+    managementKey: string,
+    platform: string,
+    authType: string
+  ) {
+    const query = new URLSearchParams({ platform, auth_type: authType });
+    try {
+      const response = await axios.get<ProAccountModelCatalog>(
+        buildURL(base, '/v0/pro/accounts/model-catalog', query),
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
   async sync(base: string, managementKey: string, dryRun = false) {
     try {
       const response = await axios.post<ProAccountSyncResponse>(
@@ -502,6 +546,7 @@ export const proAccountsApi = {
     form.append('model_mapping', JSON.stringify(input.modelMapping));
     form.append('test_model', input.testModel);
     form.append('save_disabled_on_test_failure', String(input.saveDisabledOnTestFailure));
+    form.append('draft_only', String(Boolean(input.draftOnly)));
     try {
       const response = await axios.post<ProAccountLifecycleResult>(
         buildURL(base, '/v0/pro/accounts/vertex'),
@@ -552,6 +597,19 @@ export const proAccountsApi = {
     try {
       const response = await axios.post<ProAccountOAuthResult>(
         buildURL(base, '/v0/pro/accounts/oauth/cancel'),
+        { operation_id: operationId },
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async cancelDraft(base: string, managementKey: string, operationId: string) {
+    try {
+      const response = await axios.post<ProAccountOAuthResult>(
+        buildURL(base, '/v0/pro/accounts/drafts/cancel'),
         { operation_id: operationId },
         requestConfig(managementKey)
       );

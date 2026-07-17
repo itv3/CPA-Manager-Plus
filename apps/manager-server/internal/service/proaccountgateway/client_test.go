@@ -130,3 +130,31 @@ func TestEditableHeadersExcludeCredentialValues(t *testing.T) {
 		t.Fatalf("可编辑 Header = %#v", result)
 	}
 }
+
+func TestClientReadsRuntimeAndBuiltInModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files/models":
+			if r.URL.Query().Get("name") != "auth index" {
+				http.Error(w, "invalid name", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"models":[{"id":"runtime-a"},{"id":"runtime-b"}]}`))
+		case "/v0/management/model-definitions/codex":
+			_, _ = w.Write([]byte(`{"models":[{"id":"built-in-a"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.Client())
+	runtime, err := client.ListRuntimeModels(context.Background(), server.URL, "management-key", "auth index", "")
+	if err != nil || !reflect.DeepEqual(runtime, []string{"runtime-a", "runtime-b"}) {
+		t.Fatalf("运行时模型 = %#v, err=%v", runtime, err)
+	}
+	builtIn, err := client.ListBuiltInModels(context.Background(), server.URL, "management-key", "codex")
+	if err != nil || !reflect.DeepEqual(builtIn, []string{"built-in-a"}) {
+		t.Fatalf("内置模型 = %#v, err=%v", builtIn, err)
+	}
+}

@@ -46,6 +46,7 @@ type CreateVertexInput struct {
 	ModelMapping   map[string]string
 	TestModel      string
 	SaveDisabled   bool
+	DraftOnly      bool
 }
 
 type MutationInput struct {

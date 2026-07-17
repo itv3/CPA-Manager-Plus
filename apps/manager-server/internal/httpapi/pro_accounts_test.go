@@ -164,7 +164,7 @@ func TestProAccountOAuthDraftCanCompleteAndCancel(t *testing.T) {
 		"operation_id":"oauth-cancel-operation","idempotency_key":"oauth-cancel-key","platform":"openai"
 	}`, testutil.AdminKey)
 	testutil.RequireStatus(t, cancelStartRR, http.StatusCreated)
-	cancelRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/oauth/cancel", `{
+	cancelRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/drafts/cancel", `{
 		"operation_id":"oauth-cancel-operation"
 	}`, testutil.AdminKey)
 	testutil.RequireStatus(t, cancelRR, http.StatusOK)
@@ -408,6 +408,14 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 			_, _ = w.Write([]byte(`{"files":[]}`))
 		case "/v0/management/gemini-api-key":
 			_, _ = w.Write([]byte(`{"gemini-api-key":[{"api-key":"secret-not-persisted","base-url":"https://gemini.example/v1beta","auth-index":"auth-gemini","allowed-models":["gemini-test"],"model-rule-version":"rule-gemini"}]}`))
+		case "/v0/management/auth-files/models":
+			if r.URL.Query().Get("name") != "auth-gemini" {
+				http.Error(w, "invalid auth index", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"models":[{"id":"upstream-gemini"}]}`))
+		case "/v0/management/model-definitions/aistudio":
+			_, _ = w.Write([]byte(`{"models":[{"id":"built-in-gemini"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -429,6 +437,17 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 	testutil.RequireStatus(t, listRR, http.StatusOK)
 	if !strings.Contains(listRR.Body.String(), `"sourceType":"config_gemini_api_key"`) || !strings.Contains(listRR.Body.String(), `"authIndex":"auth-gemini"`) {
 		t.Fatalf("配置账号未同步：%s", listRR.Body.String())
+	}
+	var listResult struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	testutil.DecodeJSON(t, listRR, &listResult)
+	modelsRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts/"+listResult.Items[0].ID+"/models", "", testutil.AdminKey)
+	testutil.RequireStatus(t, modelsRR, http.StatusOK)
+	if !strings.Contains(modelsRR.Body.String(), `"models":["upstream-gemini","built-in-gemini","gemini-test"]`) || !strings.Contains(modelsRR.Body.String(), `"upstreamStatus":"supported"`) {
+		t.Fatalf("模型目录响应 = %s", modelsRR.Body.String())
 	}
 }
 

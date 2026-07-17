@@ -137,6 +137,10 @@ func (s *Service) OAuthStatus(ctx context.Context, operationID string) (OAuthRes
 }
 
 func (s *Service) CancelOAuth(ctx context.Context, operationID string) (OAuthResult, error) {
+	return s.CancelDraft(ctx, operationID)
+}
+
+func (s *Service) CancelDraft(ctx context.Context, operationID string) (OAuthResult, error) {
 	operation, err := s.operations.Get(ctx, strings.TrimSpace(operationID))
 	if err != nil {
 		return OAuthResult{}, err

@@ -59,7 +59,8 @@ func (s *Service) start(ctx context.Context, operationID string, idempotencyKey 
 	if err != nil {
 		return model.ProAccountDraft{}, false, err
 	}
-	if !created && (operation.OperationType != operationType || operation.ProAccountID != strings.TrimSpace(accountID)) {
+	expectedAccountID := strings.TrimSpace(accountID)
+	if !created && (operation.OperationType != operationType || (expectedAccountID != "" && operation.ProAccountID != expectedAccountID)) {
 		return operation, false, ErrOperationConflict
 	}
 	return operation, created, nil

@@ -68,6 +68,26 @@ describe('proAccountsApi', () => {
     expect(config.headers.Authorization).toBe('Bearer admin-key');
   });
 
+  it('通过 Manager 私有路由读取账号和平台模型目录', async () => {
+    mocks.get.mockResolvedValue({ data: { models: [], upstream: [], builtIn: [], manual: [] } });
+
+    await proAccountsApi.modelCatalog('https://manager.example', 'admin-key', 'account/with space');
+    await proAccountsApi.staticModelCatalog(
+      'https://manager.example',
+      'admin-key',
+      'gemini',
+      'vertex'
+    );
+
+    expect(mocks.get.mock.calls[0][0]).toBe(
+      'https://manager.example/v0/pro/accounts/account%2Fwith%20space/models'
+    );
+    expect(mocks.get.mock.calls[1][0]).toBe(
+      'https://manager.example/v0/pro/accounts/model-catalog?platform=gemini&auth_type=vertex'
+    );
+    expect(mocks.get.mock.calls[1][1].headers.Authorization).toBe('Bearer admin-key');
+  });
+
   it('API 分支不会把凭证写入 URL，并复用操作标识完成探测和创建', async () => {
     mocks.post.mockResolvedValue({ data: { probe: { sourceType: 'config_codex_api_key' } } });
     const input = {
@@ -132,6 +152,7 @@ describe('proAccountsApi', () => {
       }
     );
     await proAccountsApi.cancelOAuth('https://manager.example', 'admin-key', 'oauth-1');
+    await proAccountsApi.cancelDraft('https://manager.example', 'admin-key', 'oauth-1');
 
     expect(mocks.post.mock.calls[0][0]).toContain('/v0/pro/accounts/oauth/start');
     expect(mocks.get.mock.calls[0][0]).toContain(
@@ -141,6 +162,12 @@ describe('proAccountsApi', () => {
     expect(mocks.post.mock.calls[2]).toEqual(
       expect.arrayContaining([
         'https://manager.example/v0/pro/accounts/oauth/cancel',
+        { operation_id: 'oauth-1' },
+      ])
+    );
+    expect(mocks.post.mock.calls[3]).toEqual(
+      expect.arrayContaining([
+        'https://manager.example/v0/pro/accounts/drafts/cancel',
         { operation_id: 'oauth-1' },
       ])
     );
@@ -161,6 +188,7 @@ describe('proAccountsApi', () => {
       modelMapping: { gemini: 'gemini-2.5-pro' },
       testModel: 'gemini',
       saveDisabledOnTestFailure: false,
+      draftOnly: true,
     });
 
     const [url, form, config] = mocks.post.mock.calls[0] as [
@@ -172,6 +200,7 @@ describe('proAccountsApi', () => {
     expect(form.get('file')).toBe(file);
     expect(form.get('allowed_models')).toBe('["gemini-2.5-pro"]');
     expect(form.get('model_mapping')).toBe('{"gemini":"gemini-2.5-pro"}');
+    expect(form.get('draft_only')).toBe('true');
     expect(config.headers['Idempotency-Key']).toBe('vertex-key');
   });
 

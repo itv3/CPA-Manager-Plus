@@ -16,6 +16,7 @@ import {
   accountDisplayName,
   authTypesForPlatform,
   createRequestIdentity,
+  formatModelLines,
   parseHeaderLines,
   parseMappingLines,
   parseModelLines,
@@ -208,10 +209,27 @@ export function AccountWizardModal({
       if (result.account && result.status === 'ok') {
         setDraftAccount(result.account);
         setOAuthWaiting(false);
-        setDiscoveredModels(result.account.allowedModels ?? []);
-        setSelectedModels(result.account.allowedModels ?? []);
-        setAllowAll((result.account.allowedModels?.length ?? 0) === 0);
-        setTestModel(result.account.allowedModels?.[0] ?? '');
+        const savedModels = result.account.allowedModels ?? [];
+        try {
+          const catalog = await proAccountsApi.modelCatalog(
+            managerBase,
+            managementKey,
+            result.account.id
+          );
+          setDiscoveredModels(catalog.models ?? []);
+          setSelectedModels(savedModels.filter((model) => !model.includes('*')));
+          setManualModels(formatModelLines(savedModels.filter((model) => model.includes('*'))));
+          setTestModel(
+            suggestedTestModel('', savedModels, result.account.modelMapping, catalog.models ?? [])
+          );
+        } catch {
+          setDiscoveredModels(savedModels.filter((model) => !model.includes('*')));
+          setSelectedModels([]);
+          setManualModels(formatModelLines(savedModels));
+          setTestModel(suggestedTestModel('', savedModels, result.account.modelMapping));
+          setError('模型目录同步失败，可手工添加模型后继续');
+        }
+        setAllowAll(savedModels.length === 0);
         setStep(2);
         oauthWindowRef.current?.close();
         oauthWindowRef.current = null;
@@ -284,8 +302,43 @@ export function AccountWizardModal({
       setError('请输入 Vertex 地区');
       return;
     }
+    setBusy(true);
     setError('');
-    setStep(2);
+    void (async () => {
+      try {
+        const result = await proAccountsApi.createVertex(managerBase, managementKey, {
+          ...operationIdentity,
+          file: vertexFile,
+          location: location.trim(),
+          allowedModels: [],
+          modelMapping: {},
+          testModel: '',
+          saveDisabledOnTestFailure: false,
+          draftOnly: true,
+        });
+        setDraftAccount(result.account);
+        try {
+          const catalog = await proAccountsApi.modelCatalog(
+            managerBase,
+            managementKey,
+            result.account.id
+          );
+          setDiscoveredModels(catalog.models ?? []);
+          setSelectedModels([]);
+          setTestModel(catalog.models?.[0] ?? '');
+        } catch {
+          setDiscoveredModels([]);
+          setSelectedModels([]);
+          setError('模型目录同步失败，可手工添加模型后继续');
+        }
+        setStep(2);
+      } catch (vertexError) {
+        setOperationIdentity(createRequestIdentity('account-add'));
+        setError(vertexError instanceof Error ? vertexError.message : String(vertexError));
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
 
   const advanceFromModels = () => {
@@ -326,11 +379,10 @@ export function AccountWizardModal({
           saveDisabledOnTestFailure: saveDisabled,
         });
       } else if (authType === 'vertex') {
-        if (!vertexFile) throw new Error('请选择 Service Account JSON 文件');
-        result = await proAccountsApi.createVertex(managerBase, managementKey, {
-          ...operationIdentity,
-          file: vertexFile,
-          location: location.trim(),
+        if (!draftAccount) throw new Error('Vertex 凭证草稿尚未保存');
+        result = await proAccountsApi.completeDraft(managerBase, managementKey, draftAccount.id, {
+          operationId: operationIdentity.operationId,
+          expectedVersion: draftAccount.version,
           ...resolvedRules,
           saveDisabledOnTestFailure: saveDisabled,
         });
@@ -349,7 +401,7 @@ export function AccountWizardModal({
     } catch (submitError) {
       setApiKey('');
       setError(submitError instanceof Error ? submitError.message : String(submitError));
-      if (authType !== 'oauth') setOperationIdentity(createRequestIdentity('account-add'));
+      if (authType === 'api') setOperationIdentity(createRequestIdentity('account-add'));
     } finally {
       setBusy(false);
     }
@@ -357,10 +409,10 @@ export function AccountWizardModal({
 
   const close = async () => {
     if (busy) return;
-    if (authType === 'oauth' && (oauthWaiting || draftAccount)) {
+    if ((authType === 'oauth' || authType === 'vertex') && (oauthWaiting || draftAccount)) {
       setBusy(true);
       try {
-        await proAccountsApi.cancelOAuth(managerBase, managementKey, operationIdentity.operationId);
+        await proAccountsApi.cancelDraft(managerBase, managementKey, operationIdentity.operationId);
       } catch (cancelError) {
         setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
         setBusy(false);
@@ -395,7 +447,7 @@ export function AccountWizardModal({
           variant="secondary"
           size="sm"
           onClick={() => setStep((value) => Math.max(0, value - 1))}
-          disabled={busy || oauthWaiting}
+          disabled={busy || oauthWaiting || Boolean(draftAccount)}
         >
           上一步
         </Button>
