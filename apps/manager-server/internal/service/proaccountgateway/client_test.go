@@ -3,9 +3,11 @@ package proaccountgateway
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -20,7 +22,7 @@ func TestSnapshotIncludesConfigAccountsAndCapabilities(t *testing.T) {
 		case "/v0/management/auth-files":
 			w.Header().Set("X-CPA-SUPPORT-CREDENTIAL-DRAFT", "true")
 			w.Header().Set("X-CPA-SUPPORT-ALLOWED-MODELS", "true")
-			_, _ = w.Write([]byte(`{"files":[{"name":"codex.json","provider":"codex","auth_index":"auth-oauth","allowed_models":["gpt-oauth"],"model_rule_version":"rule-oauth"}]}`))
+			_, _ = w.Write([]byte(`{"files":[{"name":"codex.json","provider":"codex","auth_index":"auth-oauth","id_token":{"plan_type":"free"},"allowed_models":["gpt-oauth"],"model_rule_version":"rule-oauth"}]}`))
 		case "/v0/management/gemini-api-key":
 			_, _ = w.Write([]byte(`{"gemini-api-key":[{"api-key":"不得返回","base-url":"https://gemini.example/v1beta","auth-index":"auth-gemini","allowed-models":["gemini-test"],"model-rule-version":"rule-gemini"}]}`))
 		case "/v0/management/claude-api-key":
@@ -40,6 +42,9 @@ func TestSnapshotIncludesConfigAccountsAndCapabilities(t *testing.T) {
 	}
 	if len(result.Accounts) != 2 {
 		t.Fatalf("账号 = %#v", result.Accounts)
+	}
+	if result.Accounts[0].PlanType != "free" {
+		t.Fatalf("套餐类型 = %q", result.Accounts[0].PlanType)
 	}
 	if result.Accounts[1].SourceType != SourceGeminiAPIKey || result.Accounts[1].AuthIndex != "auth-gemini" {
 		t.Fatalf("配置账号 = %#v", result.Accounts[1])
@@ -132,28 +137,37 @@ func TestEditableHeadersExcludeCredentialValues(t *testing.T) {
 }
 
 func TestClientReadsRuntimeAndBuiltInModels(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	httpClient := &http.Client{Transport: rulesRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		payload := ""
 		switch r.URL.Path {
 		case "/v0/management/auth-files/models":
-			if r.URL.Query().Get("name") != "auth index" {
-				http.Error(w, "invalid name", http.StatusBadRequest)
-				return
+			if r.URL.Query().Get("auth_index") != "auth index" {
+				status = http.StatusBadRequest
+				payload = `{"error":"invalid auth index"}`
+				break
 			}
-			_, _ = w.Write([]byte(`{"models":[{"id":"runtime-a"},{"id":"runtime-b"}]}`))
+			payload = `{"models":[{"id":"runtime-a"},{"id":"runtime-b"}]}`
 		case "/v0/management/model-definitions/codex":
-			_, _ = w.Write([]byte(`{"models":[{"id":"built-in-a"}]}`))
+			payload = `{"models":[{"id":"built-in-a"}]}`
 		default:
-			http.NotFound(w, r)
+			status = http.StatusNotFound
+			payload = `{"error":"not found"}`
 		}
-	}))
-	defer server.Close()
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+			Request:    r,
+		}, nil
+	})}
 
-	client := New(server.Client())
-	runtime, err := client.ListRuntimeModels(context.Background(), server.URL, "management-key", "auth index", "")
+	client := New(httpClient)
+	runtime, err := client.ListRuntimeModels(context.Background(), "http://gateway.test", "management-key", "auth index", "")
 	if err != nil || !reflect.DeepEqual(runtime, []string{"runtime-a", "runtime-b"}) {
 		t.Fatalf("运行时模型 = %#v, err=%v", runtime, err)
 	}
-	builtIn, err := client.ListBuiltInModels(context.Background(), server.URL, "management-key", "codex")
+	builtIn, err := client.ListBuiltInModels(context.Background(), "http://gateway.test", "management-key", "codex")
 	if err != nil || !reflect.DeepEqual(builtIn, []string{"built-in-a"}) {
 		t.Fatalf("内置模型 = %#v, err=%v", builtIn, err)
 	}

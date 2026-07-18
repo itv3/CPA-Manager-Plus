@@ -272,6 +272,50 @@ func TestCostForModelCandidatesWithServiceTierFallsBackToRequestedModel(t *testi
 	}
 }
 
+func TestCostForModelCandidatesWithServiceTierKnownDistinguishesZeroAndMissingPrice(t *testing.T) {
+	t.Run("请求模型价格回退", func(t *testing.T) {
+		cost, known := CostForModelCandidatesWithServiceTierKnown(
+			[]string{"missing-upstream", "gpt-5.4"},
+			"default",
+			ModelTokens{InputTokens: 1_000_000},
+			map[string]model.ModelPrice{"gpt-5.4": {Prompt: 2.5}},
+		)
+		if !known || math.Abs(cost-2.5) > 0.000001 {
+			t.Fatalf("请求模型回退：cost=%v known=%v", cost, known)
+		}
+	})
+
+	t.Run("明确配置的零价格", func(t *testing.T) {
+		cost, known := CostForModelCandidatesWithServiceTierKnown(
+			[]string{"free-model"},
+			"default",
+			ModelTokens{InputTokens: 1_000_000},
+			map[string]model.ModelPrice{"free-model": {PromptConfigured: true, CompletionConfigured: true}},
+		)
+		if !known || cost != 0 {
+			t.Fatalf("零价格：cost=%v known=%v", cost, known)
+		}
+	})
+
+	t.Run("GPT-5.6 内置价格即使零 Token 也已知", func(t *testing.T) {
+		cost, known := CostForModelCandidatesWithServiceTierKnown(
+			[]string{"openai/gpt-5.6-sol"}, "default", ModelTokens{}, nil,
+		)
+		if !known || cost != 0 {
+			t.Fatalf("GPT-5.6 内置价格：cost=%v known=%v", cost, known)
+		}
+	})
+
+	t.Run("缺少价格", func(t *testing.T) {
+		cost, known := CostForModelCandidatesWithServiceTierKnown(
+			[]string{"missing-model"}, "default", ModelTokens{InputTokens: 1}, nil,
+		)
+		if known || cost != 0 {
+			t.Fatalf("缺少价格：cost=%v known=%v", cost, known)
+		}
+	})
+}
+
 func TestCostForModelCandidatesWithServiceTierPrefersResolvedModel(t *testing.T) {
 	prices := map[string]model.ModelPrice{
 		"gpt-resolved": {Prompt: 1, Completion: 2, Cache: 0.5},

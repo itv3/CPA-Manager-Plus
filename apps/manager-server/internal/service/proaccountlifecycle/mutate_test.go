@@ -34,6 +34,11 @@ type migrationRepository struct {
 	rebindErr error
 }
 
+// Sync 在删除/替换后被 syncBindingsAfterMutation 调用,测试中无需刷新绑定
+func (r *migrationRepository) Sync(_ context.Context, _ []model.ProAccountDiscovery, _ int64, _ bool) (model.ProAccountSyncResult, error) {
+	return model.ProAccountSyncResult{}, nil
+}
+
 func (r *migrationRepository) RebindManaged(_ context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error) {
 	if r.rebindErr != nil {
 		return model.ProAccount{}, r.rebindErr
@@ -107,6 +112,7 @@ type migrationGateway struct {
 	Gateway
 	accounts       map[string]proaccountgateway.AccountSnapshot
 	replacement    proaccountgateway.AccountSnapshot
+	createErr      error
 	failEnableAuth string
 	deleteErrors   map[string]error
 	calls          []string
@@ -119,7 +125,7 @@ func (g *migrationGateway) EditableAccount(context.Context, string, string, stri
 func (g *migrationGateway) CreateDisabledAPI(context.Context, string, string, proaccountgateway.CreateAPIInput) (proaccountgateway.AccountSnapshot, error) {
 	g.accounts[g.replacement.AuthIndex] = g.replacement
 	g.calls = append(g.calls, "create:"+g.replacement.AuthIndex)
-	return g.replacement, nil
+	return g.replacement, g.createErr
 }
 
 func (g *migrationGateway) TestAccount(context.Context, string, string, proaccountgateway.AccountReference, string) (proaccountgateway.ConnectivityResult, error) {
@@ -231,6 +237,27 @@ func TestMigrateAPIRestoresOldCredentialWhenReplacementEnableFails(t *testing.T)
 	}
 	if state.account.Binding.AuthIndex != "auth-old" {
 		t.Fatalf("失败迁移改变了 Manager 绑定：%#v", state.account.Binding)
+	}
+}
+
+func TestMigrateAPICleansReplacementWhenRuntimeReadinessFails(t *testing.T) {
+	service, state, gateway, _ := newMigrationService()
+	gateway.createErr = proaccountgateway.ErrCredentialNotReady
+	result, err := service.Update(context.Background(), migrationUpdateInput())
+	if err == nil {
+		t.Fatal("替换凭证运行时未就绪时应返回错误")
+	}
+	if result.Operation.State != model.ProOperationStateFailed {
+		t.Fatalf("失败迁移终态 = %#v", result.Operation)
+	}
+	if _, replacementExists := gateway.accounts["auth-new"]; replacementExists {
+		t.Fatal("运行时未就绪后遗留了替换凭证")
+	}
+	if oldAccount, oldExists := gateway.accounts["auth-old"]; !oldExists || !oldAccount.Enabled {
+		t.Fatalf("运行时未就绪影响了旧凭证：%#v", gateway.accounts)
+	}
+	if state.account.Binding.AuthIndex != "auth-old" {
+		t.Fatalf("运行时未就绪改变了 Manager 绑定：%#v", state.account.Binding)
 	}
 }
 

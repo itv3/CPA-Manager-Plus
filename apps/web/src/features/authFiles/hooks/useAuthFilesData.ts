@@ -248,11 +248,13 @@ export const prepareAuthFilesForUpload = async (files: File[]): Promise<Prepared
 
 type UseAuthFilesDataOptions = {
   connectionFingerprint?: string | null;
+  onStatusMutationCommitted?: () => Promise<void>;
 };
 
 export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuthFilesDataResult {
   const { t } = useTranslation();
   const { showNotification, showConfirmation } = useNotificationStore();
+  const { connectionFingerprint, onStatusMutationCommitted } = options;
 
   const [files, setFiles] = useState<AuthFileItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -273,12 +275,25 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
   const selectionCount = selectedFiles.size;
   const clearInspectionOwnershipForFile = useCallback(
     (fileName: string) => {
-      const scope = options.connectionFingerprint?.trim();
+      const scope = connectionFingerprint?.trim();
       if (!scope) return;
       clearCodexInspectionDisableOwnership(scope, fileName);
     },
-    [options.connectionFingerprint]
+    [connectionFingerprint]
   );
+  const syncUnifiedAccountProjection = useCallback(async () => {
+    if (!onStatusMutationCommitted) return;
+    try {
+      await onStatusMutationCommitted();
+    } catch (syncError) {
+      showNotification(
+        `认证状态已修改，但统一账号同步失败：${
+          syncError instanceof Error ? syncError.message : String(syncError)
+        }。可在统一账号页面手动同步。`,
+        'warning'
+      );
+    }
+  }, [onStatusMutationCommitted, showNotification]);
   const toggleSelect = useCallback((key: string) => {
     setSelectedFiles((prev) => {
       const next = new Set(prev);
@@ -800,6 +815,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
           prev.map((f) => (f.name === name ? { ...f, disabled: res.disabled } : f))
         );
         clearInspectionOwnershipForFile(name);
+        await syncUnifiedAccountProjection();
         showNotification(
           enabled
             ? t('auth_files.status_enabled_success', { name })
@@ -821,7 +837,7 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
         });
       }
     },
-    [clearInspectionOwnershipForFile, showNotification, t]
+    [clearInspectionOwnershipForFile, showNotification, syncUnifiedAccountProjection, t]
   );
 
   const batchSetStatus = useCallback(
@@ -892,6 +908,10 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
           })
         );
 
+        if (successCount > 0) {
+          await syncUnifiedAccountProjection();
+        }
+
         if (failCount === 0) {
           showNotification(
             t('auth_files.batch_status_success', { count: successCount }),
@@ -917,7 +937,15 @@ export function useAuthFilesData(options: UseAuthFilesDataOptions = {}): UseAuth
         });
       }
     },
-    [clearInspectionOwnershipForFile, deselectAll, files, showNotification, statusUpdating, t]
+    [
+      clearInspectionOwnershipForFile,
+      deselectAll,
+      files,
+      showNotification,
+      statusUpdating,
+      syncUnifiedAccountProjection,
+      t,
+    ]
   );
 
   const batchPatchFields = useCallback(

@@ -46,8 +46,15 @@ func (s *Service) Recover(ctx context.Context, operation model.ProAccountDraft) 
 				sourceLocator = account.Binding.SourceLocator
 			}
 		}
-		if sourceType != "" && sourceLocator != "" {
-			if deleteErr := s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, sourceType, sourceLocator); deleteErr != nil && !gatewayNotFound(deleteErr) {
+		// 优先按稳定的 auth_index 定位后删除:配置数组索引会随其它条目删除而前移,
+		// 直接使用记录中的旧 index 可能命中其它账号或返回 HTTP 400 导致恢复循环卡死。
+		authIndex := recoveryAuthIndex(operation, account)
+		if authIndex != "" {
+			if deleteErr := s.deleteAccountByAuthIndex(ctx, setup, authIndex); deleteErr != nil {
+				return deleteErr
+			}
+		} else if sourceType != "" && sourceLocator != "" {
+			if deleteErr := s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, sourceType, sourceLocator); deleteErr != nil && !gatewayGone(deleteErr) {
 				return deleteErr
 			}
 		}
@@ -164,9 +171,25 @@ func recoveryCredentialLocator(operation model.ProAccountDraft) (string, string)
 	return contextString(operation.Context, "sourceType"), contextString(operation.Context, "sourceLocator")
 }
 
-func gatewayNotFound(err error) bool {
+// recoveryAuthIndex 返回补偿删除应使用的稳定凭证标识。
+func recoveryAuthIndex(operation model.ProAccountDraft, account model.ProAccount) string {
+	if operation.CompensationAction == "delete_replacement_credential" {
+		return strings.TrimSpace(contextString(operation.Context, "replacementAuthIndex"))
+	}
+	if value := strings.TrimSpace(contextString(operation.Context, "authIndex")); value != "" {
+		return value
+	}
+	if account.Binding != nil {
+		return strings.TrimSpace(account.Binding.AuthIndex)
+	}
+	return ""
+}
+
+// gatewayGone 判断 Gateway 已无法按记录定位到目标凭证:
+// 404 表示不存在,400 通常为配置数组索引已越界(条目已被删除)。
+func gatewayGone(err error) bool {
 	var gatewayErr *proaccountgateway.GatewayError
-	return errors.As(err, &gatewayErr) && gatewayErr.StatusCode == 404
+	return errors.As(err, &gatewayErr) && (gatewayErr.StatusCode == 404 || gatewayErr.StatusCode == 400)
 }
 
 func stringSlice(value any) []string {

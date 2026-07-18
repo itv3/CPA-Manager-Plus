@@ -8,11 +8,8 @@ import {
   createRequestIdentity,
   formatHeaderLines,
   formatMappingLines,
-  formatModelLines,
   parseHeaderLines,
-  parseMappingLines,
-  parseModelLines,
-  suggestedTestModel,
+  resolveAccountModelRules,
 } from './accountFormUtils';
 import styles from './AccountModals.module.scss';
 
@@ -24,6 +21,19 @@ interface AccountEditModalProps {
   onClose: () => void;
   onSaved: (result: ProAccountLifecycleResult) => void;
 }
+
+const mergeUnique = (current: string[], additions: string[]) => {
+  const seen = new Set(current.map((item) => item.toLowerCase()));
+  const merged = [...current];
+  additions.forEach((item) => {
+    const normalized = item.trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) return;
+    seen.add(key);
+    merged.push(normalized);
+  });
+  return merged;
+};
 
 export function AccountEditModal({
   open,
@@ -37,19 +47,20 @@ export function AccountEditModal({
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [originalBaseUrl, setOriginalBaseUrl] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [originalProxyUrl, setOriginalProxyUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [protocolMode, setProtocolMode] = useState('auto');
   const [headerLines, setHeaderLines] = useState('');
   const [originalHeaderLines, setOriginalHeaderLines] = useState('');
-  const [allowAll, setAllowAll] = useState(true);
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
-  const [selectedModels, setSelectedModels] = useState<string[]>([]);
-  const [manualModels, setManualModels] = useState('');
+  const [whitelistModels, setWhitelistModels] = useState<string[]>([]);
+  const [catalogModels, setCatalogModels] = useState<string[]>([]);
   const [mappingLines, setMappingLines] = useState('');
-  const [testModel, setTestModel] = useState('');
   const [sharedProvider, setSharedProvider] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [syncingBuiltIn, setSyncingBuiltIn] = useState(false);
+  const [syncingUpstream, setSyncingUpstream] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -65,29 +76,17 @@ export function AccountEditModal({
       .then(([result, catalog]) => {
         if (cancelled) return;
         const headers = formatHeaderLines(result.editable.headers ?? {});
-        const discovered = catalog?.models ?? [];
-        const discoveredKeys = new Set(discovered.map((model) => model.toLowerCase()));
-        const selected = result.item.allowedModels.filter(
-          (model) => !model.includes('*') && discoveredKeys.has(model.toLowerCase())
-        );
-        const selectedKeys = new Set(selected.map((model) => model.toLowerCase()));
-        const manual = result.item.allowedModels.filter(
-          (model) => !selectedKeys.has(model.toLowerCase())
-        );
         setCurrent(result.item);
         setName(result.item.name ?? '');
         setBaseUrl(result.editable.baseUrl ?? '');
         setOriginalBaseUrl(result.editable.baseUrl ?? '');
+        setProxyUrl(result.editable.proxyUrl ?? '');
+        setOriginalProxyUrl(result.editable.proxyUrl ?? '');
         setHeaderLines(headers);
         setOriginalHeaderLines(headers);
-        setAllowAll(result.item.allowedModels.length === 0);
-        setDiscoveredModels(discovered);
-        setSelectedModels(selected);
-        setManualModels(formatModelLines(manual));
+        setWhitelistModels(result.item.allowedModels);
+        setCatalogModels(catalog?.models ?? []);
         setMappingLines(formatMappingLines(result.item.modelMapping));
-        setTestModel(
-          suggestedTestModel('', result.item.allowedModels, result.item.modelMapping, discovered)
-        );
         setSharedProvider(result.editable.sharedProvider);
       })
       .catch((loadError) => {
@@ -102,6 +101,7 @@ export function AccountEditModal({
     };
   }, [account, managementKey, managerBase, open]);
 
+  // 需要重建凭证的变更:换 Key、改 Base URL 或 Headers;代理变更走热更新,不强制换 Key
   const credentialsChanged = useMemo(
     () =>
       apiKey.trim() !== '' ||
@@ -109,6 +109,56 @@ export function AccountEditModal({
       headerLines.trim() !== originalHeaderLines.trim(),
     [apiKey, baseUrl, headerLines, originalBaseUrl, originalHeaderLines]
   );
+  const proxyChanged = useMemo(
+    () => proxyUrl.trim() !== originalProxyUrl.trim(),
+    [proxyUrl, originalProxyUrl]
+  );
+
+  const syncBuiltInModels = async () => {
+    if (!current) return;
+    setSyncingBuiltIn(true);
+    setError('');
+    try {
+      const catalog = await proAccountsApi.staticModelCatalog(
+        managerBase,
+        managementKey,
+        current.platform,
+        current.authType
+      );
+      const builtIn = catalog.builtIn?.length ? catalog.builtIn : (catalog.models ?? []);
+      if (builtIn.length === 0) {
+        setError('项目内置目录暂无该平台模型，可同步上游支持的模型或填入自定义模型名称');
+        return;
+      }
+      setCatalogModels((value) => mergeUnique(value, builtIn));
+      setWhitelistModels((value) => mergeUnique(value, builtIn));
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : String(syncError));
+    } finally {
+      setSyncingBuiltIn(false);
+    }
+  };
+
+  const syncUpstreamModels = async () => {
+    if (!current) return;
+    setSyncingUpstream(true);
+    setError('');
+    try {
+      const catalog = await proAccountsApi.modelCatalog(managerBase, managementKey, current.id);
+      const models = catalog.models ?? [];
+      const upstream = catalog.upstream?.length ? catalog.upstream : models;
+      if (models.length === 0) {
+        setError('上游未提供模型列表，可同步最新支持模型或填入自定义模型名称');
+        return;
+      }
+      setCatalogModels((value) => mergeUnique(value, models));
+      setWhitelistModels((value) => mergeUnique(value, upstream));
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : String(syncError));
+    } finally {
+      setSyncingUpstream(false);
+    }
+  };
 
   const submit = async () => {
     if (!current) return;
@@ -117,15 +167,12 @@ export function AccountEditModal({
       return;
     }
     try {
-      const allowedModels = allowAll
-        ? []
-        : [...new Set([...selectedModels, ...parseModelLines(manualModels)])];
-      const modelMapping = parseMappingLines(mappingLines);
+      const resolved = resolveAccountModelRules({
+        models: whitelistModels,
+        mappingLines,
+        discoveredModels: catalogModels,
+      });
       const headers = parseHeaderLines(headerLines);
-      const resolvedTestModel = suggestedTestModel(testModel, allowedModels, modelMapping);
-      if (credentialsChanged && !resolvedTestModel) {
-        throw new Error('更换凭证时必须填写连通性测试模型');
-      }
       const identity = createRequestIdentity('account-edit');
       setSaving(true);
       setError('');
@@ -135,11 +182,12 @@ export function AccountEditModal({
         name: name.trim(),
         baseUrl: credentialsChanged ? baseUrl.trim() : undefined,
         apiKey: credentialsChanged ? apiKey : undefined,
+        proxyUrl: credentialsChanged || proxyChanged ? proxyUrl.trim() : undefined,
         protocolMode: credentialsChanged ? protocolMode : undefined,
         headers: credentialsChanged ? headers : undefined,
-        allowedModels,
-        modelMapping,
-        testModel: credentialsChanged ? resolvedTestModel : undefined,
+        allowedModels: resolved.allowedModels,
+        modelMapping: resolved.modelMapping,
+        testModel: credentialsChanged ? resolved.testModel : undefined,
       });
       setApiKey('');
       onSaved(result);
@@ -157,6 +205,7 @@ export function AccountEditModal({
       <Button variant="secondary" size="sm" onClick={onClose} disabled={saving}>
         取消
       </Button>
+      <span className={styles.footerSpacer} />
       <Button
         variant="primary"
         size="sm"
@@ -224,6 +273,19 @@ export function AccountEditModal({
                     </select>
                   </label>
                   <label className={`${styles.field} ${styles.fieldFull}`}>
+                    <span className={styles.fieldLabel}>代理 URL</span>
+                    <input
+                      className={styles.input}
+                      value={proxyUrl}
+                      onChange={(event) => setProxyUrl(event.target.value)}
+                      placeholder="http:// 或 socks5://，留空直连"
+                      autoComplete="off"
+                    />
+                    <span className={styles.fieldHint}>
+                      可选；仅此账号的上游请求经该代理转发，修改代理无需重新填写 API Key。
+                    </span>
+                  </label>
+                  <label className={`${styles.field} ${styles.fieldFull}`}>
                     <span className={styles.fieldLabel}>新 API Key</span>
                     <input
                       className={styles.input}
@@ -246,24 +308,34 @@ export function AccountEditModal({
                   </label>
                   {sharedProvider ? (
                     <div className={`${styles.sharedWarning} ${styles.fieldFull}`}>
-                      Base URL、Headers 和模型目录由同一 Provider 的多个 Key 共享。
+                      Base URL、Headers 和模型目录由同一 Provider 的多个 Key 共享；代理 URL
+                      仅作用于当前 Key。
                     </div>
                   ) : null}
                 </>
-              ) : null}
+              ) : (
+                <label className={`${styles.field} ${styles.fieldFull}`}>
+                  <span className={styles.fieldLabel}>代理 URL</span>
+                  <input
+                    className={styles.input}
+                    value={proxyUrl}
+                    onChange={(event) => setProxyUrl(event.target.value)}
+                    placeholder="http:// 或 socks5://，留空直连"
+                    autoComplete="off"
+                  />
+                  <span className={styles.fieldHint}>可选；仅此账号的上游请求经该代理转发。</span>
+                </label>
+              )}
             </div>
             <AccountModelRulesEditor
-              allowAll={allowAll}
-              onAllowAllChange={setAllowAll}
-              discoveredModels={discoveredModels}
-              selectedModels={selectedModels}
-              onSelectedModelsChange={setSelectedModels}
-              manualModels={manualModels}
-              onManualModelsChange={setManualModels}
+              models={whitelistModels}
+              onModelsChange={setWhitelistModels}
               mappingLines={mappingLines}
               onMappingLinesChange={setMappingLines}
-              testModel={testModel}
-              onTestModelChange={setTestModel}
+              onSyncBuiltInModels={() => void syncBuiltInModels()}
+              onSyncUpstreamModels={() => void syncUpstreamModels()}
+              syncingBuiltIn={syncingBuiltIn}
+              syncingUpstream={syncingUpstream}
             />
           </div>
         ) : null}

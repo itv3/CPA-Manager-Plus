@@ -25,8 +25,10 @@ var (
 )
 
 type Capabilities struct {
-	CredentialDraft bool `json:"credentialDraft"`
-	AllowedModels   bool `json:"allowedModels"`
+	CredentialDraft         bool `json:"credentialDraft"`
+	CredentialRefresh       bool `json:"credentialRefresh"`
+	TargetedReauthorization bool `json:"targetedReauthorization"`
+	AllowedModels           bool `json:"allowedModels"`
 }
 
 type AuthCapability struct {
@@ -42,9 +44,11 @@ type PlatformCapabilities struct {
 }
 
 type AccountSnapshot struct {
+	Provider          string
 	Platform          string
 	AuthType          string
 	SourceType        string
+	PlanType          string
 	SourceLocator     string
 	Name              string
 	Email             string
@@ -93,6 +97,7 @@ type APICallResult struct {
 type AccountRuntime struct {
 	Platform  string
 	BaseURL   string
+	ProxyURL  string
 	Headers   map[string]string
 	ProjectID string
 	UserAgent string
@@ -107,12 +112,18 @@ type AccountReference struct {
 }
 
 type ConnectivityResult struct {
-	Success    bool   `json:"success"`
-	StatusCode int    `json:"statusCode,omitempty"`
-	Protocol   string `json:"protocol"`
-	Model      string `json:"model"`
-	ErrorCode  string `json:"errorCode,omitempty"`
-	Retryable  bool   `json:"retryable"`
+	Success         bool   `json:"success"`
+	StatusCode      int    `json:"statusCode,omitempty"`
+	Protocol        string `json:"protocol"`
+	Mode            string `json:"mode"`
+	Model           string `json:"model"`
+	MappedModel     string `json:"mappedModel,omitempty"`
+	UpstreamModel   string `json:"upstreamModel,omitempty"`
+	DurationMS      int64  `json:"durationMs"`
+	ResponsePreview string `json:"responsePreview,omitempty"`
+	ErrorCode       string `json:"errorCode,omitempty"`
+	ErrorMessage    string `json:"errorMessage,omitempty"`
+	Retryable       bool   `json:"retryable"`
 }
 
 type CreateAPIInput struct {
@@ -121,19 +132,23 @@ type CreateAPIInput struct {
 	Name          string
 	BaseURL       string
 	APIKey        string
+	ProxyURL      string
 	Headers       map[string]string
 	AllowedModels []string
 	ModelMapping  map[string]string
+	CatalogModels []string
 }
 
 type UpdateAPIInput struct {
-	APIKey  string
-	BaseURL *string
-	Headers *map[string]string
+	APIKey   string
+	BaseURL  *string
+	ProxyURL *string
+	Headers  *map[string]string
 }
 
 type EditableAccount struct {
 	BaseURL        string            `json:"baseUrl,omitempty"`
+	ProxyURL       string            `json:"proxyUrl,omitempty"`
 	Headers        map[string]string `json:"headers"`
 	SharedProvider bool              `json:"sharedProvider"`
 }
@@ -146,6 +161,13 @@ type OAuthStartResult struct {
 type OAuthStatusResult struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
+}
+
+type OAuthCallbackInput struct {
+	Platform string
+	Code     string
+	State    string
+	Error    string
 }
 
 type ImportVertexInput struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccount"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestRepositorySyncIsIdempotentAndSupportsDryRun(t *testing.T) {
@@ -22,7 +23,8 @@ func TestRepositorySyncIsIdempotentAndSupportsDryRun(t *testing.T) {
 	discoveries := []model.ProAccountDiscovery{
 		{
 			Platform: "openai", AuthType: "oauth", SourceType: "auth_file",
-			Name: "alpha@example.com", Email: "alpha@example.com", Enabled: true,
+			PlanType: "free",
+			Name:     "alpha@example.com", Email: "alpha@example.com", Enabled: true,
 			HealthStatus: model.ProAccountHealthUnknown, AuthIndex: "auth-alpha",
 			SourceLocator: "alpha.json", SourceFingerprint: "fingerprint-alpha",
 		},
@@ -55,6 +57,31 @@ func TestRepositorySyncIsIdempotentAndSupportsDryRun(t *testing.T) {
 	}
 	if firstAccount.Version != 1 {
 		t.Fatalf("无变化同步不应递增资源版本，version = %d", firstAccount.Version)
+	}
+	if firstAccount.PlanType != "free" {
+		t.Fatalf("套餐类型 = %q", firstAccount.PlanType)
+	}
+	unknownPlanDiscoveries := append([]model.ProAccountDiscovery(nil), discoveries...)
+	unknownPlanDiscoveries[0].PlanType = ""
+	if _, err := repo.Sync(ctx, unknownPlanDiscoveries, 2500, false); err != nil {
+		t.Fatalf("未知套餐快照同步：%v", err)
+	}
+	firstAccount, ok, err = repo.Get(ctx, first.Items[0].ProAccountID)
+	if err != nil || !ok {
+		t.Fatalf("读取未知套餐快照后的账号：ok=%v err=%v", ok, err)
+	}
+	if firstAccount.PlanType != "free" || firstAccount.Version != 1 {
+		t.Fatalf("未知套餐不应清空已知套餐或递增版本：%#v", firstAccount)
+	}
+	if err := repo.UpdatePlanType(ctx, firstAccount.ID, "Pro"); err != nil {
+		t.Fatalf("持久化主动查询套餐：%v", err)
+	}
+	firstAccount, ok, err = repo.Get(ctx, firstAccount.ID)
+	if err != nil || !ok {
+		t.Fatalf("读取主动套餐后的账号：ok=%v err=%v", ok, err)
+	}
+	if firstAccount.PlanType != "pro" || firstAccount.Version != 1 {
+		t.Fatalf("派生套餐应持久化且不影响编辑版本：%#v", firstAccount)
 	}
 
 	list, err := repo.List(ctx, model.ProAccountListFilter{Limit: 50})
@@ -158,13 +185,6 @@ func TestRepositoryUsageBackfillsRetainedHistoryAndUsesBindingValidity(t *testin
 	defer db.Close()
 	repo := proaccount.New(db)
 	ctx := context.Background()
-	if _, err := db.Exec(`insert into model_prices (
-		model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m,
-		cache_creation_per_1m, prompt_configured, completion_configured, cache_read_configured,
-		cache_creation_configured, updated_at_ms
-	) values ('gpt-test', 1, 2, 0, 0, 0, 1, 1, 1, 1, 1)`); err != nil {
-		t.Fatalf("写入价格：%v", err)
-	}
 	for index, timestamp := range []int64{500, 1500} {
 		if _, err := db.Exec(`insert into usage_events (
 			event_hash, timestamp_ms, timestamp, model, auth_index, input_tokens, output_tokens,
@@ -183,15 +203,23 @@ func TestRepositoryUsageBackfillsRetainedHistoryAndUsesBindingValidity(t *testin
 	}
 	accountID := created.Items[0].ProAccountID
 
-	usage, _, err := repo.Usage(ctx, accountID, 0, 5000)
+	usage, _, _, err := repo.Usage(ctx, accountID, 0, 5000)
 	if err != nil {
 		t.Fatalf("查询用量：%v", err)
 	}
 	if usage.Requests != 2 || usage.Successes != 1 || usage.Failures != 1 || usage.TotalTokens != 4000000 {
 		t.Fatalf("用量聚合 = %#v", usage)
 	}
-	if !usage.CostKnown || usage.EstimatedCost == nil || *usage.EstimatedCost != 6 {
-		t.Fatalf("成本聚合 = %#v", usage)
+	if usage.CostKnown || usage.EstimatedCost != nil {
+		t.Fatalf("数据层不应直接解析价格：%#v", usage)
+	}
+	costStats, err := repo.UsageCostStats(ctx, accountID, 0, 5000)
+	if err != nil || len(costStats) != 1 {
+		t.Fatalf("查询成本聚合：stats=%#v err=%v", costStats, err)
+	}
+	if stat := costStats[0]; stat.Model != "gpt-test" || stat.BillingModel != "gpt-test" ||
+		stat.Calls != 2 || stat.InputTokens != 2000000 || stat.OutputTokens != 2000000 || stat.TotalTokens != 4000000 {
+		t.Fatalf("成本 Token 聚合 = %#v", stat)
 	}
 	account, ok, err := repo.Get(ctx, accountID)
 	if err != nil || !ok || account.Binding == nil {
@@ -199,6 +227,110 @@ func TestRepositoryUsageBackfillsRetainedHistoryAndUsesBindingValidity(t *testin
 	}
 	if account.Binding.ValidFromMS != 500 || account.Binding.AttributionQuality != model.ProAttributionQualityRetainedHistory || account.LastUsedAtMS != 1500 {
 		t.Fatalf("首次归属回填错误：%#v", account)
+	}
+}
+
+func TestRepositoryUsageCostStatsUsesMonitoringTokenSemantics(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	longInput := usage.LongContextInputTokenThreshold + 1
+	if _, err := db.Exec(`insert into usage_events (
+		event_hash, timestamp_ms, timestamp, model, requested_model, resolved_model, service_tier,
+		auth_index, input_tokens, output_tokens, cached_tokens, cache_tokens, cache_read_tokens,
+		cache_creation_tokens, normalized_total_input_tokens, total_tokens, failed, created_at_ms
+	) values
+		('long-event', 1000, 'long', 'alias-model', 'alias-model', 'billing-model', 'priority',
+		 'auth-cost', ?, 20, 1000, 1000, 600, 100, ?, ?, 0, 1000),
+		('short-event', 1500, 'short', 'alias-model', 'alias-model', 'billing-model', 'priority',
+		 'auth-cost', 10, 5, 0, 0, 0, 0, 10, 15, 0, 1500)`,
+		longInput, longInput, longInput+20); err != nil {
+		t.Fatalf("写入成本事件：%v", err)
+	}
+	repo := proaccount.New(db)
+	created, err := repo.Sync(context.Background(), []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "api", SourceType: "config_codex_api_key", Name: "cost-account",
+		Enabled: true, AuthIndex: "auth-cost", SourceLocator: "index:0",
+	}}, 2000, false)
+	if err != nil || len(created.Items) != 1 {
+		t.Fatalf("创建成本账号：result=%#v err=%v", created, err)
+	}
+	stats, err := repo.UsageCostStats(context.Background(), created.Items[0].ProAccountID, 0, 3000)
+	if err != nil || len(stats) != 1 {
+		t.Fatalf("查询成本 Token：stats=%#v err=%v", stats, err)
+	}
+	stat := stats[0]
+	if stat.Model != "alias-model" || stat.BillingModel != "billing-model" || stat.ServiceTier != "priority" || stat.Calls != 2 {
+		t.Fatalf("成本分组错误：%#v", stat)
+	}
+	if stat.InputTokens != longInput+10 || stat.OutputTokens != 25 || stat.CachedTokens != 300 ||
+		stat.CacheReadTokens != 600 || stat.CacheCreationTokens != 100 || stat.TotalTokens != longInput+35 {
+		t.Fatalf("规范化 Token 聚合错误：%#v", stat)
+	}
+	if stat.LongInputTokens != longInput || stat.LongOutputTokens != 20 || stat.LongCachedTokens != 300 ||
+		stat.LongCacheReadTokens != 600 || stat.LongCacheCreationTokens != 100 {
+		t.Fatalf("长上下文 Token 聚合错误：%#v", stat)
+	}
+}
+
+func TestRepositoryUsageReadsQuotaAndPlanFromIndependentLatestEvents(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
+		Platform: "openai", AuthType: "oauth", SourceType: "auth_file", Name: "alpha",
+		Enabled: true, AuthIndex: "auth-alpha", SourceLocator: "alpha.json",
+	}}, 1000, false)
+	if err != nil || len(created.Items) != 1 {
+		t.Fatalf("创建账号：result=%#v err=%v", created, err)
+	}
+	statements := []struct {
+		hash      string
+		timestamp int64
+		metadata  string
+		planType  any
+	}{
+		{
+			hash: "quota-event", timestamp: 1100,
+			metadata: `{"quota":{"primary":{"used_percent":37,"reset_at_ms":1900,"window_minutes":300}}}`,
+			planType: nil,
+		},
+		{
+			hash: "plan-event", timestamp: 1200,
+			metadata: `{"quota":{"plan_type":"pro"}}`,
+			planType: "pro",
+		},
+		{
+			hash: "trace-event", timestamp: 1300,
+			metadata: `{"trace":{"request_id":"trace-only"}}`,
+			planType: nil,
+		},
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(`insert into usage_events (
+			event_hash, timestamp_ms, timestamp, model, auth_index,
+			response_metadata_json, header_quota_plan_type, created_at_ms
+		) values (?, ?, '2026-07-18T00:00:00Z', 'gpt-test', 'auth-alpha', ?, ?, ?)`,
+			statement.hash, statement.timestamp, statement.metadata, statement.planType, statement.timestamp); err != nil {
+			t.Fatalf("写入 %s：%v", statement.hash, err)
+		}
+	}
+
+	_, windows, planType, err := repo.Usage(ctx, created.Items[0].ProAccountID, 1000, 2000)
+	if err != nil {
+		t.Fatalf("查询被动配额：%v", err)
+	}
+	if planType != "pro" {
+		t.Fatalf("套餐类型 = %q，期望 pro", planType)
+	}
+	if len(windows) != 1 || windows[0].ID != "five_hour" || windows[0].UsedPercent == nil || *windows[0].UsedPercent != 37 {
+		t.Fatalf("配额窗口被较新的非配额事件遮蔽：%#v", windows)
 	}
 }
 
@@ -233,7 +365,7 @@ func TestRepositoryMarksPartialWhenRollupPredatesRetainedEvents(t *testing.T) {
 	if account.Binding.ValidFromMS != 500 || account.Binding.AttributionQuality != model.ProAttributionQualityPartial {
 		t.Fatalf("部分归属标记错误：%#v", account.Binding)
 	}
-	usage, _, err := repo.Usage(context.Background(), account.ID, 0, 2000)
+	usage, _, _, err := repo.Usage(context.Background(), account.ID, 0, 2000)
 	if err != nil || usage.Requests != 1 {
 		t.Fatalf("部分历史只能聚合保留事件：usage=%#v err=%v", usage, err)
 	}
@@ -266,9 +398,13 @@ func TestRepositoryDoesNotAttributeAmbiguousAuthIndex(t *testing.T) {
 		if account.Binding.ValidFromMS != 1000 || account.Binding.AttributionQuality != model.ProAttributionQualityAmbiguous {
 			t.Fatalf("歧义绑定不应回溯：%#v", account.Binding)
 		}
-		usage, _, usageErr := repo.Usage(context.Background(), account.ID, 0, 2000)
+		usage, _, _, usageErr := repo.Usage(context.Background(), account.ID, 0, 2000)
 		if usageErr != nil || usage.Requests != 0 {
 			t.Fatalf("歧义事件不应归属：usage=%#v err=%v", usage, usageErr)
+		}
+		costStats, costErr := repo.UsageCostStats(context.Background(), account.ID, 0, 2000)
+		if costErr != nil || len(costStats) != 0 {
+			t.Fatalf("歧义事件不应进入成本聚合：stats=%#v err=%v", costStats, costErr)
 		}
 	}
 }
@@ -359,7 +495,7 @@ func TestRepositoryManagedRebindRebuildsSummaryAcrossBindingHistory(t *testing.T
 	if account.ID != rebound.ID || account.LastUsedAtMS != 2500 || account.Binding.AttributionQuality != model.ProAttributionQualityExact {
 		t.Fatalf("轮换后汇总错误：%#v", account)
 	}
-	usage, _, err := repo.Usage(context.Background(), accountID, 0, 4000)
+	usage, _, _, err := repo.Usage(context.Background(), accountID, 0, 4000)
 	if err != nil || usage.Requests != 2 || usage.TotalTokens != 30 {
 		t.Fatalf("绑定历史聚合错误：usage=%#v err=%v", usage, err)
 	}
@@ -424,6 +560,46 @@ func TestRepositoryManagedRebindPreservesUUIDAndSoftDeleteKeepsHistory(t *testin
 	}
 	if bindings != 2 {
 		t.Fatalf("软删除不应移除绑定历史，数量 = %d", bindings)
+	}
+}
+
+func TestRepositorySyncIgnoresDeletedFingerprintCandidates(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	firstDiscovery := model.ProAccountDiscovery{
+		Platform: "openai", AuthType: "api", SourceType: "config_openai_compatibility",
+		Name: "OpenAI API", Enabled: false, AuthIndex: "old-auth",
+		SourceLocator: "provider:0:key:0", SourceFingerprint: "same-deleted-identity",
+	}
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{firstDiscovery}, 1000, false)
+	if err != nil || created.Created != 1 {
+		t.Fatalf("创建待删除账号：result=%#v err=%v", created, err)
+	}
+	account, ok, err := repo.Get(ctx, created.Items[0].ProAccountID)
+	if err != nil || !ok {
+		t.Fatalf("读取待删除账号：ok=%t err=%v", ok, err)
+	}
+	if _, err = repo.SoftDelete(ctx, account.ID, account.Version, 2000); err != nil {
+		t.Fatalf("软删除账号：%v", err)
+	}
+
+	retryDiscovery := firstDiscovery
+	retryDiscovery.AuthIndex = "new-auth"
+	retryDiscovery.SourceLocator = "provider:1:key:0"
+	retried, err := repo.Sync(ctx, []model.ProAccountDiscovery{retryDiscovery}, 3000, false)
+	if err != nil {
+		t.Fatalf("重新同步相同凭证：%v", err)
+	}
+	if retried.Created != 1 || retried.Pending != 0 || retried.Items[0].ProAccountID == "" {
+		t.Fatalf("重新同步结果 = %#v", retried)
+	}
+	if retried.Items[0].ProAccountID == account.ID {
+		t.Fatal("重新同步错误复用了已软删除账号")
 	}
 }
 

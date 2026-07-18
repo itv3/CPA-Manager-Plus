@@ -451,6 +451,7 @@ function getNextDirtyFields(
       'authAutoRefreshWorkers',
       'pprofEnable',
       'pprofAddr',
+      'protocolModelListEnabled',
       'antigravitySignatureCacheEnabled',
       'antigravitySignatureBypassStrict',
       'claudeHeaderUserAgent',
@@ -782,6 +783,7 @@ export function useVisualConfig() {
         pprofEnable: Boolean(pprof?.enable),
         pprofAddr: typeof pprof?.addr === 'string' ? pprof.addr : '127.0.0.1:8316',
         commercialMode: Boolean(parsed['commercial-mode']),
+        protocolModelListEnabled: Boolean(parsed['protocol-model-list-enabled']),
         usageStatisticsEnabled: Boolean(
           parsed['usage-statistics-enabled'] ?? parsed.usageStatisticsEnabled
         ),
@@ -990,6 +992,9 @@ export function useVisualConfig() {
         if (isDirty('commercialMode')) {
           setBooleanInDoc(doc, ['commercial-mode'], values.commercialMode);
         }
+        if (isDirty('protocolModelListEnabled')) {
+          setBooleanInDoc(doc, ['protocol-model-list-enabled'], values.protocolModelListEnabled);
+        }
         if (isDirty('usageStatisticsEnabled')) {
           setBooleanInDoc(doc, ['usage-statistics-enabled'], values.usageStatisticsEnabled);
         }
@@ -1060,14 +1065,16 @@ export function useVisualConfig() {
         if (isDirty('passthroughHeaders')) {
           setBooleanInDoc(doc, ['passthrough-headers'], values.passthroughHeaders);
         }
-        if (isDirty('requestRetry')) setIntFromStringInDoc(doc, ['request-retry'], values.requestRetry);
+        if (isDirty('requestRetry'))
+          setIntFromStringInDoc(doc, ['request-retry'], values.requestRetry);
         if (isDirty('maxRetryCredentials')) {
           setIntFromStringInDoc(doc, ['max-retry-credentials'], values.maxRetryCredentials);
         }
         if (isDirty('maxRetryInterval')) {
           setIntFromStringInDoc(doc, ['max-retry-interval'], values.maxRetryInterval);
         }
-        if (isDirty('disableCooling')) setBooleanInDoc(doc, ['disable-cooling'], values.disableCooling);
+        if (isDirty('disableCooling'))
+          setBooleanInDoc(doc, ['disable-cooling'], values.disableCooling);
         if (isDirty('saveCooldownStatus')) {
           setBooleanInDoc(doc, ['save-cooldown-status'], values.saveCooldownStatus);
         }
@@ -1199,16 +1206,17 @@ export function useVisualConfig() {
         const writeQuotaSwitchProject = isDirty('quotaSwitchProject');
         const writeQuotaSwitchPreviewModel = isDirty('quotaSwitchPreviewModel');
         const writeQuotaAntigravityCredits = isDirty('quotaAntigravityCredits');
-        if (writeQuotaSwitchProject || writeQuotaSwitchPreviewModel || writeQuotaAntigravityCredits) {
+        if (
+          writeQuotaSwitchProject ||
+          writeQuotaSwitchPreviewModel ||
+          writeQuotaAntigravityCredits
+        ) {
           ensureMapInDoc(doc, ['quota-exceeded']);
           if (writeQuotaSwitchProject) {
             doc.setIn(['quota-exceeded', 'switch-project'], values.quotaSwitchProject);
           }
           if (writeQuotaSwitchPreviewModel) {
-            doc.setIn(
-              ['quota-exceeded', 'switch-preview-model'],
-              values.quotaSwitchPreviewModel
-            );
+            doc.setIn(['quota-exceeded', 'switch-preview-model'], values.quotaSwitchPreviewModel);
           }
           if (writeQuotaAntigravityCredits) {
             doc.setIn(['quota-exceeded', 'antigravity-credits'], values.quotaAntigravityCredits);

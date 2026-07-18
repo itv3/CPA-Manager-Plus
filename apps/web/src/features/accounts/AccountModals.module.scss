@@ -142,6 +142,56 @@
   background: var(--border-subtle);
 }
 
+.advancedSettings {
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-subtle) 50%, transparent);
+}
+
+.advancedSettings > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.advancedSettings > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advancedSettings > summary::after {
+  content: '+';
+  color: var(--text-tertiary);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.advancedSettings[open] > summary::after {
+  content: '−';
+}
+
+.advancedSettings > summary small {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.advancedSettingsBody {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .platformSegments {
   display: flex;
   align-items: stretch;
@@ -400,6 +450,260 @@
   font-weight: 700;
 }
 
+// 统一账号 OAuth 第二步参照 sub2api 的三段式手动授权布局。
+.oauthAuthorizationPage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.oauthAuthorizationCard {
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 72%, var(--border-color));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--primary-color) 9%, var(--surface-primary));
+}
+
+.oauthAuthorizationLayout {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.oauthAuthorizationIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: var(--primary-color);
+  color: var(--primary-contrast, #fff);
+}
+
+.oauthAuthorizationContent {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.oauthAuthorizationContent > h3 {
+  margin: 2px 0 14px;
+  color: color-mix(in srgb, var(--primary-color) 58%, var(--text-primary));
+  font-size: 17px;
+  font-weight: 750;
+}
+
+.oauthMethod {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.oauthMethod > span {
+  color: color-mix(in srgb, var(--primary-color) 62%, var(--text-secondary));
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.oauthMethod label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.oauthMethod input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--primary-color);
+}
+
+.oauthAuthorizationIntro {
+  margin: 0 0 14px;
+  color: color-mix(in srgb, var(--primary-color) 54%, var(--text-secondary));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.oauthInstructionList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oauthInstructionCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 58%, var(--border-color));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-primary) 82%, transparent);
+}
+
+.oauthInstructionNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary-color) 82%, #2563eb);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.oauthInstructionContent {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.oauthInstructionContent h4 {
+  margin: 2px 0 10px;
+  color: color-mix(in srgb, var(--primary-color) 38%, var(--text-primary));
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.oauthInstructionContent > p {
+  margin: 0 0 10px;
+  color: color-mix(in srgb, var(--primary-color) 38%, var(--text-secondary));
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.oauthInstructionContent :global(.btn) > span,
+.oauthLinkActions :global(.btn) > span,
+.oauthLinkRow :global(.btn) > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oauthGeneratedLink {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 100%;
+}
+
+.oauthLinkRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+}
+
+.oauthLinkRow .input {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.oauthLinkActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.oauthImportantNotice {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #f59e0b 56%, var(--border-color));
+  border-radius: 7px;
+  background: color-mix(in srgb, #f59e0b 11%, var(--surface-primary));
+  color: color-mix(in srgb, #d97706 72%, var(--text-primary));
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.oauthCallbackField {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+}
+
+.oauthCallbackField > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.oauthCallbackField > span svg {
+  color: var(--primary-color);
+}
+
+.oauthCallbackField textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 11px 12px;
+  resize: vertical;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 72%, var(--app-input-border));
+  border-radius: 9px;
+  outline: none;
+  background: var(--app-input-bg);
+  color: var(--text-primary);
+  font: 12px/1.5 var(--font-mono);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 12%, transparent);
+}
+
+.oauthCallbackField textarea:focus {
+  border-color: var(--primary-color);
+  background: var(--app-input-bg-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 16%, transparent);
+}
+
+.oauthCallbackField textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
+.oauthCallbackHint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.oauthWaitingStatus,
+.oauthSuccessStatus {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.oauthWaitingStatus {
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--surface-primary));
+  color: var(--primary-color);
+}
+
+.oauthSuccessStatus {
+  background: color-mix(in srgb, #10b981 11%, var(--surface-primary));
+  color: #059669;
+}
+
 .credentialSuccess {
   border-color: color-mix(in srgb, #10b981 28%, var(--border-subtle));
   background: color-mix(in srgb, #10b981 7%, var(--surface-primary));
@@ -644,8 +948,114 @@
   color: #15803d;
 }
 
+.testSummary,
+.testModelSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--border-subtle);
+}
+
+.testModelSummary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.testSummary > div,
+.testModelSummary > div {
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface-primary);
+}
+
+.testSummary dt,
+.testModelSummary dt,
+.testResult dt {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.testSummary dd,
+.testModelSummary dd,
+.testResult dd {
+  min-width: 0;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.testModeSelector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  padding: 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-subtle) 85%, var(--surface-primary));
+}
+
+.testModeSelector button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.testModeSelector .testModeActive {
+  background: var(--surface-primary);
+  color: var(--primary-color);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.1);
+}
+
+.testResult > strong {
+  display: block;
+  color: inherit;
+  font-size: 12px;
+}
+
+.testResult dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 10px 0 0;
+}
+
+.testResponsePreview {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.testResponsePreview > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.testResponsePreview pre {
+  max-height: 120px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .inlineActions,
-.footer,
 .oauthStatus {
   display: flex;
   align-items: center;
@@ -654,11 +1064,467 @@
 }
 
 .footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  // 桌面端不换行,保证主保存按钮始终可见
+  flex-wrap: nowrap;
   width: 100%;
+}
+
+.footer > button {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .footerSpacer {
   flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modelSyncActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+// sub2api 式账号测试弹窗，尺寸与信息层级保持紧凑。
+.testModal {
+  max-height: min(90vh, 760px);
+  border-radius: 16px;
+
+  :global(.modal-header) {
+    padding: 16px 24px;
+  }
+
+  :global(.modal-body) {
+    padding: 16px 24px;
+  }
+
+  :global(.modal-footer) {
+    padding: 16px 24px;
+    flex-direction: row;
+    align-items: center;
+  }
+
+  :global(.modal-footer .btn) {
+    width: auto;
+  }
+}
+
+.testBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.testBody .fieldLabel {
+  font-size: 14px;
+}
+
+.testBody .input,
+.testBody .select {
+  height: 44px;
+  border-radius: 10px;
+  padding: 0 14px;
+  font-size: 15px;
+}
+
+.testAccountCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: linear-gradient(90deg, var(--surface-subtle), var(--surface-subtle-hover));
+}
+
+.testAccountIdentity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.testAccountIdentity > div {
+  min-width: 0;
+}
+
+.testAccountIdentity strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.testAccountPlay {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #14b8a6, #0d9488);
+}
+
+.testAccountPlay::after {
+  width: 0;
+  height: 0;
+  margin-left: 2px;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 11px solid #fff;
+  content: '';
+}
+
+.testAccountType {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.testAccountType > span {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.testAccountType small {
+  font-size: 11px;
+}
+
+.testAccountStatus {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.testAccountStatusActive {
+  background: color-mix(in srgb, #22c55e 16%, transparent);
+  color: #16a34a;
+}
+
+.testTerminalGroup {
+  position: relative;
+}
+
+.testTerminal {
+  min-height: 120px;
+  max-height: 240px;
+  padding: 16px;
+  overflow-y: auto;
+  border: 1px solid #374151;
+  border-radius: 12px;
+  background: #030712;
+  color: #d1d5db;
+  font-family: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.testTerminalLine {
+  display: block;
+  min-height: 1.55em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.testTerminaldefault {
+  color: #d1d5db;
+}
+
+.testTerminalblue {
+  color: #60a5fa;
+}
+
+.testTerminalgreen {
+  color: #4ade80;
+}
+
+.testTerminalcyan {
+  color: #22d3ee;
+}
+
+.testTerminalyellow {
+  color: #facc15;
+}
+
+.testTerminalred {
+  color: #f87171;
+}
+
+.testTerminalmuted {
+  color: #9ca3af;
+}
+
+.testReady,
+.testConnecting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.testReady {
+  color: #6b7280;
+}
+
+.testReadyPlay,
+.testButtonPlay {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid currentColor;
+}
+
+.testConnecting {
+  color: #facc15;
+}
+
+.testConnecting svg {
+  animation: account-test-spin 0.9s linear infinite;
+}
+
+@keyframes account-test-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.testTerminalResult {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #374151;
+}
+
+.testTerminalResult > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.testTerminalResult > div {
+  min-width: 0;
+}
+
+.testTerminalResultSuccess {
+  color: #4ade80;
+}
+
+.testTerminalResultError {
+  color: #f87171;
+}
+
+.testTerminalResultError pre {
+  max-width: 100%;
+  margin: 8px 0 0;
+  overflow-x: auto;
+  color: #f87171;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.testCopyButton {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(31, 41, 55, 0.88);
+  color: #9ca3af;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.testTerminalGroup:hover .testCopyButton,
+.testCopyButton:focus-visible {
+  opacity: 1;
+}
+
+.testCopyButton:hover {
+  background: #374151;
+  color: #fff;
+}
+
+.testHint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.testHint > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.testFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  width: 100%;
+}
+
+.testActionButton:global(.btn) > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.testActionSuccess:global(.btn.btn-primary) {
+  border-color: #22c55e;
+  background: #22c55e;
+}
+
+.testActionSuccess:global(.btn.btn-primary):hover:not(:disabled) {
+  border-color: #16a34a;
+  background: #16a34a;
+}
+
+.testActionError:global(.btn.btn-primary) {
+  border-color: #f97316;
+  background: #f97316;
+}
+
+.testActionError:global(.btn.btn-primary):hover:not(:disabled) {
+  border-color: #ea580c;
+  background: #ea580c;
+}
+
+:global([data-theme='dark']) .testAccountCard {
+  border-color: #4b5563;
+  background: linear-gradient(90deg, #374151, #4b5563);
+}
+
+:global([data-theme='dark']) .testAccountStatusActive {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+}
+
+@media (max-width: 720px) {
+  .testModal {
+    max-height: calc(100vh - 16px);
+
+    :global(.modal-header),
+    :global(.modal-footer) {
+      padding: 14px 16px;
+    }
+
+    :global(.modal-body) {
+      padding: 14px 16px 16px;
+      max-height: calc(100vh - 150px);
+    }
+  }
+
+  .testFooter > button {
+    width: auto;
+    flex: 0 0 auto;
+  }
+}
+
+// sub2api 式白名单列表:两列网格,每行模型名 + 删除按钮
+.modelListBox {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modelListGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.modelListItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-subtle) 55%, transparent);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.modelListItem > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+
+  &:hover {
+    color: var(--danger, #e5484d);
+    background: color-mix(in srgb, var(--danger, #e5484d) 12%, transparent);
+  }
+}
+
+.modelListName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelListCount {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 2px 2px 0;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
 }
 
 .review {
@@ -864,6 +1730,28 @@
     display: none;
   }
 
+  .oauthAuthorizationCard {
+    padding: 14px;
+  }
+
+  .oauthAuthorizationLayout {
+    gap: 10px;
+  }
+
+  .oauthAuthorizationIcon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .oauthInstructionCard {
+    gap: 10px;
+    padding: 13px;
+  }
+
+  .oauthLinkRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .formSection {
     padding: 14px;
   }
@@ -885,7 +1773,10 @@
 
   .formGrid,
   .authCards,
-  .modelChoices {
+  .modelChoices,
+  .testSummary,
+  .testModelSummary,
+  .testResult dl {
     grid-template-columns: 1fr;
   }
 
@@ -930,6 +1821,10 @@
   .review dd {
     padding: 9px 10px;
     border-radius: 0;
+  }
+
+  .footer {
+    flex-wrap: wrap;
   }
 
   .footer > button {

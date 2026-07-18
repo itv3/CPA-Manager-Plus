@@ -2,31 +2,37 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { AccountModelRulesEditor } from './AccountModelRulesEditor';
 
+const textOf = (value: unknown): string => {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(textOf).join('');
+  if (value && typeof value === 'object' && 'props' in value) {
+    return textOf((value as { props: { children?: unknown } }).props.children);
+  }
+  return '';
+};
+
+const buttonByText = (renderer: ReactTestRenderer, text: string) => {
+  const button = renderer.root
+    .findAllByType('button')
+    .find((candidate) => textOf(candidate.props.children).includes(text));
+  if (!button) throw new Error(`未找到按钮：${text}`);
+  return button;
+};
+
 describe('统一账号模型规则编辑器', () => {
-  it('支持选择、移除和手工添加模型', () => {
-    let selectedModels = ['gpt-5'];
-    let manualModels = '';
+  it('空白名单显示允许全部并支持填入自定义模型', () => {
+    let models: string[] = [];
     let renderer!: ReactTestRenderer;
 
     const render = () => (
       <AccountModelRulesEditor
-        allowAll={false}
-        onAllowAllChange={vi.fn()}
-        discoveredModels={['gpt-5', 'gpt-5.1']}
-        selectedModels={selectedModels}
-        onSelectedModelsChange={(value) => {
-          selectedModels = value;
-          renderer.update(render());
-        }}
-        manualModels={manualModels}
-        onManualModelsChange={(value) => {
-          manualModels = value;
+        models={models}
+        onModelsChange={(value) => {
+          models = value;
           renderer.update(render());
         }}
         mappingLines=""
         onMappingLinesChange={vi.fn()}
-        testModel="gpt-5"
-        onTestModelChange={vi.fn()}
       />
     );
 
@@ -34,24 +40,76 @@ describe('统一账号模型规则编辑器', () => {
       renderer = create(render());
     });
 
-    const availableModel = renderer.root
-      .findAllByType('button')
-      .find((button) => button.props.children?.[0] === 'gpt-5.1');
-    expect(availableModel).toBeDefined();
-    act(() => availableModel?.props.onClick());
-    expect(selectedModels).toEqual(['gpt-5', 'gpt-5.1']);
-
-    const removeModel = renderer.root.findByProps({ 'aria-label': '移除模型 gpt-5' });
-    act(() => removeModel.props.onClick());
-    expect(selectedModels).toEqual(['gpt-5.1']);
+    expect(JSON.stringify(renderer.toJSON())).toContain('允许全部模型');
 
     const manualInput = renderer.root.findByProps({
-      placeholder: '输入模型名称，可使用末尾通配符 *',
+      placeholder: '输入自定义模型名称，可使用末尾通配符 *',
     });
-    act(() => manualInput.props.onChange({ target: { value: 'custom-*' } }));
-    const addButton = renderer.root.findByProps({ 'aria-label': '添加手工模型' });
-    act(() => addButton.props.onClick());
-    expect(manualModels).toBe('custom-*');
+    act(() => manualInput.props.onChange({ target: { value: 'custom-model' } }));
+    act(() => renderer.root.findByProps({ 'aria-label': '填入自定义模型' }).props.onClick());
+
+    expect(models).toEqual(['custom-model']);
+  });
+
+  it('白名单以列表展示且逐项可删除', () => {
+    let models = ['gpt-5.5', 'gpt-5.6-sol'];
+    let renderer!: ReactTestRenderer;
+
+    const render = () => (
+      <AccountModelRulesEditor
+        models={models}
+        onModelsChange={(value) => {
+          models = value;
+          renderer.update(render());
+        }}
+        mappingLines=""
+        onMappingLinesChange={vi.fn()}
+      />
+    );
+
+    act(() => {
+      renderer = create(render());
+    });
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('2 个模型');
+
+    const removeModel = renderer.root.findByProps({ 'aria-label': '移除模型 gpt-5.5' });
+    act(() => removeModel.props.onClick());
+    expect(models).toEqual(['gpt-5.6-sol']);
+  });
+
+  it('提供双同步动作并支持清除所有模型', () => {
+    const onSyncBuiltInModels = vi.fn();
+    const onSyncUpstreamModels = vi.fn();
+    let models = ['gpt-5', 'custom-*'];
+    let renderer!: ReactTestRenderer;
+
+    const render = () => (
+      <AccountModelRulesEditor
+        models={models}
+        onModelsChange={(value) => {
+          models = value;
+          renderer.update(render());
+        }}
+        mappingLines=""
+        onMappingLinesChange={vi.fn()}
+        onSyncBuiltInModels={onSyncBuiltInModels}
+        onSyncUpstreamModels={onSyncUpstreamModels}
+      />
+    );
+
+    act(() => {
+      renderer = create(render());
+    });
+
+    act(() => buttonByText(renderer, '同步最新支持模型').props.onClick());
+    expect(onSyncBuiltInModels).toHaveBeenCalledTimes(1);
+
+    act(() => buttonByText(renderer, '同步上游支持的模型').props.onClick());
+    expect(onSyncUpstreamModels).toHaveBeenCalledTimes(1);
+
+    act(() => buttonByText(renderer, '清除所有模型').props.onClick());
+    expect(models).toEqual([]);
   });
 
   it('使用结构化输入维护模型映射', () => {
@@ -60,20 +118,13 @@ describe('统一账号模型规则编辑器', () => {
 
     const render = () => (
       <AccountModelRulesEditor
-        allowAll
-        onAllowAllChange={vi.fn()}
-        discoveredModels={[]}
-        selectedModels={[]}
-        onSelectedModelsChange={vi.fn()}
-        manualModels=""
-        onManualModelsChange={vi.fn()}
+        models={[]}
+        onModelsChange={vi.fn()}
         mappingLines={mappingLines}
         onMappingLinesChange={(value) => {
           mappingLines = value;
           renderer.update(render());
         }}
-        testModel="gpt-5"
-        onTestModelChange={vi.fn()}
       />
     );
 

@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
+import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Select } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
-  IconCheck,
+  IconChartLine,
   IconCrosshair,
+  IconExternalLink,
+  IconInfo,
+  IconKey,
+  IconMoreVertical,
   IconPencil,
   IconPlus,
   IconRefreshCw,
   IconSearch,
   IconSettings,
+  IconTimer,
   IconTrash2,
-  IconX,
 } from '@/components/ui/icons';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useAuthStore, useNotificationStore } from '@/stores';
@@ -29,22 +34,50 @@ import {
 import { AccountBatchModal } from './AccountBatchModal';
 import { AccountBindingReviewModal } from './AccountBindingReviewModal';
 import { AccountEditModal } from './AccountEditModal';
+import { AccountStatsModal } from './AccountStatsModal';
+import { AccountReauthorizeModal } from './AccountReauthorizeModal';
+import { AccountScheduledTestsModal } from './AccountScheduledTestsModal';
 import { AccountTestModal } from './AccountTestModal';
 import { AccountWizardModal } from './AccountWizardModal';
 import { createAccountLoadSequence, loadAllAccountPages } from './loadAllAccountPages';
 import {
-  accountDisplayName,
+  accountReconcileContextKey,
+  reconcileAccountsThenLoad,
+  shouldReconcileAccountContext,
+} from './accountRefresh';
+import {
   accountSourceLabel,
   createRequestIdentity,
   usageRequestOptions,
   type UsageRefreshTrigger,
 } from './accountFormUtils';
 import { advancedAccountPath } from './accountNavigation';
+import {
+  accountStatusPresentation,
+  accountActionAvailable,
+  accountPlanLabel,
+  buildAccountUsageWindowRows,
+  formatRelativeDate,
+  formatResetCountdown,
+  isLocalUsageWindowSource,
+  resolveUsageUsedPercent,
+  shouldShowAccountUsagePlaceholder,
+  usagePercentTone,
+  usageWindowSourceTitle,
+  usageWindowTone,
+  usesSharedProviderSwitch,
+} from './accountTablePresentation';
+import { mergeUsageCacheEntry, type AccountUsageCacheEntry } from './accountUsageCache';
 import styles from './AccountsPage.module.scss';
+import iconAntigravity from '@/assets/icons/antigravity.svg';
+import iconClaude from '@/assets/icons/claude.svg';
+import iconGemini from '@/assets/icons/gemini.svg';
+import iconGrok from '@/assets/icons/grok.svg';
+import iconOpenAI from '@/assets/icons/openai-light.svg';
 
 const AUTO_REFRESH_INTERVAL_MS = 60_000;
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
-const usageCache = new Map<string, { value: ProAccountUsageResponse; updatedAt: number }>();
+const usageCache = new Map<string, AccountUsageCacheEntry>();
 
 const PLATFORM_FILTER_OPTIONS = [
   { value: '', label: '全部平台' },
@@ -82,38 +115,90 @@ const formatDate = (value?: number) => {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
 };
 
-const labelFor = (value: string) => value.replace(/_/g, ' ');
-
-const healthLabel = (value: string) => {
-  if (value === 'healthy') return '健康';
-  if (value === 'error') return '错误';
-  if (value === 'reauth_required') return '需要重新授权';
-  if (value === 'unknown') return '未知';
-  return labelFor(value);
-};
-
 const compactNumber = (value: number) =>
   new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 
 const usageCacheKey = (managerBase: string, accountID: string) => `${managerBase}:${accountID}`;
+
+const PLATFORM_PRESENTATION: Record<string, { label: string; icon: string }> = {
+  openai: { label: 'OpenAI', icon: iconOpenAI },
+  anthropic: { label: 'Anthropic', icon: iconClaude },
+  gemini: { label: 'Gemini', icon: iconGemini },
+  antigravity: { label: 'Antigravity', icon: iconAntigravity },
+  xai: { label: 'Grok / xAI', icon: iconGrok },
+};
+
+const authTypeLabel = (value: string) => {
+  if (value === 'oauth') return 'OAuth';
+  if (value === 'api') return 'API';
+  if (value === 'vertex') return 'Vertex';
+  return value;
+};
+
+function PlatformTypeCell({ account }: { account: ProAccount }) {
+  const platformKey = account.platform.trim().toLowerCase();
+  const platform = PLATFORM_PRESENTATION[platformKey] ?? {
+    label: account.platform,
+    icon: '',
+  };
+  const planLabel = accountPlanLabel(account.planType, platformKey);
+  return (
+    <div className={styles.platformTypeCell}>
+      <div className={styles.platformTypeBadge} data-platform={platformKey}>
+        <span className={styles.platformSegment}>
+          {platform.icon ? <img src={platform.icon} alt="" aria-hidden="true" /> : null}
+          {platform.label}
+        </span>
+        <span className={styles.authTypeSegment}>
+          <IconKey size={12} />
+          {authTypeLabel(account.authType)}
+        </span>
+      </div>
+      {planLabel ? (
+        <div className={styles.platformMetaRow}>
+          <span
+            className={styles.planTypeBadge}
+            data-plan={account.planType?.trim().toLowerCase()}
+            data-platform={platformKey}
+          >
+            {planLabel}
+          </span>
+        </div>
+      ) : null}
+      <span className={styles.sourceTypeLabel}>
+        {accountSourceLabel(account.binding?.sourceType || account.sourceType)}
+      </span>
+    </div>
+  );
+}
 
 function UsageCell({
   account,
   managerBase,
   managementKey,
   passiveRefreshToken,
+  nowMs,
+  usageCacheRevision,
+  onPlanTypeDiscovered,
 }: {
   account: ProAccount;
   managerBase: string;
   managementKey: string;
   passiveRefreshToken: number;
+  nowMs: number;
+  usageCacheRevision: number;
+  onPlanTypeDiscovered: (accountId: string, planType: string) => void;
 }) {
+  const { showConfirmation } = useNotificationStore();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const inFlightRef = useRef(false);
+  const resetBusyRef = useRef(false);
+  const resetRequestSequenceRef = useRef(0);
   const attemptedRef = useRef(false);
   const lastRefreshTokenRef = useRef(passiveRefreshToken);
   const cached = usageCache.get(usageCacheKey(managerBase, account.id));
   const [usage, setUsage] = useState<ProAccountUsageResponse | null>(
-    cached && Date.now() - cached.updatedAt < USAGE_CACHE_TTL_MS ? cached.value : null
+    cached && Date.now() - cached.updatedAtMs < USAGE_CACHE_TTL_MS ? cached.value : null
   );
   const [loading, setLoading] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -122,10 +207,11 @@ function UsageCell({
   const [resetLoading, setResetLoading] = useState(false);
   const [resetMessage, setResetMessage] = useState('');
   const resetEligible = account.platform === 'openai' && account.authType === 'oauth';
+  const usageWindows = usage ? buildAccountUsageWindowRows(account, usage) : [];
 
   const load = useCallback(
     async (trigger: UsageRefreshTrigger = 'initial', bypassCache = false) => {
-      if (!managerBase || !managementKey || loading) return;
+      if (!managerBase || !managementKey || inFlightRef.current) return;
       const requestOptions = usageRequestOptions(trigger);
       const key = usageCacheKey(managerBase, account.id);
       const cachedValue = usageCache.get(key);
@@ -133,11 +219,12 @@ function UsageCell({
         requestOptions.source === 'passive' &&
         !bypassCache &&
         cachedValue &&
-        Date.now() - cachedValue.updatedAt < USAGE_CACHE_TTL_MS
+        Date.now() - cachedValue.updatedAtMs < USAGE_CACHE_TTL_MS
       ) {
         setUsage(cachedValue.value);
         return;
       }
+      inFlightRef.current = true;
       setLoading(true);
       setError('');
       try {
@@ -148,15 +235,26 @@ function UsageCell({
           requestOptions.source,
           requestOptions.force
         );
-        usageCache.set(key, { value, updatedAt: Date.now() });
-        setUsage(value);
+        const merged = mergeUsageCacheEntry(
+          usageCache.get(key),
+          value,
+          requestOptions.source,
+          Date.now(),
+          USAGE_CACHE_TTL_MS
+        );
+        usageCache.set(key, merged);
+        setUsage(merged.value);
+        if (merged.value.planType?.trim()) {
+          onPlanTypeDiscovered(account.id, merged.value.planType.trim());
+        }
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       } finally {
+        inFlightRef.current = false;
         setLoading(false);
       }
     },
-    [account.id, loading, managementKey, managerBase]
+    [account.id, managementKey, managerBase, onPlanTypeDiscovered]
   );
 
   useEffect(() => {
@@ -192,34 +290,46 @@ function UsageCell({
     void load('automatic', true);
   }, [load, passiveRefreshToken, visible]);
 
+  useEffect(() => {
+    const next = usageCache.get(usageCacheKey(managerBase, account.id));
+    if (next && Date.now() - next.updatedAtMs < USAGE_CACHE_TTL_MS) setUsage(next.value);
+  }, [account.id, managerBase, usageCacheRevision]);
+
   const queryResetCredits = async () => {
-    if (!resetEligible || resetLoading) return;
+    if (!resetEligible || resetBusyRef.current) return;
+    const requestSequence = ++resetRequestSequenceRef.current;
+    resetBusyRef.current = true;
     setResetLoading(true);
+    setResetCredits(null);
     setResetMessage('');
     try {
       const result = await proAccountsApi.resetCredits(managerBase, managementKey, account.id);
+      if (requestSequence !== resetRequestSequenceRef.current) return;
       setResetCredits(result);
-      if (result.capability === 'unknown') {
-        setResetMessage(result.errorCode || '暂时无法确认重置能力');
-      } else if (result.capability === 'unsupported') {
-        setResetMessage('当前账号不支持官方重置');
-      }
     } catch (resetError) {
+      if (requestSequence !== resetRequestSequenceRef.current) return;
+      setResetCredits(null);
       setResetMessage(resetError instanceof Error ? resetError.message : String(resetError));
     } finally {
-      setResetLoading(false);
+      if (requestSequence === resetRequestSequenceRef.current) {
+        resetBusyRef.current = false;
+        setResetLoading(false);
+      }
     }
   };
 
   const resetOpenAI = async () => {
     const count = resetCredits?.availableCount;
-    if (resetCredits?.capability !== 'supported' || count === undefined || count <= 0) return;
-    const name = account.name || account.email || account.id;
     if (
-      !window.confirm(`将为“${name}”消耗 1 次官方 reset credit，当前可用 ${count} 次。确认继续？`)
+      resetBusyRef.current ||
+      resetCredits?.capability !== 'supported' ||
+      count === undefined ||
+      count <= 0
     ) {
       return;
     }
+    resetRequestSequenceRef.current += 1;
+    resetBusyRef.current = true;
     setResetLoading(true);
     setResetMessage('');
     try {
@@ -235,48 +345,87 @@ function UsageCell({
       setResetMessage('官方配额已重置');
       await load('manual-active', true);
     } catch (resetError) {
+      setResetCredits(null);
       setResetMessage(resetError instanceof Error ? resetError.message : String(resetError));
     } finally {
+      resetBusyRef.current = false;
       setResetLoading(false);
     }
   };
 
+  const confirmOpenAIReset = () => {
+    const count = resetCredits?.availableCount;
+    if (resetCredits?.capability !== 'supported' || count === undefined || count <= 0) return;
+    const name = account.name || account.email || account.id;
+    showConfirmation({
+      title: '重置官方配额',
+      message: `将为“${name}”消耗 1 次官方 reset credit，当前可用 ${count} 次。`,
+      confirmText: '确认重置',
+      cancelText: '取消',
+      variant: 'danger',
+      onConfirm: resetOpenAI,
+    });
+  };
+
   return (
     <div className={styles.usageCell} ref={rootRef} aria-busy={loading}>
-      {usage?.officialWindows.length ? (
-        <div className={styles.usageWindows}>
-          {usage.officialWindows.map((window) => (
-            <div className={styles.usageWindow} key={window.id}>
-              <span>{window.label}</span>
-              <div className={styles.progressTrack}>
-                <span
-                  style={{ width: `${Math.min(100, Math.max(0, window.usedPercent || 0))}%` }}
-                />
-              </div>
-              <strong>
-                {window.usedPercent === undefined ? '-' : `${Math.round(window.usedPercent)}%`}
-              </strong>
-              <small title={window.resetAtMs ? formatDate(window.resetAtMs) : ''}>
-                {window.resetAtMs ? formatDate(window.resetAtMs) : ''}
-              </small>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className={styles.usagePlaceholder}>{loading ? '加载中...' : '暂无官方配额数据'}</div>
-      )}
-      {usage ? (
-        <div className={styles.localUsage}>
-          <span>{compactNumber(usage.local.requests)} 次</span>
-          <span>{compactNumber(usage.local.totalTokens)} Token</span>
-          <span>
+      {usage && (usage.local.requests > 0 || usage.local.totalTokens > 0) ? (
+        <div className={styles.localUsage} aria-label="本地用量统计">
+          <span>{compactNumber(usage.local.requests)} req</span>
+          <span>{compactNumber(usage.local.totalTokens)}</span>
+          <span title="官方价格估算成本">
             {usage.local.costKnown && usage.local.estimatedCost !== undefined
-              ? `$${usage.local.estimatedCost.toFixed(2)}`
+              ? `A $${usage.local.estimatedCost.toFixed(2)}`
               : '成本 -'}
           </span>
         </div>
       ) : null}
-      {usage?.errorCode ? (
+      {usageWindows.length ? (
+        <div className={styles.usageWindows}>
+          {usageWindows.slice(0, 4).map((window, index) => {
+            const usedPercent = resolveUsageUsedPercent(window);
+            const localPlaceholder =
+              window.localPlaceholder || isLocalUsageWindowSource(window.source);
+            return (
+              <div
+                className={styles.usageWindow}
+                key={window.id}
+                data-tone={usageWindowTone(`${window.id} ${window.label}`, index)}
+                data-percent-tone={usagePercentTone(usedPercent)}
+                data-source={localPlaceholder ? 'local' : 'official'}
+                title={usageWindowSourceTitle(window.source)}
+              >
+                <span className={styles.usageWindowLabel}>{window.label}</span>
+                <div className={styles.progressTrack}>
+                  <span style={{ width: `${usedPercent ?? 0}%` }} />
+                </div>
+                <strong>{usedPercent === undefined ? '-' : `${Math.round(usedPercent)}%`}</strong>
+                <small title={window.resetAtMs ? formatDate(window.resetAtMs) : ''}>
+                  {localPlaceholder && usedPercent === undefined
+                    ? '待采样'
+                    : formatResetCountdown(window.resetAtMs, usedPercent, nowMs, false)}
+                </small>
+              </div>
+            );
+          })}
+          {usageWindows.length > 4 ? (
+            <div className={styles.usageMoreWindows}>+{usageWindows.length - 4} 个窗口</div>
+          ) : null}
+        </div>
+      ) : shouldShowAccountUsagePlaceholder(account, loading) ? (
+        <div
+          className={`${styles.usagePlaceholder} ${
+            account.healthStatus === 'reauth_required' ? styles.usageNeedsReauth : ''
+          }`}
+        >
+          {loading
+            ? '加载中...'
+            : account.healthStatus === 'reauth_required'
+              ? '需要重新授权'
+              : '暂无官方配额数据'}
+        </div>
+      ) : null}
+      {usage?.errorCode && usage.errorCode !== 'official_usage_unsupported' ? (
         <div className={styles.usageError} title={usage.errorMessage || usage.errorCode}>
           {usage.errorMessage || usage.errorCode}
         </div>
@@ -287,22 +436,29 @@ function UsageCell({
         </div>
       ) : null}
       <div className={styles.usageActions}>
-        <button type="button" onClick={() => void load('manual-passive', true)} disabled={loading}>
-          刷新
-        </button>
-        <button type="button" onClick={() => void load('manual-active', true)} disabled={loading}>
+        {usage?.source === 'passive' ? <span className={styles.passiveUsage}>被动采样</span> : null}
+        <button
+          type="button"
+          onClick={() => {
+            void load('manual-active', true);
+            if (resetEligible) void queryResetCredits();
+          }}
+          disabled={loading || resetLoading}
+        >
+          <IconRefreshCw size={11} />
           查询
         </button>
-        {resetEligible && (!resetCredits || resetCredits.capability === 'unknown') ? (
-          <button type="button" onClick={() => void queryResetCredits()} disabled={resetLoading}>
-            {resetCredits?.capability === 'unknown' ? '重试重置次数' : '重置次数'}
-          </button>
-        ) : null}
         {resetCredits?.capability === 'supported' ? (
-          <span>重置次数 {resetCredits.availableCount ?? '-'}</span>
+          <span>次数 {resetCredits.availableCount ?? '-'}</span>
         ) : null}
         {resetCredits?.capability === 'supported' && (resetCredits.availableCount ?? 0) > 0 ? (
-          <button type="button" onClick={() => void resetOpenAI()} disabled={resetLoading}>
+          <button
+            type="button"
+            className={styles.resetUsageAction}
+            onClick={confirmOpenAIReset}
+            disabled={resetLoading}
+          >
+            <IconRefreshCw size={11} />
             重置
           </button>
         ) : null}
@@ -314,9 +470,10 @@ function UsageCell({
 
 export function AccountsPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const managementKey = useAuthStore((state) => state.managementKey);
   const featureAvailability = usePanelFeatureAvailability();
-  const { showNotification } = useNotificationStore();
+  const { showConfirmation, showNotification } = useNotificationStore();
   const [items, setItems] = useState<ProAccount[]>([]);
   const [capabilities, setCapabilities] = useState<ProAccountCapabilitiesResponse | null>(null);
   const [search, setSearch] = useState('');
@@ -326,20 +483,44 @@ export function AccountsPage() {
   const [healthStatus, setHealthStatus] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [passiveRefreshToken, setPassiveRefreshToken] = useState(0);
+  const [usageClockMs, setUsageClockMs] = useState(() => Date.now());
+  const [usageCacheRevision, setUsageCacheRevision] = useState(0);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [rowAction, setRowAction] = useState('');
+  const [rowActions, setRowActions] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<ProAccount | null>(null);
   const [testingAccount, setTestingAccount] = useState<ProAccount | null>(null);
+  const [statsAccount, setStatsAccount] = useState<ProAccount | null>(null);
+  const [reauthorizingAccount, setReauthorizingAccount] = useState<ProAccount | null>(null);
+  const [scheduledTestsAccount, setScheduledTestsAccount] = useState<ProAccount | null>(null);
   const [selectedIDs, setSelectedIDs] = useState<Set<string>>(new Set());
   const [batchAction, setBatchAction] = useState<ProAccountBatchAction | null>(null);
   const [bindingReviews, setBindingReviews] = useState<ProAccountBindingReviewItem[]>([]);
   const [bindingReviewOpen, setBindingReviewOpen] = useState(false);
   const loadSequenceRef = useRef(createAccountLoadSequence());
+  const reconcileContextRef = useRef('');
+  const reconcileInFlightRef = useRef(false);
 
   const managerBase = featureAvailability.managerServiceBase;
+
+  const setRowActionBusy = (key: string, busy: boolean) => {
+    setRowActions((current) => {
+      const next = new Set(current);
+      if (busy) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const handlePlanTypeDiscovered = useCallback((accountId: string, planType: string) => {
+    setItems((current) =>
+      current.map((item) =>
+        item.id === accountId && item.planType !== planType ? { ...item, planType } : item
+      )
+    );
+  }, []);
 
   const loadAccounts = useCallback(
     async (background = false) => {
@@ -385,11 +566,55 @@ export function AccountsPage() {
     }
   }, [managementKey, managerBase]);
 
+  const reconcileAndLoadAccounts = useCallback(
+    async (background = false, reportSyncError = false) => {
+      if (!managerBase || !managementKey) return;
+      if (reconcileInFlightRef.current) {
+        await loadAccounts(background);
+        return;
+      }
+      reconcileInFlightRef.current = true;
+      try {
+        await reconcileAccountsThenLoad({
+          sync: () => proAccountsApi.sync(managerBase, managementKey),
+          load: () => loadAccounts(background),
+          onSyncError: reportSyncError
+            ? (syncError) =>
+                showNotification(
+                  `认证状态同步失败，已显示现有账号数据：${
+                    syncError instanceof Error ? syncError.message : String(syncError)
+                  }`,
+                  'warning'
+                )
+            : undefined,
+        });
+      } finally {
+        reconcileInFlightRef.current = false;
+      }
+    },
+    [loadAccounts, managementKey, managerBase, showNotification]
+  );
+
   useEffect(() => {
     if (featureAvailability.checking) return;
-    const timer = window.setTimeout(() => void loadAccounts(), 250);
+    const contextKey = accountReconcileContextKey(managerBase, managementKey);
+    const shouldReconcile = shouldReconcileAccountContext(reconcileContextRef.current, contextKey);
+    const timer = window.setTimeout(() => {
+      if (shouldReconcile) {
+        reconcileContextRef.current = contextKey;
+        void reconcileAndLoadAccounts();
+      } else {
+        void loadAccounts();
+      }
+    }, 250);
     return () => window.clearTimeout(timer);
-  }, [featureAvailability.checking, loadAccounts]);
+  }, [
+    featureAvailability.checking,
+    loadAccounts,
+    managementKey,
+    managerBase,
+    reconcileAndLoadAccounts,
+  ]);
 
   useEffect(() => {
     if (!managerBase || !managementKey || featureAvailability.checking) return;
@@ -413,9 +638,17 @@ export function AccountsPage() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = window.setInterval(() => void loadAccounts(true), AUTO_REFRESH_INTERVAL_MS);
+    const timer = window.setInterval(
+      () => void reconcileAndLoadAccounts(true),
+      AUTO_REFRESH_INTERVAL_MS
+    );
     return () => window.clearInterval(timer);
-  }, [autoRefresh, loadAccounts]);
+  }, [autoRefresh, reconcileAndLoadAccounts]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setUsageClockMs(Date.now()), AUTO_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const syncAccounts = useCallback(async () => {
     if (!managerBase || !managementKey) return;
@@ -435,9 +668,10 @@ export function AccountsPage() {
     }
   }, [loadAccounts, loadBindingReviews, managementKey, managerBase, showNotification]);
 
-  const toggleAccount = async (account: ProAccount) => {
+  const toggleAccount = async (account: ProAccount, nextEnabled = !account.enabled) => {
+    if (nextEnabled === account.enabled) return;
     const key = `${account.id}:toggle`;
-    setRowAction(key);
+    setRowActionBusy(key, true);
     try {
       const identity = createRequestIdentity(
         account.enabled ? 'account-disable' : 'account-enable'
@@ -446,10 +680,31 @@ export function AccountsPage() {
         managerBase,
         managementKey,
         account,
-        !account.enabled,
+        nextEnabled,
         identity.operationId,
         identity.idempotencyKey
       );
+      if (usesSharedProviderSwitch(account)) {
+        try {
+          const syncResult = await proAccountsApi.sync(managerBase, managementKey);
+          await Promise.all([loadAccounts(), loadBindingReviews()]);
+          showNotification(
+            `Provider 调度已${nextEnabled ? '启用' : '停止'}，已同步 ${syncResult.updated} 个关联账号`,
+            syncResult.conflicts > 0 || syncResult.pending > 0 ? 'warning' : 'success'
+          );
+        } catch (syncError) {
+          setItems((current) =>
+            current.map((item) => (item.id === account.id ? result.account : item))
+          );
+          showNotification(
+            `Provider 已切换，但关联账号同步失败：${
+              syncError instanceof Error ? syncError.message : String(syncError)
+            }。请点击“同步存量”。`,
+            'warning'
+          );
+        }
+        return;
+      }
       setItems((current) =>
         current.map((item) => (item.id === account.id ? result.account : item))
       );
@@ -461,15 +716,13 @@ export function AccountsPage() {
       );
       await loadAccounts();
     } finally {
-      setRowAction('');
+      setRowActionBusy(key, false);
     }
   };
 
   const deleteAccount = async (account: ProAccount) => {
-    const name = account.name || account.email || account.id;
-    if (!window.confirm(`确认删除账号“${name}”？底层凭证将同时删除，绑定历史会保留。`)) return;
     const key = `${account.id}:delete`;
-    setRowAction(key);
+    setRowActionBusy(key, true);
     try {
       const identity = createRequestIdentity('account-delete');
       await proAccountsApi.deleteAccount(
@@ -489,8 +742,80 @@ export function AccountsPage() {
       );
       await loadAccounts();
     } finally {
-      setRowAction('');
+      setRowActionBusy(key, false);
     }
+  };
+
+  const confirmDeleteAccount = (account: ProAccount) => {
+    const name = account.name || account.email || account.id;
+    showConfirmation({
+      title: '删除账号',
+      message: `确认删除账号“${name}”？底层凭证将同时删除，绑定历史会保留。`,
+      confirmText: '删除',
+      cancelText: '取消',
+      variant: 'danger',
+      onConfirm: () => deleteAccount(account),
+    });
+  };
+
+  const refreshAccountToken = async (account: ProAccount) => {
+    const key = `${account.id}:refresh-token`;
+    setRowActionBusy(key, true);
+    try {
+      const identity = createRequestIdentity('account-refresh-token');
+      await proAccountsApi.refreshToken(
+        managerBase,
+        managementKey,
+        account,
+        identity.operationId,
+        identity.idempotencyKey
+      );
+      await reconcileAndLoadAccounts(true, true);
+      showNotification('账号令牌已刷新', 'success');
+    } catch (refreshError) {
+      showNotification(
+        refreshError instanceof Error ? refreshError.message : String(refreshError),
+        'error'
+      );
+    } finally {
+      setRowActionBusy(key, false);
+    }
+  };
+
+  const requestToggleAccount = (account: ProAccount, nextEnabled: boolean) => {
+    if (!usesSharedProviderSwitch(account)) {
+      void toggleAccount(account, nextEnabled);
+      return;
+    }
+    showConfirmation({
+      title: nextEnabled ? '启用 Provider 调度' : '停止 Provider 调度',
+      message: `“${account.name || account.email || account.id}”来自共享 Chat Completions Provider，此开关会同步影响该 Provider 下的其他 Key。`,
+      confirmText: nextEnabled ? '确认启用' : '确认停止',
+      cancelText: '取消',
+      variant: nextEnabled ? 'primary' : 'danger',
+      onConfirm: () => toggleAccount(account, nextEnabled),
+    });
+  };
+
+  const acceptStatsUsage = (
+    account: ProAccount,
+    nextUsage: ProAccountUsageResponse,
+    requestSource: 'passive' | 'active'
+  ) => {
+    const key = usageCacheKey(managerBase, account.id);
+    const merged = mergeUsageCacheEntry(
+      usageCache.get(key),
+      nextUsage,
+      requestSource,
+      Date.now(),
+      USAGE_CACHE_TTL_MS
+    );
+    usageCache.set(key, merged);
+    setUsageCacheRevision((value) => value + 1);
+    if (merged.value.planType?.trim()) {
+      handlePlanTypeDiscovered(account.id, merged.value.planType.trim());
+    }
+    return merged.value;
   };
 
   const rows = useMemo(() => items, [items]);
@@ -578,7 +903,7 @@ export function AccountsPage() {
           <Button
             variant="secondary"
             iconOnly
-            onClick={() => void loadAccounts()}
+            onClick={() => void reconcileAndLoadAccounts(false, true)}
             loading={loading}
             title="刷新账号列表"
             aria-label="刷新账号列表"
@@ -616,40 +941,6 @@ export function AccountsPage() {
             <strong>批量编辑账号</strong>
             <span>已选择 {selectedAccounts.length} 个账号</span>
           </div>
-          <div className={styles.bulkActions}>
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => setBatchAction('enable')}
-              disabled={selectedAccounts.length === 0}
-            >
-              <IconCheck size={14} /> 启用
-            </Button>
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => setBatchAction('disable')}
-              disabled={selectedAccounts.length === 0}
-            >
-              <IconX size={14} /> 停用
-            </Button>
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => setBatchAction('test')}
-              disabled={selectedAccounts.length === 0}
-            >
-              <IconCrosshair size={14} /> 测试
-            </Button>
-            <Button
-              variant="danger"
-              size="xs"
-              onClick={() => setBatchAction('delete')}
-              disabled={selectedAccounts.length === 0}
-            >
-              <IconTrash2 size={14} /> 删除
-            </Button>
-          </div>
         </div>
         {error ? <div className={styles.error}>{error}</div> : null}
         {loading && rows.length === 0 ? <div className={styles.state}>加载中...</div> : null}
@@ -672,8 +963,13 @@ export function AccountsPage() {
                   <th>账号</th>
                   <th>平台 / 类型</th>
                   <th>状态</th>
+                  <th>调度</th>
                   <th>允许模型</th>
-                  <th>用量窗口</th>
+                  <th>
+                    <span className={styles.usageHeader} title="官方滚动配额窗口与当日本地统计">
+                      用量窗口 <IconInfo size={13} />
+                    </span>
+                  </th>
                   <th>最近活动</th>
                   <th>操作</th>
                 </tr>
@@ -681,6 +977,14 @@ export function AccountsPage() {
               <tbody>
                 {rows.map((item) => {
                   const advancedPath = advancedAccountPath(item);
+                  const status = accountStatusPresentation(item);
+                  const rowBusy = [...rowActions].some((key) => key.startsWith(`${item.id}:`));
+                  const statusToneClass = {
+                    success: styles.statusBadgeSuccess,
+                    muted: styles.statusBadgeMuted,
+                    warning: styles.statusBadgeWarning,
+                    danger: styles.statusBadgeDanger,
+                  }[status.tone];
                   return (
                     <tr key={item.id}>
                       <td className={styles.selectionColumn}>
@@ -703,32 +1007,32 @@ export function AccountsPage() {
                         </div>
                       </td>
                       <td>
-                        <span
-                          className={`${styles.badge} ${styles.platformBadge}`}
-                          data-platform={item.platform}
-                        >
-                          {accountDisplayName(item.platform, item.authType)}
-                        </span>
-                        <div className={styles.accountMeta}>
-                          {accountSourceLabel(item.binding?.sourceType || item.sourceType)}
-                        </div>
+                        <PlatformTypeCell account={item} />
                       </td>
                       <td>
                         <span
-                          className={`${styles.badge} ${item.enabled ? styles.badgeHealthy : styles.badgeMuted}`}
+                          className={`${styles.statusBadge} ${statusToneClass}`}
+                          title={item.lastError || status.label}
                         >
-                          {item.enabled ? '已启用' : '已停用'}
+                          {status.label}
                         </span>
-                        <div
-                          className={`${styles.healthStatus} ${
-                            item.healthStatus === 'error' || item.healthStatus === 'reauth_required'
-                              ? styles.textError
-                              : ''
-                          }`}
-                        >
-                          <span />
-                          {healthLabel(item.healthStatus)}
-                        </div>
+                        {item.lastError ? (
+                          <span
+                            className={styles.statusErrorInfo}
+                            title={item.lastError}
+                            aria-label={`状态详情：${item.lastError}`}
+                          >
+                            <IconInfo size={14} />
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className={styles.scheduleColumn}>
+                        <ToggleSwitch
+                          checked={item.enabled}
+                          onChange={(nextEnabled) => requestToggleAccount(item, nextEnabled)}
+                          disabled={rowBusy}
+                          ariaLabel={`${item.enabled ? '停止' : '启用'}账号调度`}
+                        />
                       </td>
                       <td>
                         {item.allowedModels.length === 0 ? (
@@ -754,14 +1058,20 @@ export function AccountsPage() {
                           managerBase={managerBase}
                           managementKey={managementKey}
                           passiveRefreshToken={passiveRefreshToken}
+                          nowMs={usageClockMs}
+                          usageCacheRevision={usageCacheRevision}
+                          onPlanTypeDiscovered={handlePlanTypeDiscovered}
                         />
                       </td>
                       <td>
-                        <div className={styles.activityLine}>
-                          使用 {formatDate(item.lastUsedAtMs)}
+                        <div className={styles.activityLine} title={formatDate(item.lastUsedAtMs)}>
+                          使用 {formatRelativeDate(item.lastUsedAtMs)}
                         </div>
-                        <div className={styles.activityLine}>
-                          测试 {formatDate(item.lastTestedAtMs)}
+                        <div
+                          className={styles.activityLine}
+                          title={formatDate(item.lastTestedAtMs)}
+                        >
+                          测试 {formatRelativeDate(item.lastTestedAtMs)}
                         </div>
                         {item.lastError ? (
                           <div className={styles.lastError} title={item.lastError}>
@@ -773,7 +1083,9 @@ export function AccountsPage() {
                         <div className={styles.rowActions}>
                           <button
                             type="button"
+                            className={styles.rowActionButton}
                             onClick={() => setEditingAccount(item)}
+                            disabled={rowBusy}
                             title="编辑账号"
                             aria-label="编辑账号"
                           >
@@ -782,43 +1094,79 @@ export function AccountsPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setTestingAccount(item)}
-                            title="测试账号"
-                            aria-label="测试账号"
-                          >
-                            <IconCrosshair size={15} />
-                            <span>测试</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void toggleAccount(item)}
-                            disabled={rowAction !== ''}
-                            title={item.enabled ? '停用账号' : '启用账号'}
-                            aria-label={item.enabled ? '停用账号' : '启用账号'}
-                          >
-                            {item.enabled ? <IconX size={15} /> : <IconCheck size={15} />}
-                            <span>{item.enabled ? '停用' : '启用'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.dangerAction}
-                            onClick={() => void deleteAccount(item)}
-                            disabled={rowAction !== ''}
+                            className={`${styles.rowActionButton} ${styles.dangerAction}`}
+                            onClick={() => confirmDeleteAccount(item)}
+                            disabled={rowBusy}
                             title="删除账号"
                             aria-label="删除账号"
                           >
                             <IconTrash2 size={15} />
                             <span>删除</span>
                           </button>
-                          <Link
-                            to={advancedPath}
-                            className={styles.iconLink}
-                            title="高级管理"
-                            aria-label="高级管理"
-                          >
-                            <IconSettings size={15} />
-                            <span>高级</span>
-                          </Link>
+                          <DropdownMenu
+                            ariaLabel={`账号 ${item.name || item.email || item.id} 的更多操作`}
+                            disabled={rowBusy}
+                            triggerClassName={styles.moreActionTrigger}
+                            menuClassName={styles.accountActionMenu}
+                            triggerIcon={<IconMoreVertical size={15} />}
+                            triggerLabel={<span>更多</span>}
+                            items={[
+                              {
+                                key: 'test',
+                                label: '测试连接',
+                                icon: <IconCrosshair size={15} />,
+                                iconTone: 'green',
+                                onClick: () => setTestingAccount(item),
+                              },
+                              {
+                                key: 'stats',
+                                label: '查看统计',
+                                icon: <IconChartLine size={15} />,
+                                iconTone: 'indigo',
+                                onClick: () => setStatsAccount(item),
+                              },
+                              ...(accountActionAvailable(item, capabilities, 'scheduledTests')
+                                ? [
+                                    {
+                                      key: 'scheduled-tests',
+                                      label: '定时测试',
+                                      icon: <IconTimer size={15} />,
+                                      iconTone: 'orange' as const,
+                                      onClick: () => setScheduledTestsAccount(item),
+                                    },
+                                  ]
+                                : []),
+                              ...(accountActionAvailable(item, capabilities, 'reauthorize')
+                                ? [
+                                    {
+                                      key: 'reauthorize',
+                                      label: '重新授权',
+                                      icon: <IconExternalLink size={15} />,
+                                      tone: 'blue' as const,
+                                      onClick: () => setReauthorizingAccount(item),
+                                    },
+                                  ]
+                                : []),
+                              ...(accountActionAvailable(item, capabilities, 'refreshToken')
+                                ? [
+                                    {
+                                      key: 'refresh-token',
+                                      label: '刷新令牌',
+                                      icon: <IconRefreshCw size={15} />,
+                                      tone: 'purple' as const,
+                                      onClick: () => void refreshAccountToken(item),
+                                    },
+                                  ]
+                                : []),
+                              {
+                                key: 'advanced',
+                                label: '高级管理',
+                                icon: <IconExternalLink size={15} />,
+                                separatorBefore: true,
+                                onClick: () => navigate(advancedPath),
+                              },
+                            ]}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -854,6 +1202,40 @@ export function AccountsPage() {
         onClose={() => setTestingAccount(null)}
         onTested={() => void loadAccounts(true)}
       />
+      <AccountStatsModal
+        open={statsAccount !== null}
+        account={statsAccount}
+        managerBase={managerBase}
+        managementKey={managementKey}
+        onClose={() => setStatsAccount(null)}
+        onUsageLoaded={(nextUsage, requestSource) => {
+          if (!statsAccount) return undefined;
+          return acceptStatsUsage(statsAccount, nextUsage, requestSource);
+        }}
+      />
+      <AccountReauthorizeModal
+        open={reauthorizingAccount !== null}
+        account={reauthorizingAccount}
+        managerBase={managerBase}
+        managementKey={managementKey}
+        onClose={() => setReauthorizingAccount(null)}
+        onCompleted={async (nextAccount) => {
+          if (nextAccount) {
+            setItems((current) =>
+              current.map((item) => (item.id === nextAccount.id ? nextAccount : item))
+            );
+          }
+          setReauthorizingAccount(null);
+          await loadAccounts(true);
+        }}
+      />
+      <AccountScheduledTestsModal
+        open={scheduledTestsAccount !== null}
+        account={scheduledTestsAccount}
+        managerBase={managerBase}
+        managementKey={managementKey}
+        onClose={() => setScheduledTestsAccount(null)}
+      />
       <AccountBatchModal
         open={batchAction !== null}
         action={batchAction}
@@ -864,12 +1246,32 @@ export function AccountsPage() {
           setBatchAction(null);
           setSelectedIDs(new Set());
         }}
-        onCompleted={(result) => {
+        onCompleted={async (result) => {
+          const sharedProviderBatch =
+            (batchAction === 'enable' || batchAction === 'disable') &&
+            selectedAccounts.some(usesSharedProviderSwitch);
+          let syncFailed = false;
+          if (sharedProviderBatch) {
+            try {
+              await proAccountsApi.sync(managerBase, managementKey);
+              await loadBindingReviews();
+            } catch (syncError) {
+              syncFailed = true;
+              showNotification(
+                `批量操作已完成，但共享 Provider 关联账号同步失败：${
+                  syncError instanceof Error ? syncError.message : String(syncError)
+                }`,
+                'warning'
+              );
+            }
+          }
+          await loadAccounts();
           showNotification(
-            `批量操作完成：成功 ${result.succeeded}，失败 ${result.failed}`,
-            result.failed > 0 ? 'warning' : 'success'
+            `批量操作完成：成功 ${result.succeeded}，失败 ${result.failed}${
+              sharedProviderBatch && !syncFailed ? '，共享 Provider 状态已同步' : ''
+            }`,
+            result.failed > 0 || syncFailed ? 'warning' : 'success'
           );
-          void loadAccounts();
         }}
       />
       <AccountBindingReviewModal

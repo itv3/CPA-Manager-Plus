@@ -3,6 +3,7 @@ package proaccountusage
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	proaccountrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccount"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/pricing"
 	proaccountsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccount"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 )
@@ -28,24 +30,35 @@ type Service struct {
 	repository    proaccountrepo.Repository
 	accounts      *proaccountsvc.Service
 	managerConfig *managerconfig.Service
-	gateway       *proaccountgateway.Client
+	modelPrices   modelPriceLoader
+	gateway       usageGateway
 	xaiUsage      XAIUsageQuerier
 	adapters      map[string]officialUsageAdapter
 	mu            sync.Mutex
 	cache         map[string]cacheEntry
 }
 
+type usageGateway interface {
+	APICall(ctx context.Context, baseURL string, managementKey string, input proaccountgateway.APICallRequest) (proaccountgateway.APICallResult, error)
+	FindAccountByAuthIndex(ctx context.Context, baseURL string, managementKey string, authIndex string) (proaccountgateway.AccountSnapshot, error)
+	ResolveAccountRuntime(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string) (proaccountgateway.AccountRuntime, error)
+}
+
 type XAIUsageQuerier interface {
 	QueryXAIUsage(ctx context.Context, authIndex string) ([]model.CodexInspectionQuotaWindow, bool, error)
 }
 
-func New(repository proaccountrepo.Repository, accounts *proaccountsvc.Service, managerConfig *managerconfig.Service, clients ...*http.Client) *Service {
+type modelPriceLoader interface {
+	LoadAll(ctx context.Context) (map[string]model.ModelPrice, error)
+}
+
+func New(repository proaccountrepo.Repository, accounts *proaccountsvc.Service, managerConfig *managerconfig.Service, modelPrices modelPriceLoader, clients ...*http.Client) *Service {
 	client := &http.Client{Timeout: 30 * time.Second}
 	if len(clients) > 0 && clients[0] != nil {
 		client = clients[0]
 	}
 	service := &Service{
-		repository: repository, accounts: accounts, managerConfig: managerConfig,
+		repository: repository, accounts: accounts, managerConfig: managerConfig, modelPrices: modelPrices,
 		gateway: proaccountgateway.New(client), cache: map[string]cacheEntry{},
 	}
 	service.adapters = newOfficialUsageAdapters(service)
@@ -66,17 +79,25 @@ func (s *Service) Get(ctx context.Context, accountID string, source string, forc
 	localNow := now.In(location)
 	from := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
 	to := from.AddDate(0, 0, 1)
-	local, passiveWindows, err := s.repository.Usage(ctx, accountID, from.UnixMilli(), to.UnixMilli())
+	local, passiveWindows, passivePlanType, err := s.repository.Usage(ctx, accountID, from.UnixMilli(), to.UnixMilli())
 	if err != nil {
+		return model.ProAccountUsageResult{}, err
+	}
+	costStats, err := s.repository.UsageCostStats(ctx, accountID, from.UnixMilli(), to.UnixMilli())
+	if err != nil {
+		return model.ProAccountUsageResult{}, err
+	}
+	if err := s.applyLocalCost(ctx, &local, costStats); err != nil {
 		return model.ProAccountUsageResult{}, err
 	}
 	result := model.ProAccountUsageResult{
 		Source: "local", UpdatedAtMS: now.UnixMilli(), OfficialWindows: passiveWindows,
-		Local: local,
+		Local: local, PlanType: firstNonEmptyPlanType(passivePlanType, account.PlanType),
 	}
 	if len(passiveWindows) > 0 {
 		result.Source = "passive"
 	}
+	result.OfficialWindows = ensureReferenceUsageWindows(account, result.OfficialWindows)
 	if strings.ToLower(strings.TrimSpace(source)) != "active" {
 		return result, nil
 	}
@@ -92,11 +113,9 @@ func (s *Service) Get(ctx context.Context, accountID string, source string, forc
 		return result, nil
 	}
 
-	if cached, ok := s.loadCache(accountID, now); ok {
-		if !force || cached.ErrorCode != "" {
-			cached.Local = local
-			return cached, nil
-		}
+	if cached, ok := s.loadCache(accountID, now); ok && !force {
+		cached.Local = local
+		return cached, nil
 	}
 	official, err := adapter.Query(ctx, account)
 	if err != nil {
@@ -109,10 +128,143 @@ func (s *Service) Get(ctx context.Context, accountID string, source string, forc
 		return result, nil
 	}
 	result.Source = "official"
-	result.OfficialWindows = official
+	result.OfficialWindows = ensureReferenceUsageWindows(account, official.Windows)
+	result.PlanType = firstNonEmptyPlanType(official.PlanType, passivePlanType, account.PlanType)
+	if official.PlanType != "" {
+		// 主动查询得到的套餐信息要持久化，避免后续无套餐字段的快照让表格徽标消失。
+		_ = s.repository.UpdatePlanType(ctx, accountID, result.PlanType)
+	}
 	result.UpdatedAtMS = time.Now().UnixMilli()
 	s.storeCache(accountID, result, now.Add(successCacheTTL))
 	return result, nil
+}
+
+func (s *Service) applyLocalCost(ctx context.Context, local *model.ProAccountLocalUsage, stats []model.ProAccountUsageCostStat) error {
+	local.EstimatedCost = nil
+	local.CostKnown = false
+	if local.Requests <= 0 || len(stats) == 0 {
+		return nil
+	}
+
+	billableStats := make([]model.ProAccountUsageCostStat, 0, len(stats))
+	for _, stat := range stats {
+		if usageCostStatHasTokens(stat) {
+			billableStats = append(billableStats, stat)
+		}
+	}
+	if len(billableStats) == 0 {
+		cost := 0.0
+		local.EstimatedCost = &cost
+		local.CostKnown = true
+		return nil
+	}
+
+	prices := map[string]model.ModelPrice{}
+	if s.modelPrices != nil {
+		loaded, err := s.modelPrices.LoadAll(ctx)
+		if err != nil {
+			return err
+		}
+		prices = loaded
+	}
+
+	total := 0.0
+	for _, stat := range billableStats {
+		cost, known := pricing.CostForModelCandidatesWithServiceTierKnown(
+			[]string{stat.BillingModel, stat.Model},
+			stat.ServiceTier,
+			pricing.ModelTokens{
+				InputTokens:             stat.InputTokens,
+				OutputTokens:            stat.OutputTokens,
+				CachedTokens:            stat.CachedTokens,
+				CacheReadTokens:         stat.CacheReadTokens,
+				CacheCreationTokens:     stat.CacheCreationTokens,
+				LongInputTokens:         stat.LongInputTokens,
+				LongOutputTokens:        stat.LongOutputTokens,
+				LongCachedTokens:        stat.LongCachedTokens,
+				LongCacheReadTokens:     stat.LongCacheReadTokens,
+				LongCacheCreationTokens: stat.LongCacheCreationTokens,
+			},
+			prices,
+		)
+		if !known {
+			// 正 Token 模型缺价时不返回部分成本，避免把已知小计误认为完整账号成本。
+			return nil
+		}
+		total += cost
+	}
+	local.EstimatedCost = &total
+	local.CostKnown = true
+	return nil
+}
+
+func usageCostStatHasTokens(stat model.ProAccountUsageCostStat) bool {
+	return stat.TotalTokens > 0 || stat.InputTokens > 0 || stat.OutputTokens > 0 ||
+		stat.CachedTokens > 0 || stat.CacheReadTokens > 0 || stat.CacheCreationTokens > 0
+}
+
+func ensureReferenceUsageWindows(account model.ProAccount, windows []model.ProAccountUsageWindow) []model.ProAccountUsageWindow {
+	platform := strings.ToLower(strings.TrimSpace(account.Platform))
+	authType := strings.ToLower(strings.TrimSpace(account.AuthType))
+	if authType != "oauth" || (platform != "openai" && platform != "anthropic") {
+		return windows
+	}
+	result := append([]model.ProAccountUsageWindow(nil), windows...)
+	for _, expected := range []struct {
+		id    string
+		label string
+	}{
+		{id: "five_hour", label: "5h"},
+		{id: "weekly", label: "7d"},
+	} {
+		found := false
+		for _, window := range result {
+			if window.ID == expected.id || strings.EqualFold(strings.TrimSpace(window.Label), expected.label) {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		result = append(result, model.ProAccountUsageWindow{
+			ID: expected.id, Label: expected.label, Source: "local",
+		})
+	}
+	sortUsageWindows(result)
+	return result
+}
+
+func sortUsageWindows(windows []model.ProAccountUsageWindow) {
+	priority := func(window model.ProAccountUsageWindow) int {
+		id := strings.ToLower(strings.TrimSpace(window.ID))
+		label := strings.ToLower(strings.TrimSpace(window.Label))
+		switch {
+		case id == "five_hour" || label == "5h":
+			return 10
+		case id == "weekly" || id == "seven_day" || label == "7d":
+			return 20
+		case id == "monthly" || label == "30d":
+			return 30
+		case strings.HasPrefix(id, "code_review_"):
+			return 40
+		default:
+			return 50
+		}
+	}
+	sort.SliceStable(windows, func(i, j int) bool { return priority(windows[i]) < priority(windows[j]) })
+}
+
+func firstNonEmptyPlanType(values ...string) string {
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.ReplaceAll(value, "-", "_")
+		value = strings.Join(strings.Fields(value), "_")
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Service) loadCache(accountID string, now time.Time) (model.ProAccountUsageResult, bool) {

@@ -31,7 +31,7 @@ func (c *Client) ReadModelRules(ctx context.Context, baseURL string, managementK
 		}
 		return NormalizeModelRules(ModelRules{
 			AllowedModels:    mapStringSlice(file.Raw, "allowed_models", "allowed-models", "allowedModels"),
-			ModelMapping:     mapStringMap(file.Raw, "model_mapping", "modelMapping"),
+			ModelMapping:     withoutIdentityModelMappings(mapStringMap(file.Raw, "model_mapping", "modelMapping")),
 			ModelRuleVersion: mapString(file.Raw, "model_rule_version", "model-rule-version", "modelRuleVersion"),
 		})
 	case SourceOpenAICompatibility:
@@ -125,9 +125,9 @@ func (c *Client) RestoreModelRules(ctx context.Context, baseURL string, manageme
 }
 
 func (c *Client) writeModelRules(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, rules ModelRules) error {
-	models := modelListFromMapping(rules.ModelMapping)
 	switch sourceType {
 	case SourceAuthFile:
+		models := modelListFromMapping(rules.ModelMapping)
 		aliases := make([]map[string]any, 0, len(models))
 		for _, current := range models {
 			aliases = append(aliases, map[string]any{"name": current["name"], "alias": current["alias"]})
@@ -144,6 +144,14 @@ func (c *Client) writeModelRules(ctx context.Context, baseURL string, management
 		if keyIndex < 0 && len(rules.AllowedModels) > 0 {
 			return ErrUnsupportedSource
 		}
+		providers, err := c.loadConfigEntries(ctx, baseURL, managementKey, "/v0/management/openai-compatibility", "openai-compatibility")
+		if err != nil {
+			return err
+		}
+		if providerIndex >= len(providers) {
+			return ErrGatewayAccountNotFound
+		}
+		models := modelListForRules(mapSlice(providers[providerIndex], "models"), rules, nil)
 		value := map[string]any{"models": models}
 		payload := map[string]any{"index": providerIndex, "value": value}
 		if keyIndex >= 0 {
@@ -161,6 +169,7 @@ func (c *Client) writeModelRules(ctx context.Context, baseURL string, management
 		if err != nil {
 			return err
 		}
+		models := modelListForRules(nil, rules, nil)
 		_, _, err = c.requestJSON(ctx, baseURL, managementKey, http.MethodPatch, endpoint.Path, map[string]any{
 			"index": index,
 			"value": map[string]any{"allowed-models": rules.AllowedModels, "models": models},
@@ -242,14 +251,65 @@ func parseOpenAICompatibilityLocator(locator string) (int, int, error) {
 }
 
 func modelListFromMapping(mapping map[string]string) []map[string]any {
-	aliases := make([]string, 0, len(mapping))
-	for alias := range mapping {
-		aliases = append(aliases, alias)
+	return modelListForRules(nil, ModelRules{ModelMapping: mapping}, nil)
+}
+
+func modelListForRules(existing []map[string]any, rules ModelRules, catalog []string) []map[string]any {
+	preserved := make(map[string]map[string]any, len(existing))
+	desired := make(map[string]string, len(existing)+len(catalog)+len(rules.AllowedModels)+len(rules.ModelMapping))
+	for _, current := range existing {
+		name := mapString(current, "name")
+		alias := mapString(current, "alias")
+		if alias == "" {
+			alias = name
+		}
+		if alias == "" || name == "" {
+			continue
+		}
+		preserved[alias+"\x00"+name] = current
+		if alias == name {
+			desired[alias] = name
+		}
+	}
+	for _, raw := range catalog {
+		model := strings.TrimSpace(raw)
+		if model != "" && !strings.Contains(model, "*") {
+			if _, exists := desired[model]; !exists {
+				desired[model] = model
+			}
+		}
+	}
+	for _, raw := range rules.AllowedModels {
+		model := strings.TrimSpace(raw)
+		if model != "" && !strings.Contains(model, "*") {
+			if _, exists := desired[model]; !exists {
+				desired[model] = model
+			}
+		}
+	}
+	for alias, target := range rules.ModelMapping {
+		desired[strings.TrimSpace(alias)] = strings.TrimSpace(target)
+	}
+
+	aliases := make([]string, 0, len(desired))
+	for alias := range desired {
+		if alias != "" && desired[alias] != "" {
+			aliases = append(aliases, alias)
+		}
 	}
 	sort.Strings(aliases)
 	result := make([]map[string]any, 0, len(aliases))
 	for _, alias := range aliases {
-		result = append(result, map[string]any{"name": mapping[alias], "alias": alias})
+		target := desired[alias]
+		if current, ok := preserved[alias+"\x00"+target]; ok {
+			clone := make(map[string]any, len(current))
+			for key, value := range current {
+				clone[key] = value
+			}
+			result = append(result, clone)
+			continue
+		}
+		result = append(result, map[string]any{"name": target, "alias": alias})
 	}
 	return result
 }

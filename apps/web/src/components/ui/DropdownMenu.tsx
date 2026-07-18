@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -18,7 +19,9 @@ export interface DropdownMenuItem {
   icon?: ReactNode;
   onClick: () => void;
   disabled?: boolean;
-  tone?: 'default' | 'danger';
+  tone?: 'default' | 'danger' | 'blue' | 'purple';
+  iconTone?: 'green' | 'indigo' | 'orange' | 'blue' | 'purple';
+  separatorBefore?: boolean;
 }
 
 interface DropdownMenuProps {
@@ -27,6 +30,7 @@ interface DropdownMenuProps {
   triggerLabel?: ReactNode;
   triggerIcon?: ReactNode;
   triggerClassName?: string;
+  menuClassName?: string;
   align?: 'start' | 'end';
   disabled?: boolean;
 }
@@ -41,6 +45,7 @@ export function DropdownMenu({
   triggerLabel,
   triggerIcon,
   triggerClassName,
+  menuClassName,
   align = 'end',
   disabled = false,
 }: DropdownMenuProps) {
@@ -222,7 +227,7 @@ export function DropdownMenu({
               role="menu"
               aria-label={ariaLabel}
               tabIndex={-1}
-              className={styles.menu}
+              className={[styles.menu, menuClassName].filter(Boolean).join(' ')}
               style={
                 position
                   ? { top: position.top, left: position.left }
@@ -234,27 +239,51 @@ export function DropdownMenu({
                 const itemClasses = [
                   styles.item,
                   item.tone === 'danger' ? styles.itemDanger : '',
+                  item.tone === 'blue' ? styles.itemBlue : '',
+                  item.tone === 'purple' ? styles.itemPurple : '',
                   index === activeIndex ? styles.itemActive : '',
                 ]
                   .filter(Boolean)
                   .join(' ');
+                const iconToneClasses = {
+                  green: styles.itemIconGreen,
+                  indigo: styles.itemIconIndigo,
+                  orange: styles.itemIconOrange,
+                  blue: styles.itemIconBlue,
+                  purple: styles.itemIconPurple,
+                };
                 return (
-                  <button
-                    key={item.key}
-                    ref={(node) => {
-                      itemRefs.current[index] = node;
-                    }}
-                    type="button"
-                    role="menuitem"
-                    tabIndex={index === activeIndex ? 0 : -1}
-                    className={itemClasses}
-                    disabled={item.disabled}
-                    onMouseEnter={() => !item.disabled && setActiveIndex(index)}
-                    onClick={() => handleItemClick(item)}
-                  >
-                    {item.icon ? <span className={styles.itemIcon}>{item.icon}</span> : null}
-                    <span>{item.label}</span>
-                  </button>
+                  <Fragment key={item.key}>
+                    {item.separatorBefore ? (
+                      <div className={styles.divider} role="separator" />
+                    ) : null}
+                    <button
+                      ref={(node) => {
+                        itemRefs.current[index] = node;
+                      }}
+                      type="button"
+                      role="menuitem"
+                      tabIndex={index === activeIndex ? 0 : -1}
+                      className={itemClasses}
+                      disabled={item.disabled}
+                      onMouseEnter={() => !item.disabled && setActiveIndex(index)}
+                      onClick={() => handleItemClick(item)}
+                    >
+                      {item.icon ? (
+                        <span
+                          className={[
+                            styles.itemIcon,
+                            item.iconTone ? iconToneClasses[item.iconTone] : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                        >
+                          {item.icon}
+                        </span>
+                      ) : null}
+                      <span>{item.label}</span>
+                    </button>
+                  </Fragment>
                 );
               })}
             </div>,

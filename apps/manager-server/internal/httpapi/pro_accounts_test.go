@@ -14,6 +14,8 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
+const codexResponsesURLForTest = "https://chatgpt.com/backend-api/codex/responses"
+
 func TestProAccountLifecycleCreateMigrateToggleAndDelete(t *testing.T) {
 	responsesUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -120,6 +122,138 @@ func TestProAccountLifecycleCreateMigrateToggleAndDelete(t *testing.T) {
 	}
 }
 
+func TestProAccountCreateDraftOnlyPersistsRulesWithoutConnectivityTest(t *testing.T) {
+	const secret = "draft-only-secret-must-not-leak"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"upstream-model"}]}`))
+		case "/v1/responses":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	gatewayState := &lifecycleGatewayState{}
+	gateway := httptest.NewServer(gatewayState)
+	t.Cleanup(gateway.Close)
+	handler := newTestHandler(t, gateway.URL, true)
+	body := fmt.Sprintf(`{
+		"operation_id":"draft-only-operation","idempotency_key":"draft-only-key","platform":"openai","auth_type":"api",
+		"name":"停用 OpenAI","base_url":%q,"api_key":%q,"protocol_mode":"responses","draft_only":true,
+		"allowed_models":["client-model"],"model_mapping":{"client-model":"upstream-model"},"test_model":"client-model"
+	}`, upstream.URL, secret)
+
+	createRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts", body, testutil.AdminKey)
+	testutil.RequireStatus(t, createRR, http.StatusCreated)
+	var created struct {
+		Account struct {
+			ID            string            `json:"id"`
+			SourceType    string            `json:"sourceType"`
+			Enabled       bool              `json:"enabled"`
+			AllowedModels []string          `json:"allowedModels"`
+			ModelMapping  map[string]string `json:"modelMapping"`
+		} `json:"account"`
+		Operation struct {
+			State string `json:"state"`
+		} `json:"operation"`
+		SavedDisabled bool `json:"savedDisabled"`
+	}
+	testutil.DecodeJSON(t, createRR, &created)
+	if created.Account.ID == "" || created.Account.SourceType != "config_codex_api_key" || created.Account.Enabled || created.Operation.State != "saved_disabled" || !created.SavedDisabled {
+		t.Fatalf("draft_only 创建结果 = %s", createRR.Body.String())
+	}
+	if len(created.Account.AllowedModels) != 1 || created.Account.AllowedModels[0] != "client-model" || created.Account.ModelMapping["client-model"] != "upstream-model" {
+		t.Fatalf("draft_only 模型规则 = %#v / %#v", created.Account.AllowedModels, created.Account.ModelMapping)
+	}
+	if strings.Contains(createRR.Body.String(), secret) {
+		t.Fatalf("draft_only 响应泄露 API Key：%s", createRR.Body.String())
+	}
+
+	replayRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts", body, testutil.AdminKey)
+	testutil.RequireStatus(t, replayRR, http.StatusCreated)
+	if !strings.Contains(replayRR.Body.String(), `"state":"saved_disabled"`) || !strings.Contains(replayRR.Body.String(), `"savedDisabled":true`) || strings.Contains(replayRR.Body.String(), secret) {
+		t.Fatalf("draft_only 幂等重放结果 = %s", replayRR.Body.String())
+	}
+
+	gatewayState.mu.Lock()
+	apiCalls := gatewayState.apiCalls
+	codexCount := len(gatewayState.codex)
+	var codexRaw []byte
+	if codexCount == 1 {
+		codexRaw, _ = json.Marshal(gatewayState.codex[0])
+	}
+	gatewayState.mu.Unlock()
+	if apiCalls != 0 || codexCount != 1 {
+		t.Fatalf("draft_only Gateway 调用 apiCalls=%d codex=%d", apiCalls, codexCount)
+	}
+	encodedRules := string(codexRaw)
+	if !strings.Contains(encodedRules, `"allowed-models":["client-model"]`) || !strings.Contains(encodedRules, `"alias":"client-model"`) || !strings.Contains(encodedRules, `"name":"upstream-model"`) || !strings.Contains(encodedRules, `"excluded-models":["*"]`) {
+		t.Fatalf("draft_only 未完整写入停用模型规则：%s", encodedRules)
+	}
+}
+
+func TestProAccountCreateKeepsDisabledAfterFinalTestFailure(t *testing.T) {
+	const secret = "failed-test-secret-must-not-leak"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"upstream-model"}]}`))
+		case "/v1/responses":
+			_, _ = w.Write([]byte(`{"output":[{"type":"function_call","name":"probe_account"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	gatewayState := &lifecycleGatewayState{apiCallStatus: http.StatusUnauthorized}
+	gateway := httptest.NewServer(gatewayState)
+	t.Cleanup(gateway.Close)
+	handler := newTestHandler(t, gateway.URL, true)
+
+	createRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts", fmt.Sprintf(`{
+		"operation_id":"failed-test-operation","idempotency_key":"failed-test-key","platform":"openai","auth_type":"api",
+		"name":"测试失败 OpenAI","base_url":%q,"api_key":%q,"protocol_mode":"responses",
+		"allowed_models":["client-model"],"model_mapping":{"client-model":"upstream-model"},"test_model":"client-model",
+		"save_disabled_on_test_failure":true
+	}`, upstream.URL, secret), testutil.AdminKey)
+	testutil.RequireStatus(t, createRR, http.StatusCreated)
+	var created struct {
+		Account struct {
+			ID      string `json:"id"`
+			Enabled bool   `json:"enabled"`
+		} `json:"account"`
+		Operation struct {
+			State     string `json:"state"`
+			ErrorCode string `json:"errorCode"`
+		} `json:"operation"`
+		Connectivity struct {
+			Success    bool   `json:"success"`
+			StatusCode int    `json:"statusCode"`
+			ErrorCode  string `json:"errorCode"`
+		} `json:"connectivity"`
+		SavedDisabled bool `json:"savedDisabled"`
+	}
+	testutil.DecodeJSON(t, createRR, &created)
+	if created.Account.ID == "" || created.Account.Enabled || created.Operation.State != "saved_disabled" || created.Operation.ErrorCode != "authentication_failed" || !created.SavedDisabled {
+		t.Fatalf("最终测试失败保留结果 = %s", createRR.Body.String())
+	}
+	if created.Connectivity.Success || created.Connectivity.StatusCode != http.StatusUnauthorized || created.Connectivity.ErrorCode != "authentication_failed" {
+		t.Fatalf("最终测试诊断 = %#v", created.Connectivity)
+	}
+	if strings.Contains(createRR.Body.String(), secret) {
+		t.Fatalf("最终测试失败响应泄露 API Key：%s", createRR.Body.String())
+	}
+	gatewayState.mu.Lock()
+	apiCalls := gatewayState.apiCalls
+	codexCount := len(gatewayState.codex)
+	gatewayState.mu.Unlock()
+	if apiCalls != 1 || codexCount != 1 {
+		t.Fatalf("最终测试失败后的 Gateway 状态 apiCalls=%d codex=%d", apiCalls, codexCount)
+	}
+}
+
 func TestProAccountOAuthDraftCanCompleteAndCancel(t *testing.T) {
 	gatewayState := &oauthGatewayState{mapping: map[string]string{}}
 	gateway := httptest.NewServer(gatewayState)
@@ -132,6 +266,23 @@ func TestProAccountOAuthDraftCanCompleteAndCancel(t *testing.T) {
 	testutil.RequireStatus(t, startRR, http.StatusCreated)
 	if !strings.Contains(startRR.Body.String(), `"state":"oauth-state"`) || !strings.Contains(startRR.Body.String(), `"state":"probed"`) {
 		t.Fatalf("oauth start body = %s", startRR.Body.String())
+	}
+	callbackRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/oauth/callback", `{
+		"operation_id":"oauth-operation","callback_input":"authorization-code","callback_state":"oauth-state"
+	}`, testutil.AdminKey)
+	testutil.RequireStatus(t, callbackRR, http.StatusOK)
+	gatewayState.mu.Lock()
+	if gatewayState.callbackProvider != "codex" || gatewayState.callbackCode != "authorization-code" || gatewayState.callbackState != "oauth-state" {
+		gatewayState.mu.Unlock()
+		t.Fatalf("OAuth 回调未正确转发：%#v", gatewayState)
+	}
+	gatewayState.mu.Unlock()
+	mismatchRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/oauth/callback", `{
+		"operation_id":"oauth-operation","callback_input":"http://localhost/callback?code=wrong-code&state=other-state"
+	}`, testutil.AdminKey)
+	testutil.RequireStatus(t, mismatchRR, http.StatusBadRequest)
+	if !strings.Contains(mismatchRR.Body.String(), `"code":"oauth_state_mismatch"`) {
+		t.Fatalf("OAuth state 不匹配响应 = %s", mismatchRR.Body.String())
 	}
 	statusRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts/oauth/status?operation_id=oauth-operation", "", testutil.AdminKey)
 	testutil.RequireStatus(t, statusRR, http.StatusOK)
@@ -154,9 +305,9 @@ func TestProAccountOAuthDraftCanCompleteAndCancel(t *testing.T) {
 		t.Fatalf("oauth complete body = %s", completeRR.Body.String())
 	}
 	gatewayState.mu.Lock()
-	if gatewayState.credentialDraft || gatewayState.disabled {
+	if gatewayState.credentialDraft || gatewayState.disabled || gatewayState.accountTestCalls != 0 {
 		gatewayState.mu.Unlock()
-		t.Fatalf("启用后应清除草稿状态：%#v", gatewayState)
+		t.Fatalf("OAuth 应直接启用且不执行连通性测试：%#v", gatewayState)
 	}
 	gatewayState.mu.Unlock()
 
@@ -179,20 +330,25 @@ func TestProAccountOAuthDraftCanCompleteAndCancel(t *testing.T) {
 }
 
 type lifecycleGatewayState struct {
-	mu       sync.Mutex
-	codex    []map[string]any
-	compat   []map[string]any
-	apiCalls int
+	mu            sync.Mutex
+	codex         []map[string]any
+	compat        []map[string]any
+	apiCalls      int
+	apiCallStatus int
 }
 
 type oauthGatewayState struct {
-	mu              sync.Mutex
-	draftCreated    bool
-	disabled        bool
-	credentialDraft bool
-	allowed         []string
-	mapping         map[string]string
-	cancelled       bool
+	mu               sync.Mutex
+	draftCreated     bool
+	disabled         bool
+	credentialDraft  bool
+	allowed          []string
+	mapping          map[string]string
+	cancelled        bool
+	callbackCode     string
+	callbackState    string
+	callbackProvider string
+	accountTestCalls int
 }
 
 func (s *oauthGatewayState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +378,20 @@ func (s *oauthGatewayState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.draftCreated = true
 		s.disabled = true
 		s.credentialDraft = true
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	case "/v0/management/oauth-callback":
+		var payload struct {
+			Provider string `json:"provider"`
+			Code     string `json:"code"`
+			State    string `json:"state"`
+		}
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+			http.Error(w, "bad callback", http.StatusBadRequest)
+			return
+		}
+		s.callbackProvider = payload.Provider
+		s.callbackCode = payload.Code
+		s.callbackState = payload.State
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	case "/v0/management/oauth-session":
 		s.cancelled = true
@@ -253,6 +423,9 @@ func (s *oauthGatewayState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	case "/v0/management/api-call":
 		_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{}"}`))
+	case "/v0/management/account-test":
+		s.accountTestCalls++
+		writeAccountTestResponse(w, r, http.StatusUnauthorized)
 	default:
 		http.NotFound(w, r)
 	}
@@ -276,7 +449,18 @@ func (s *lifecycleGatewayState) ServeHTTP(w http.ResponseWriter, r *http.Request
 		s.handleCompatibility(w, r)
 	case "/v0/management/api-call":
 		s.apiCalls++
-		_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{}"}`))
+		status := s.apiCallStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status_code": status, "header": map[string]string{}, "body": "{}"})
+	case "/v0/management/account-test":
+		s.apiCalls++
+		status := s.apiCallStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		writeAccountTestResponse(w, r, status)
 	default:
 		http.NotFound(w, r)
 	}
@@ -288,7 +472,7 @@ func (s *lifecycleGatewayState) handleConfigList(w http.ResponseWriter, r *http.
 		result := make([]map[string]any, 0, len(*entries))
 		for index, entry := range *entries {
 			copyEntry := cloneTestMap(entry)
-			copyEntry["auth-index"] = fmt.Sprintf("codex-auth-%d-%v", index, entry["api-key"])
+			copyEntry["auth-index"] = fmt.Sprintf("codex-auth-%d", index)
 			copyEntry["model-rule-version"] = fmt.Sprintf("codex-rule-%d", index)
 			result = append(result, copyEntry)
 		}
@@ -346,7 +530,7 @@ func (s *lifecycleGatewayState) handleCompatibility(w http.ResponseWriter, r *ht
 			for keyIndex, raw := range keys {
 				entry, _ := raw.(map[string]any)
 				copyKey := cloneTestMap(entry)
-				copyKey["auth-index"] = fmt.Sprintf("compat-auth-%d-%d-%v", providerIndex, keyIndex, entry["api-key"])
+				copyKey["auth-index"] = fmt.Sprintf("compat-auth-%d-%d", providerIndex, keyIndex)
 				copyKey["model-rule-version"] = fmt.Sprintf("compat-rule-%d-%d", providerIndex, keyIndex)
 				responseKeys = append(responseKeys, copyKey)
 			}
@@ -399,6 +583,43 @@ func cloneTestMap(value map[string]any) map[string]any {
 	return result
 }
 
+func writeAccountTestResponse(w http.ResponseWriter, r *http.Request, status int) {
+	var request struct {
+		Model    string `json:"model"`
+		Protocol string `json:"protocol"`
+		Mode     string `json:"mode"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	errorCode := ""
+	errorMessage := ""
+	retryable := false
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		errorCode = "authentication_failed"
+		errorMessage = "上游拒绝了账号凭证"
+	case status == http.StatusNotFound || status == http.StatusMethodNotAllowed:
+		errorCode = "protocol_not_supported"
+		errorMessage = "上游不支持所选协议"
+	case status == http.StatusTooManyRequests:
+		errorCode = "rate_limited"
+		errorMessage = "上游正在限流"
+		retryable = true
+	case status >= http.StatusInternalServerError:
+		errorCode = "upstream_unavailable"
+		errorMessage = "上游服务暂时不可用"
+		retryable = true
+	case status < http.StatusOK || status >= http.StatusMultipleChoices:
+		errorCode = "connectivity_test_failed"
+		errorMessage = "账号连通性测试失败"
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":     status >= http.StatusOK && status < http.StatusMultipleChoices,
+		"status_code": status, "protocol": request.Protocol, "mode": request.Mode,
+		"model": request.Model, "upstream_model": request.Model, "duration_ms": 1,
+		"error_code": errorCode, "error_message": errorMessage, "retryable": retryable,
+	})
+}
+
 func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -411,7 +632,7 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 		case "/v0/management/plugins":
 			_, _ = w.Write([]byte(`{"plugins_enabled":true,"plugins":[{"id":"gemini-cli","registered":true,"enabled":true,"effective_enabled":true,"supports_oauth":true,"oauth_provider":"gemini-cli","metadata":{"version":"1.0.5"}}]}`))
 		case "/v0/management/auth-files/models":
-			if r.URL.Query().Get("name") != "auth-gemini" {
+			if r.URL.Query().Get("auth_index") != "auth-gemini" {
 				http.Error(w, "invalid auth index", http.StatusBadRequest)
 				return
 			}
@@ -507,18 +728,20 @@ func TestProAccountModelRulesAndConnectivityUseSameAllowlist(t *testing.T) {
 			}
 			ruleVersion = "rule-new"
 			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodPost && r.URL.Path == "/v0/management/api-call":
+		case r.Method == http.MethodPost && r.URL.Path == "/v0/management/account-test":
 			apiCalls.Add(1)
 			var payload struct {
-				AuthIndex string `json:"authIndex"`
-				Data      string `json:"data"`
+				AuthIndex string `json:"auth_index"`
+				Model     string `json:"model"`
+				Protocol  string `json:"protocol"`
+				Mode      string `json:"mode"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			if payload.AuthIndex != "auth-openai" || !strings.Contains(payload.Data, `"model":"upstream-model"`) {
+			if payload.AuthIndex != "auth-openai" || payload.Model != "upstream-model" || payload.Protocol != "responses" || payload.Mode != "default" {
 				http.Error(w, "invalid test request", http.StatusBadRequest)
 				return
 			}
-			_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{}"}`))
+			_, _ = w.Write([]byte(`{"success":true,"status_code":200,"protocol":"responses","mode":"default","model":"upstream-model","upstream_model":"upstream-model","duration_ms":1}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -647,9 +870,14 @@ func TestProAccountActiveUsageUsesGatewayAPICall(t *testing.T) {
 			apiCalls.Add(1)
 			var request struct {
 				AuthIndex string `json:"authIndex"`
+				URL       string `json:"url"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.AuthIndex != "auth-alpha" {
 				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if request.URL == codexResponsesURLForTest {
+				_, _ = w.Write([]byte(`{"status_code":200,"header":{"X-Codex-Primary-Used-Percent":["62"],"X-Codex-Primary-Window-Minutes":["300"],"X-Codex-Primary-Reset-After-Seconds":["3600"],"X-Codex-Secondary-Used-Percent":["4"],"X-Codex-Secondary-Window-Minutes":["10080"],"X-Codex-Secondary-Reset-After-Seconds":["7200"]},"body":""}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"status_code":200,"header":{},"body":"{\"rate_limit\":{\"primary_window\":{\"used_percent\":62,\"limit_window_seconds\":18000,\"reset_after_seconds\":3600},\"secondary_window\":{\"used_percent\":4,\"limit_window_seconds\":604800,\"reset_after_seconds\":7200}}}"}`))
@@ -688,7 +916,7 @@ func TestProAccountActiveUsageUsesGatewayAPICall(t *testing.T) {
 	if usageResult.OfficialWindows[0].ID != "five_hour" || usageResult.OfficialWindows[0].UsedPercent == nil || *usageResult.OfficialWindows[0].UsedPercent != 62 {
 		t.Fatalf("usage windows = %#v", usageResult.OfficialWindows)
 	}
-	if apiCalls.Load() != 1 {
+	if apiCalls.Load() != 2 {
 		t.Fatalf("api-call count = %d", apiCalls.Load())
 	}
 }
@@ -877,7 +1105,7 @@ func TestProAccountActiveUsageSupportsAnthropicAntigravityAndXAI(t *testing.T) {
 	}
 }
 
-func TestProAccountActiveUsageCachesRecoverableErrorEvenWhenForced(t *testing.T) {
+func TestProAccountActiveUsageForceBypassesRecoverableErrorCache(t *testing.T) {
 	var apiCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -911,7 +1139,7 @@ func TestProAccountActiveUsageCachesRecoverableErrorEvenWhenForced(t *testing.T)
 			t.Fatalf("可恢复错误响应错误：%s", rr.Body.String())
 		}
 	}
-	if apiCalls.Load() != 1 {
-		t.Fatalf("可恢复错误缓存未生效，api-call 次数 = %d", apiCalls.Load())
+	if apiCalls.Load() != 2 {
+		t.Fatalf("强制查询未绕过可恢复错误缓存，api-call 次数 = %d", apiCalls.Load())
 	}
 }

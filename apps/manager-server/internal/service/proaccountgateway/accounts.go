@@ -74,8 +74,10 @@ func (c *Client) Snapshot(ctx context.Context, baseURL string, managementKey str
 
 func capabilitiesFromHeaders(headers http.Header) Capabilities {
 	return Capabilities{
-		CredentialDraft: strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-DRAFT")), "true"),
-		AllowedModels:   strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-ALLOWED-MODELS")), "true"),
+		CredentialDraft:         strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-DRAFT")), "true"),
+		CredentialRefresh:       strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-REFRESH")), "true"),
+		TargetedReauthorization: strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-TARGETED-REAUTH")), "true"),
+		AllowedModels:           strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-ALLOWED-MODELS")), "true"),
 	}
 }
 
@@ -95,13 +97,13 @@ func accountFromAuthFile(file cpaauthfiles.File) (AccountSnapshot, bool) {
 	}
 	health, lastError := normalizedHealth(file.Raw)
 	return AccountSnapshot{
-		Platform: platform, AuthType: normalizedAuthType(file.Provider, file.Raw),
-		SourceType: SourceAuthFile, SourceLocator: locator, Name: name, Email: email,
+		Provider: file.Provider, Platform: platform, AuthType: normalizedAuthType(file.Provider, file.Raw),
+		SourceType: SourceAuthFile, SourceLocator: locator, PlanType: authFilePlanType(file.Raw), Name: name, Email: email,
 		Enabled: !file.Disabled, HealthStatus: health, LastError: lastError,
 		AuthIndex:         strings.TrimSpace(file.AuthIndex),
 		SourceFingerprint: fingerprint(platform, email, file.AccountID, file.AccountSnapshot),
 		AllowedModels:     mapStringSlice(file.Raw, "allowed_models", "allowedModels", "allowed-models"),
-		ModelMapping:      mapStringMap(file.Raw, "model_mapping", "modelMapping"),
+		ModelMapping:      withoutIdentityModelMappings(mapStringMap(file.Raw, "model_mapping", "modelMapping")),
 		ModelRuleVersion:  mapString(file.Raw, "model_rule_version", "modelRuleVersion", "model-rule-version"),
 		ExpiresAtMS:       mapTimeMS(file.Raw, "expires_at", "expiresAt", "expired_at"),
 		BaseURL:           mapString(file.Raw, "base_url", "base-url", "baseUrl"),
@@ -109,6 +111,29 @@ func accountFromAuthFile(file cpaauthfiles.File) (AccountSnapshot, bool) {
 		CredentialDraft:   mapBool(file.Raw, "credential_draft", "credentialDraft", "pro_draft"),
 		UpstreamAccountID: strings.TrimSpace(file.AccountID),
 	}, true
+}
+
+func authFilePlanType(raw map[string]any) string {
+	if planType := mapString(raw, "plan_type", "planType", "chatgpt_plan_type", "chatgptPlanType"); planType != "" {
+		return normalizePlanType(planType)
+	}
+	for _, key := range []string{"id_token", "idToken", "metadata", "attributes"} {
+		nested, ok := raw[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		if planType := mapString(nested, "plan_type", "planType", "chatgpt_plan_type", "chatgptPlanType"); planType != "" {
+			return normalizePlanType(planType)
+		}
+	}
+	return ""
+}
+
+func normalizePlanType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "_")
+	value = strings.Join(strings.Fields(value), "_")
+	return value
 }
 
 func (c *Client) snapshotConfigEndpoint(ctx context.Context, baseURL string, managementKey string, endpoint configEndpoint) ([]AccountSnapshot, bool, error) {
@@ -312,8 +337,18 @@ func modelMappingFromList(models []map[string]any) map[string]string {
 		if alias == "" {
 			alias = name
 		}
-		if alias != "" && name != "" {
+		if alias != "" && name != "" && alias != name {
 			result[alias] = name
+		}
+	}
+	return result
+}
+
+func withoutIdentityModelMappings(mapping map[string]string) map[string]string {
+	result := make(map[string]string, len(mapping))
+	for alias, target := range mapping {
+		if alias != target {
+			result[alias] = target
 		}
 	}
 	return result

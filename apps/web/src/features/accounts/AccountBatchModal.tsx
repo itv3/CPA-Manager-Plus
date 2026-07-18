@@ -9,6 +9,7 @@ import {
   type ProAccountBatchResult,
 } from '@/services/api/proAccounts';
 import { createRequestIdentity, suggestedTestModel } from './accountFormUtils';
+import { usesSharedProviderSwitch } from './accountTablePresentation';
 import styles from './AccountModals.module.scss';
 
 interface AccountBatchModalProps {
@@ -18,7 +19,7 @@ interface AccountBatchModalProps {
   managerBase: string;
   managementKey: string;
   onClose: () => void;
-  onCompleted: (result: ProAccountBatchResult) => void;
+  onCompleted: (result: ProAccountBatchResult) => void | Promise<void>;
 }
 
 const ACTION_LABELS: Record<ProAccountBatchAction, string> = {
@@ -62,6 +63,10 @@ export function AccountBatchModal({
     () => targetAccounts.map((account) => account.name || account.email || account.id),
     [targetAccounts]
   );
+  const sharedProviderCount = useMemo(
+    () => targetAccounts.filter(usesSharedProviderSwitch).length,
+    [targetAccounts]
+  );
 
   const execute = async () => {
     if (!action || targetAccounts.length === 0) return;
@@ -93,7 +98,7 @@ export function AccountBatchModal({
         identity.idempotencyKey
       );
       setResult(response);
-      onCompleted(response);
+      await onCompleted(response);
     } catch (batchError) {
       setError(batchError instanceof Error ? batchError.message : String(batchError));
     } finally {
@@ -135,6 +140,12 @@ export function AccountBatchModal({
             <span key={`${targetAccounts[index]?.id}:${name}`}>{name}</span>
           ))}
         </div>
+        {(action === 'enable' || action === 'disable') && sharedProviderCount > 0 ? (
+          <div className={styles.sharedWarning} role="note">
+            其中 {sharedProviderCount} 个账号来自共享 Chat Completions Provider，操作会联动同
+            Provider 下未选择的 Key；完成后将自动同步关联状态。
+          </div>
+        ) : null}
         {action === 'test' ? (
           <label className={styles.field}>
             <span className={styles.fieldLabel}>测试模型</span>

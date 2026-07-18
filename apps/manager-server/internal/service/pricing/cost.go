@@ -169,6 +169,13 @@ func CostForModelWithServiceTier(modelName string, serviceTier string, tokens Mo
 // Callers should pass resolved/upstream model first, followed by the requested
 // display model or alias as a price fallback.
 func CostForModelCandidatesWithServiceTier(modelNames []string, serviceTier string, tokens ModelTokens, prices map[string]model.ModelPrice) float64 {
+	cost, _ := CostForModelCandidatesWithServiceTierKnown(modelNames, serviceTier, tokens, prices)
+	return cost
+}
+
+// CostForModelCandidatesWithServiceTierKnown 在计算成本的同时返回是否找到了可用价格。
+// 成本为零既可能是零 Token 的真实结果，也可能是缺少价格；调用方应使用 known 区分两者。
+func CostForModelCandidatesWithServiceTierKnown(modelNames []string, serviceTier string, tokens ModelTokens, prices map[string]model.ModelPrice) (float64, bool) {
 	seen := map[string]bool{}
 	candidates := make([]string, 0, len(modelNames))
 	for _, modelName := range modelNames {
@@ -188,16 +195,16 @@ func CostForModelCandidatesWithServiceTier(modelNames []string, serviceTier stri
 		if !ok {
 			continue
 		}
-		return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price)
+		return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price), true
 	}
 	for _, modelName := range candidates {
 		price, ok := officialGPT56Price(modelName)
 		if !ok {
 			continue
 		}
-		return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price)
+		return costForPriceWithServiceTier(behaviorModel, serviceTier, tokens, price), true
 	}
-	return 0
+	return 0, false
 }
 
 // SumCost folds CostForModel over a slice of (model, tokens) tuples.

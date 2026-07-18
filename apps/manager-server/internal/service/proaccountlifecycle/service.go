@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -15,15 +16,20 @@ import (
 )
 
 var (
-	ErrInvalidRequest           = errors.New("invalid pro account lifecycle request")
-	ErrUnsupportedAccountType   = errors.New("unsupported pro account type")
-	ErrGatewayCapability        = errors.New("gateway capability is unavailable")
-	ErrOperationState           = errors.New("pro account operation state is invalid")
-	ErrOperationConflict        = errors.New("pro account operation does not match request")
-	ErrResourceVersionConflict  = proaccountrepo.ErrVersionConflict
-	ErrConnectivityFailed       = errors.New("account connectivity test failed")
-	ErrOAuthCredentialMissing   = errors.New("oauth draft credential was not found")
-	ErrOAuthCredentialAmbiguous = errors.New("multiple oauth draft credentials require confirmation")
+	ErrInvalidRequest            = errors.New("invalid pro account lifecycle request")
+	ErrUnsupportedAccountType    = errors.New("unsupported pro account type")
+	ErrGatewayCapability         = errors.New("gateway capability is unavailable")
+	ErrOperationState            = errors.New("pro account operation state is invalid")
+	ErrOperationConflict         = errors.New("pro account operation does not match request")
+	ErrResourceVersionConflict   = proaccountrepo.ErrVersionConflict
+	ErrConnectivityFailed        = errors.New("account connectivity test failed")
+	ErrOAuthCredentialMissing    = errors.New("oauth draft credential was not found")
+	ErrOAuthCredentialAmbiguous  = errors.New("multiple oauth draft credentials require confirmation")
+	ErrOAuthCallbackInvalid      = errors.New("oauth callback input is invalid")
+	ErrOAuthStateMismatch        = errors.New("oauth callback state does not match operation")
+	ErrOAuthIdentityMismatch     = errors.New("oauth replacement identity does not match target account")
+	ErrReauthorizationRequired   = errors.New("oauth refresh credential requires reauthorization")
+	ErrReauthorizationInProgress = errors.New("another reauthorization is already in progress for this account")
 )
 
 type Service struct {
@@ -34,6 +40,9 @@ type Service struct {
 	probe      ProbeService
 	operations OperationService
 	now        func() time.Time
+
+	// 重新授权会跨多次 HTTP 轮询推进同一操作，必须串行执行，避免并发请求重复认领或清理同一草稿凭据。
+	reauthorizationMu sync.Mutex
 }
 
 func New(accounts AccountReader, repository AccountRepository, setup SetupResolver, gateway Gateway, probe ProbeService, operations OperationService) *Service {
@@ -57,7 +66,7 @@ func (s *Service) start(ctx context.Context, operationID string, idempotencyKey 
 		OperationType: operationType, ProAccountID: accountID, Context: contextValue,
 	})
 	if err != nil {
-		return model.ProAccountDraft{}, false, err
+		return operation, false, err
 	}
 	expectedAccountID := strings.TrimSpace(accountID)
 	if !created && (operation.OperationType != operationType || (expectedAccountID != "" && operation.ProAccountID != expectedAccountID)) {
@@ -85,7 +94,7 @@ func (s *Service) fail(ctx context.Context, operation model.ProAccountDraft, cod
 func discoveryFromSnapshot(snapshot proaccountgateway.AccountSnapshot) model.ProAccountDiscovery {
 	return model.ProAccountDiscovery{
 		Platform: snapshot.Platform, AuthType: snapshot.AuthType, SourceType: snapshot.SourceType,
-		Name: snapshot.Name, Email: snapshot.Email, Enabled: snapshot.Enabled,
+		PlanType: snapshot.PlanType, Name: snapshot.Name, Email: snapshot.Email, Enabled: snapshot.Enabled,
 		HealthStatus: snapshot.HealthStatus, LastError: snapshot.LastError,
 		AllowedModels: append([]string(nil), snapshot.AllowedModels...), ModelMapping: cloneMap(snapshot.ModelMapping),
 		ModelRuleVersion: snapshot.ModelRuleVersion, ExpiresAtMS: snapshot.ExpiresAtMS,

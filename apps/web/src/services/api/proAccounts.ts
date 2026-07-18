@@ -22,6 +22,7 @@ export interface ProAccount {
   platform: string;
   authType: string;
   sourceType: string;
+  planType?: string;
   name?: string;
   email?: string;
   enabled: boolean;
@@ -104,6 +105,7 @@ export interface ProAccountLocalUsage {
 export interface ProAccountUsageResponse {
   source: string;
   updatedAtMs: number;
+  planType?: string;
   officialWindows: ProAccountUsageWindow[];
   local: ProAccountLocalUsage;
   errorCode?: string;
@@ -131,6 +133,7 @@ export interface ProAccountProtocolResult {
   status: 'supported' | 'unsupported' | 'unknown' | '';
   statusCode?: number;
   errorCode?: string;
+  errorMessage?: string;
   retryable: boolean;
 }
 
@@ -149,6 +152,7 @@ export interface ProAccountProbeResult {
   chatCompletions: ProAccountProtocolResult;
   basicConnectivity: ProAccountProtocolResult;
   errorCode?: string;
+  errorMessage?: string;
   retryable: boolean;
 }
 
@@ -166,9 +170,16 @@ export interface ProAccountConnectivityResult {
   statusCode?: number;
   protocol: string;
   model: string;
+  mappedModel?: string;
+  upstreamModel?: string;
+  durationMs?: number;
+  responsePreview?: string;
   errorCode?: string;
+  errorMessage?: string;
   retryable: boolean;
 }
+
+export type ProAccountTestMode = 'default' | 'compact';
 
 export interface ProAccountLifecycleResult {
   account: ProAccount;
@@ -180,6 +191,7 @@ export interface ProAccountLifecycleResult {
 
 export interface ProAccountEditable {
   baseUrl?: string;
+  proxyUrl?: string;
   headers: Record<string, string>;
   sharedProvider: boolean;
 }
@@ -194,7 +206,10 @@ export interface ProAccountCapabilitiesResponse {
   allowedModels: boolean;
   stores: Record<string, 'supported' | 'unsupported' | 'unknown'>;
   platforms?: Record<string, Record<string, ProAccountAuthCapability | undefined> | undefined>;
+  accountActions?: Partial<Record<ProAccountActionCapabilityName, ProAccountAuthCapability>>;
 }
+
+export type ProAccountActionCapabilityName = 'reauthorize' | 'refreshToken' | 'scheduledTests';
 
 export interface ProAccountAuthCapability {
   status: 'supported' | 'unsupported' | 'unknown';
@@ -202,6 +217,48 @@ export interface ProAccountAuthCapability {
   pluginId?: string;
   provider?: string;
   version?: string;
+}
+
+export interface ProAccountScheduledTestPlan {
+  id: number;
+  proAccountId: string;
+  modelId: string;
+  cronExpression: string;
+  enabled: boolean;
+  maxResults: number;
+  autoRecover: boolean;
+  lastRunAtMs?: number;
+  nextRunAtMs?: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ProAccountScheduledTestResult {
+  id: number;
+  planId: number;
+  status: 'success' | 'running' | 'failed' | string;
+  responseText?: string;
+  errorMessage?: string;
+  latencyMs?: number;
+  startedAtMs: number;
+  finishedAtMs?: number;
+  createdAtMs: number;
+}
+
+export interface ProAccountScheduledTestPlanInput {
+  modelId: string;
+  cronExpression: string;
+  enabled: boolean;
+  maxResults: number;
+  autoRecover: boolean;
+}
+
+export interface ProAccountScheduledTestPlanListResponse {
+  items: ProAccountScheduledTestPlan[];
+}
+
+export interface ProAccountScheduledTestResultListResponse {
+  items: ProAccountScheduledTestResult[];
 }
 
 export interface ProAccountOAuthResult {
@@ -301,6 +358,7 @@ export interface ProAccountProbeInput {
   platform: string;
   baseUrl: string;
   apiKey: string;
+  proxyUrl?: string;
   protocolMode: string;
   model?: string;
   allowedModels: string[];
@@ -312,6 +370,8 @@ export interface ProAccountCreateAPIInput extends ProAccountProbeInput {
   name?: string;
   testModel: string;
   saveDisabledOnTestFailure: boolean;
+  draftOnly?: boolean;
+  skipTest?: boolean;
 }
 
 export interface ProAccountCreateVertexInput {
@@ -333,6 +393,7 @@ export interface ProAccountUpdateInput {
   name?: string;
   baseUrl?: string;
   apiKey?: string;
+  proxyUrl?: string;
   protocolMode?: string;
   headers?: Record<string, string>;
   allowedModels: string[];
@@ -504,6 +565,7 @@ export const proAccountsApi = {
           auth_type: 'api',
           base_url: input.baseUrl,
           api_key: input.apiKey,
+          proxy_url: input.proxyUrl,
           protocol_mode: input.protocolMode,
           model: input.model,
           allowed_models: input.allowedModels,
@@ -530,12 +592,15 @@ export const proAccountsApi = {
           name: input.name,
           base_url: input.baseUrl,
           api_key: input.apiKey,
+          proxy_url: input.proxyUrl,
           protocol_mode: input.protocolMode,
           headers: input.headers,
           allowed_models: input.allowedModels,
           model_mapping: input.modelMapping,
           test_model: input.testModel,
           save_disabled_on_test_failure: input.saveDisabledOnTestFailure,
+          draft_only: Boolean(input.draftOnly),
+          skip_test: Boolean(input.skipTest),
         },
         requestConfig(managementKey, input.idempotencyKey)
       );
@@ -594,6 +659,29 @@ export const proAccountsApi = {
     try {
       const response = await axios.get<ProAccountOAuthResult>(
         buildURL(base, '/v0/pro/accounts/oauth/status', query),
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async submitOAuthCallback(
+    base: string,
+    managementKey: string,
+    operationId: string,
+    callbackInput: string,
+    callbackState = ''
+  ) {
+    try {
+      const response = await axios.post<ProAccountOAuthResult>(
+        buildURL(base, '/v0/pro/accounts/oauth/callback'),
+        {
+          operation_id: operationId,
+          callback_input: callbackInput,
+          callback_state: callbackState,
+        },
         requestConfig(managementKey)
       );
       return response.data;
@@ -763,6 +851,221 @@ export const proAccountsApi = {
     }
   },
 
+  async startReauthorization(
+    base: string,
+    managementKey: string,
+    account: ProAccount,
+    operationId: string,
+    idempotencyKey: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountOAuthResult>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(account.id)}/reauthorize/start`),
+        mutationBody(operationId, idempotencyKey, account.version),
+        requestConfig(managementKey, idempotencyKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async reauthorizationStatus(
+    base: string,
+    managementKey: string,
+    accountId: string,
+    operationId: string
+  ) {
+    const query = new URLSearchParams({ operation_id: operationId });
+    try {
+      const response = await axios.get<ProAccountOAuthResult>(
+        buildURL(
+          base,
+          `/v0/pro/accounts/${encodeURIComponent(accountId)}/reauthorize/status`,
+          query
+        ),
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async submitReauthorizationCallback(
+    base: string,
+    managementKey: string,
+    accountId: string,
+    operationId: string,
+    callbackInput: string,
+    callbackState = ''
+  ) {
+    try {
+      const response = await axios.post<ProAccountOAuthResult>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(accountId)}/reauthorize/callback`),
+        {
+          operation_id: operationId,
+          callback_input: callbackInput,
+          callback_state: callbackState,
+        },
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async cancelReauthorization(
+    base: string,
+    managementKey: string,
+    accountId: string,
+    operationId: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountOAuthResult>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(accountId)}/reauthorize/cancel`),
+        { operation_id: operationId },
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async refreshToken(
+    base: string,
+    managementKey: string,
+    account: ProAccount,
+    operationId: string,
+    idempotencyKey: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountLifecycleResult>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(account.id)}/refresh-token`),
+        mutationBody(operationId, idempotencyKey, account.version),
+        requestConfig(managementKey, idempotencyKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async listScheduledTests(base: string, managementKey: string, accountId: string) {
+    try {
+      const response = await axios.get<
+        ProAccountScheduledTestPlanListResponse | ProAccountScheduledTestPlan[]
+      >(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(accountId)}/scheduled-test-plans`),
+        requestConfig(managementKey)
+      );
+      return Array.isArray(response.data) ? response.data : (response.data.items ?? []);
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async createScheduledTest(
+    base: string,
+    managementKey: string,
+    account: ProAccount,
+    input: ProAccountScheduledTestPlanInput,
+    operationId: string,
+    idempotencyKey: string
+  ) {
+    try {
+      const response = await axios.post<ProAccountScheduledTestPlan>(
+        buildURL(base, `/v0/pro/accounts/${encodeURIComponent(account.id)}/scheduled-test-plans`),
+        {
+          ...mutationBody(operationId, idempotencyKey, account.version),
+          model_id: input.modelId,
+          cron_expression: input.cronExpression,
+          enabled: input.enabled,
+          max_results: input.maxResults,
+          auto_recover: input.autoRecover,
+        },
+        requestConfig(managementKey, idempotencyKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async updateScheduledTest(
+    base: string,
+    managementKey: string,
+    accountId: string,
+    planId: number,
+    input: Partial<ProAccountScheduledTestPlanInput>
+  ) {
+    try {
+      const response = await axios.put<ProAccountScheduledTestPlan>(
+        buildURL(
+          base,
+          `/v0/pro/accounts/${encodeURIComponent(accountId)}/scheduled-test-plans/${encodeURIComponent(planId)}`
+        ),
+        {
+          model_id: input.modelId,
+          cron_expression: input.cronExpression,
+          enabled: input.enabled,
+          max_results: input.maxResults,
+          auto_recover: input.autoRecover,
+        },
+        requestConfig(managementKey)
+      );
+      return response.data;
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async deleteScheduledTest(
+    base: string,
+    managementKey: string,
+    accountId: string,
+    planId: number
+  ) {
+    try {
+      await axios.delete(
+        buildURL(
+          base,
+          `/v0/pro/accounts/${encodeURIComponent(accountId)}/scheduled-test-plans/${encodeURIComponent(planId)}`
+        ),
+        requestConfig(managementKey)
+      );
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
+  async listScheduledTestResults(
+    base: string,
+    managementKey: string,
+    accountId: string,
+    planId: number,
+    limit = 20
+  ) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    try {
+      const response = await axios.get<
+        ProAccountScheduledTestResultListResponse | ProAccountScheduledTestResult[]
+      >(
+        buildURL(
+          base,
+          `/v0/pro/accounts/${encodeURIComponent(accountId)}/scheduled-test-plans/${encodeURIComponent(planId)}/results`,
+          query
+        ),
+        requestConfig(managementKey)
+      );
+      return Array.isArray(response.data) ? response.data : (response.data.items ?? []);
+    } catch (error) {
+      return handleError(error);
+    }
+  },
+
   async update(base: string, managementKey: string, id: string, input: ProAccountUpdateInput) {
     try {
       const response = await axios.put<ProAccountLifecycleResult>(
@@ -772,6 +1075,7 @@ export const proAccountsApi = {
           name: input.name,
           base_url: input.baseUrl,
           api_key: input.apiKey,
+          proxy_url: input.proxyUrl,
           protocol_mode: input.protocolMode,
           headers: input.headers,
           allowed_models: input.allowedModels,
@@ -832,6 +1136,7 @@ export const proAccountsApi = {
     managementKey: string,
     account: ProAccount,
     model: string,
+    mode: ProAccountTestMode,
     operationId: string,
     idempotencyKey: string
   ) {
@@ -844,6 +1149,7 @@ export const proAccountsApi = {
         {
           ...mutationBody(operationId, idempotencyKey, account.version),
           model,
+          mode,
         },
         requestConfig(managementKey, idempotencyKey)
       );

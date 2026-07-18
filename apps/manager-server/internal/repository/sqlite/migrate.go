@@ -379,6 +379,9 @@ func Migrate(db *sql.DB) error {
 	if err := ensureProAccountTables(db); err != nil {
 		return err
 	}
+	if err := ensureProAccountScheduledTestTables(db); err != nil {
+		return err
+	}
 	_, err = db.Exec(fmt.Sprintf(`pragma user_version = %d`, CurrentSchemaVersion))
 	return err
 }

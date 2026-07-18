@@ -16,6 +16,7 @@ import (
 	monitoringcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/monitoring"
 	panelcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/panel"
 	proaccountcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/proaccount"
+	proaccountscheduledtestcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/proaccountscheduledtest"
 	proxycontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/proxy"
 	quotacooldowncontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/quotacooldown"
 	setupcontroller "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/controller/setup"
@@ -41,6 +42,7 @@ func New(appCtx *app.Context) http.Handler {
 	monitoringHandler := &monitoringcontroller.Handler{App: appCtx}
 	proxyHandler := &proxycontroller.Handler{App: appCtx}
 	proAccountHandler := &proaccountcontroller.Handler{App: appCtx}
+	proAccountScheduledTestHandler := proaccountscheduledtestcontroller.New(appCtx.ProAccountScheduledTestService, appCtx.AdminAuthService)
 	panelHandler := &panelcontroller.Handler{App: appCtx}
 
 	mux := http.NewServeMux()
@@ -52,7 +54,7 @@ func New(appCtx *app.Context) http.Handler {
 	mux.HandleFunc("/usage-service/quota-cooldowns", middleware.WithCORS(appCtx.Config, quotaCooldownHandler.Handle))
 	mux.HandleFunc("/setup", middleware.WithCORS(appCtx.Config, setupHandler.Setup))
 	mux.HandleFunc("/management.html", panelHandler.ManagementHTML)
-	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, dashboardHandler, monitoringHandler, proxyHandler, proAccountHandler))
+	mux.HandleFunc("/", rootHandler(appCtx, usageHandler, modelPriceHandler, apiKeyAliasHandler, accountActionHandler, codexInspectionHandler, dashboardHandler, monitoringHandler, proxyHandler, proAccountHandler, proAccountScheduledTestHandler))
 
 	return middleware.Recovery(middleware.RequestLogger(mux))
 }
@@ -68,11 +70,16 @@ func rootHandler(
 	monitoringHandler *monitoringcontroller.Handler,
 	proxyHandler *proxycontroller.Handler,
 	proAccountHandler *proaccountcontroller.Handler,
+	proAccountScheduledTestHandler *proaccountscheduledtestcontroller.Handler,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			middleware.WriteCORS(appCtx.Config, w, r)
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if proaccountscheduledtestcontroller.MatchesPath(r.URL.Path) {
+			middleware.WithCORS(appCtx.Config, proAccountScheduledTestHandler.Handle)(w, r)
 			return
 		}
 		if r.URL.Path == "/v0/pro" || strings.HasPrefix(r.URL.Path, "/v0/pro/") {

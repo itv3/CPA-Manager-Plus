@@ -41,12 +41,13 @@ func (c *Client) ResolveAccountRuntime(ctx context.Context, baseURL string, mana
 		return AccountRuntime{
 			Platform:  platform,
 			BaseURL:   accountBaseURL,
+			ProxyURL:  mapString(file.Raw, "proxy_url", "proxy-url", "proxyUrl"),
 			Headers:   mapStringMap(file.Raw, "headers"),
 			ProjectID: projectID,
 			UserAgent: accountRuntimeString(file.Raw, []string{"user_agent", "userAgent"}),
 		}, nil
 	case SourceOpenAICompatibility:
-		providerIndex, _, err := parseOpenAICompatibilityLocator(sourceLocator)
+		providerIndex, keyIndex, err := parseOpenAICompatibilityLocator(sourceLocator)
 		if err != nil {
 			return AccountRuntime{}, err
 		}
@@ -63,7 +64,13 @@ func (c *Client) ResolveAccountRuntime(ctx context.Context, baseURL string, mana
 			return AccountRuntime{}, ErrGatewayAccountNotFound
 		}
 		provider := providers[providerIndex]
-		return AccountRuntime{Platform: "openai", BaseURL: mapString(provider, "base-url", "base_url", "baseUrl"), Headers: mapStringMap(provider, "headers")}, nil
+		// 代理是 Key 级配置,从对应 api-key-entry 读取
+		proxyURL := ""
+		keys := mapSlice(provider, "api-key-entries", "api_key_entries", "apiKeyEntries")
+		if keyIndex >= 0 && keyIndex < len(keys) {
+			proxyURL = mapString(keys[keyIndex], "proxy-url", "proxy_url", "proxyUrl")
+		}
+		return AccountRuntime{Platform: "openai", BaseURL: mapString(provider, "base-url", "base_url", "baseUrl"), ProxyURL: proxyURL, Headers: mapStringMap(provider, "headers")}, nil
 	default:
 		endpoint, ok := endpointForSource(sourceType)
 		if !ok {
@@ -89,6 +96,7 @@ func (c *Client) ResolveAccountRuntime(ctx context.Context, baseURL string, mana
 		return AccountRuntime{
 			Platform: endpoint.Platform,
 			BaseURL:  valueOr(mapString(entry, "base-url", "base_url", "baseUrl"), defaultBaseURL(endpoint.Platform, sourceType)),
+			ProxyURL: mapString(entry, "proxy-url", "proxy_url", "proxyUrl"),
 			Headers:  mapStringMap(entry, "headers"),
 		}, nil
 	}

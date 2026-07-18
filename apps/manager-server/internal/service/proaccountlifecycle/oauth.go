@@ -2,11 +2,18 @@ package proaccountlifecycle
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
 )
+
+type parsedOAuthCallback struct {
+	Code  string
+	State string
+	Error string
+}
 
 func (s *Service) StartOAuth(ctx context.Context, input OAuthStartInput) (OAuthResult, error) {
 	input.Platform = strings.ToLower(strings.TrimSpace(input.Platform))
@@ -143,6 +150,49 @@ func (s *Service) OAuthStatus(ctx context.Context, operationID string) (OAuthRes
 	return OAuthResult{Operation: operation, Status: "ok", Account: &account}, nil
 }
 
+func (s *Service) SubmitOAuthCallback(ctx context.Context, input OAuthCallbackInput) (OAuthResult, error) {
+	operation, err := s.operations.Get(ctx, strings.TrimSpace(input.OperationID))
+	if err != nil {
+		return OAuthResult{}, err
+	}
+	if operation.OperationType != "add" {
+		return OAuthResult{Operation: operation}, ErrOperationConflict
+	}
+	if operation.State != model.ProOperationStateProbed {
+		return OAuthResult{Operation: operation}, ErrOperationState
+	}
+	expectedState := contextString(operation.Context, "oauthState")
+	platform := contextString(operation.Context, "platform")
+	if expectedState == "" || platform == "" {
+		return OAuthResult{Operation: operation}, ErrInvalidRequest
+	}
+	callback, err := parseOAuthCallbackInput(input.CallbackText)
+	if err != nil {
+		return OAuthResult{Operation: operation}, err
+	}
+	if callback.State == "" {
+		callback.State = strings.TrimSpace(input.CallbackState)
+	}
+	if callback.State != "" && callback.State != expectedState {
+		return OAuthResult{Operation: operation}, ErrOAuthStateMismatch
+	}
+	callback.State = expectedState
+	setup, err := s.resolveSetup(ctx)
+	if err != nil {
+		return OAuthResult{Operation: operation}, err
+	}
+	err = s.gateway.SubmitOAuthCallback(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.OAuthCallbackInput{
+		Platform: platform,
+		Code:     callback.Code,
+		State:    callback.State,
+		Error:    callback.Error,
+	})
+	if err != nil {
+		return OAuthResult{Operation: operation}, err
+	}
+	return OAuthResult{Operation: operation, Status: "wait"}, nil
+}
+
 func (s *Service) CancelOAuth(ctx context.Context, operationID string) (OAuthResult, error) {
 	return s.CancelDraft(ctx, operationID)
 }
@@ -152,7 +202,7 @@ func (s *Service) CancelDraft(ctx context.Context, operationID string) (OAuthRes
 	if err != nil {
 		return OAuthResult{}, err
 	}
-	if operation.State == model.ProOperationStateEnabled || operation.State == model.ProOperationStateCancelled || operation.State == model.ProOperationStateFailed {
+	if operation.State == model.ProOperationStateEnabled || operation.State == model.ProOperationStateSavedDisabled || operation.State == model.ProOperationStateCancelled || operation.State == model.ProOperationStateFailed {
 		return OAuthResult{Operation: operation}, ErrOperationState
 	}
 	setup, err := s.resolveSetup(ctx)
@@ -212,4 +262,59 @@ func contextStringSet(value any) map[string]struct{} {
 func toString(value any) string {
 	text, _ := value.(string)
 	return text
+}
+
+func parseOAuthCallbackInput(input string) (parsedOAuthCallback, error) {
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return parsedOAuthCallback{}, ErrOAuthCallbackInvalid
+	}
+	lowerText := strings.ToLower(text)
+	if !containsOAuthCallbackParameter(lowerText) {
+		code := text
+		if strings.HasPrefix(lowerText, "code:") {
+			code = text[len("code:"):]
+		}
+		code = strings.TrimSpace(code)
+		if code == "" {
+			return parsedOAuthCallback{}, ErrOAuthCallbackInvalid
+		}
+		return parsedOAuthCallback{Code: code}, nil
+	}
+
+	queryText := text
+	if parsed, err := url.Parse(text); err == nil {
+		switch {
+		case parsed.RawQuery != "":
+			queryText = parsed.RawQuery
+		case parsed.Fragment != "":
+			queryText = parsed.Fragment
+		}
+	}
+	queryText = strings.TrimPrefix(strings.TrimPrefix(queryText, "?"), "#")
+	values, err := url.ParseQuery(queryText)
+	if err != nil {
+		return parsedOAuthCallback{}, ErrOAuthCallbackInvalid
+	}
+	callback := parsedOAuthCallback{
+		Code:  strings.TrimSpace(values.Get("code")),
+		State: strings.TrimSpace(values.Get("state")),
+		Error: strings.TrimSpace(values.Get("error")),
+	}
+	if callback.Error == "" {
+		callback.Error = strings.TrimSpace(values.Get("error_description"))
+	}
+	if callback.Code == "" && callback.Error == "" {
+		return parsedOAuthCallback{}, ErrOAuthCallbackInvalid
+	}
+	return callback, nil
+}
+
+func containsOAuthCallbackParameter(input string) bool {
+	for _, key := range []string{"code=", "state=", "error=", "error_description="} {
+		if strings.HasPrefix(input, key) || strings.Contains(input, "?"+key) || strings.Contains(input, "&"+key) || strings.Contains(input, "#"+key) {
+			return true
+		}
+	}
+	return false
 }

@@ -9,6 +9,7 @@ func ensureProAccountTables(db *sql.DB) error {
 			platform text not null,
 			auth_type text not null,
 			source_type text not null,
+			plan_type text,
 			name text,
 			email text,
 			enabled integer not null default 1,
@@ -90,6 +91,11 @@ func ensureProAccountTables(db *sql.DB) error {
 			on pro_account_drafts(state, cleanup_deadline_ms, updated_at_ms)`,
 		`create index if not exists idx_pro_account_drafts_account
 			on pro_account_drafts(pro_account_id, updated_at_ms desc)`,
+		`create unique index if not exists idx_pro_account_drafts_active_reauthorization
+			on pro_account_drafts(pro_account_id)
+			where operation_type = 'reauthorize'
+				and pro_account_id is not null
+				and state not in ('enabled', 'saved_disabled', 'cancelled', 'failed')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -113,6 +119,7 @@ func ensureProAccountColumns(db *sql.DB) error {
 	hasVersion := false
 	hasModelRuleVersion := false
 	hasDeletedAt := false
+	hasPlanType := false
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -131,6 +138,9 @@ func ensureProAccountColumns(db *sql.DB) error {
 		if name == "deleted_at_ms" {
 			hasDeletedAt = true
 		}
+		if name == "plan_type" {
+			hasPlanType = true
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -146,7 +156,12 @@ func ensureProAccountColumns(db *sql.DB) error {
 		}
 	}
 	if !hasDeletedAt {
-		_, err = db.Exec(`alter table pro_accounts add column deleted_at_ms integer`)
+		if _, err = db.Exec(`alter table pro_accounts add column deleted_at_ms integer`); err != nil {
+			return err
+		}
+	}
+	if !hasPlanType {
+		_, err = db.Exec(`alter table pro_accounts add column plan_type text`)
 	}
 	return err
 }

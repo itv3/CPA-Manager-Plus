@@ -2578,6 +2578,12 @@
           "antigravity_signature_strict": "Строгая проверка bypass-подписи",
           "antigravity_signature_strict_desc": "Применяется только при отключённом кэше подписей; проверяет полное дерево Claude protobuf"
         },
+        "pro": {
+          "title": "Конфигурация Pro",
+          "description": "Настройки функций CLIProxyAPI Pro",
+          "protocol_model_list_enabled": "Группировать списки моделей по протоколу",
+          "protocol_model_list_enabled_desc": "Фильтровать каталоги моделей по протоколу вышестоящей учётной записи. Неизвестные модели, плагины и режим Home остаются без фильтрации, а фактические вызовы не ограничиваются."
+        },
         "headers": {
           "title": "Заголовки по умолчанию",
           "description": "Заголовки по умолчанию для OAuth-запросов Claude и Codex, когда клиент их не отправил",

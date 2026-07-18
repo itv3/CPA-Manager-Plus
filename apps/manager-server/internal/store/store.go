@@ -16,6 +16,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccount"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccountdraft"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/proaccountscheduledtest"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotacooldown"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
@@ -98,6 +99,8 @@ type Store struct {
 	UsageRollups     usagerollup.Repository
 	ProAccounts      proaccount.Repository
 	ProAccountDrafts proaccountdraft.Repository
+
+	ProAccountScheduledTests proaccountscheduledtest.Repository
 }
 
 func Open(path string, protector ...*security.Protector) (*Store, error) {
@@ -123,6 +126,8 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		UsageRollups:     usagerollup.New(db),
 		ProAccounts:      proaccount.New(db),
 		ProAccountDrafts: proaccountdraft.New(db),
+
+		ProAccountScheduledTests: proaccountscheduledtest.New(db),
 	}
 }
 

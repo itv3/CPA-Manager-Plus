@@ -14,11 +14,19 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
+	usageheaders "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 const (
 	codexUsageURL                = "https://chatgpt.com/backend-api/wham/usage"
+	codexResponsesURL            = "https://chatgpt.com/backend-api/codex/responses"
+	codexUsageProbeVersion       = "0.144.1"
+	codexUsageProbeUserAgent     = "codex_cli_rs/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color"
+	codexUsageProbeDefaultModel  = "gpt-5.4"
+	codexUsageProbeInstructions  = "Reply briefly to confirm the connection is available."
+	codexUsageProbeTimeout       = 15 * time.Second
 	anthropicUsageURL            = "https://api.anthropic.com/api/oauth/usage"
+	anthropicProfileURL          = "https://api.anthropic.com/api/oauth/profile"
 	antigravityLoadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 	antigravityUsageUserAgent    = "antigravity/hub/2.2.1 darwin/arm64"
 )
@@ -33,13 +41,25 @@ var antigravityQuotaURLs = []string{
 }
 
 type officialUsageAdapter interface {
-	Query(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error)
+	Query(ctx context.Context, account model.ProAccount) (officialUsageResult, error)
 }
 
-type officialUsageAdapterFunc func(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error)
+type officialUsageResult struct {
+	Windows  []model.ProAccountUsageWindow
+	PlanType string
+}
 
-func (f officialUsageAdapterFunc) Query(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+type officialUsageAdapterFunc func(ctx context.Context, account model.ProAccount) (officialUsageResult, error)
+
+func (f officialUsageAdapterFunc) Query(ctx context.Context, account model.ProAccount) (officialUsageResult, error) {
 	return f(ctx, account)
+}
+
+func windowsOnlyAdapter(query func(context.Context, model.ProAccount) ([]model.ProAccountUsageWindow, error)) officialUsageAdapterFunc {
+	return func(ctx context.Context, account model.ProAccount) (officialUsageResult, error) {
+		windows, err := query(ctx, account)
+		return officialUsageResult{Windows: windows}, err
+	}
 }
 
 type usageQueryError struct {
@@ -62,8 +82,8 @@ func newOfficialUsageAdapters(service *Service) map[string]officialUsageAdapter 
 	return map[string]officialUsageAdapter{
 		"openai:oauth":      officialUsageAdapterFunc(service.queryOpenAIUsage),
 		"anthropic:oauth":   officialUsageAdapterFunc(service.queryAnthropicUsage),
-		"antigravity:oauth": officialUsageAdapterFunc(service.queryAntigravityUsage),
-		"xai:oauth":         officialUsageAdapterFunc(service.queryXAIUsage),
+		"antigravity:oauth": windowsOnlyAdapter(service.queryAntigravityUsage),
+		"xai:oauth":         windowsOnlyAdapter(service.queryXAIUsage),
 	}
 }
 
@@ -71,8 +91,35 @@ func officialUsageAdapterKey(account model.ProAccount) string {
 	return strings.ToLower(strings.TrimSpace(account.Platform)) + ":" + strings.ToLower(strings.TrimSpace(account.AuthType))
 }
 
-func (s *Service) queryOpenAIUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
-	result, err := s.gatewayUsageCall(ctx, account, proaccountgateway.APICallRequest{
+func (s *Service) queryOpenAIUsage(ctx context.Context, account model.ProAccount) (officialUsageResult, error) {
+	setup, err := s.resolveGatewaySetup(ctx)
+	if err != nil {
+		return officialUsageResult{}, err
+	}
+	return s.queryOpenAIUsageWithSetup(ctx, account, setup)
+}
+
+func (s *Service) queryOpenAIUsageWithSetup(ctx context.Context, account model.ProAccount, setup gatewaySetup) (officialUsageResult, error) {
+	wham, whamErr := s.queryOpenAIWhamUsage(ctx, account, setup)
+	probe, probeErr := s.queryOpenAIResponsesProbe(ctx, account, setup)
+	result := officialUsageResult{
+		Windows:  mergeOpenAIUsageWindows(probe.Windows, wham.Windows),
+		PlanType: firstNonEmptyPlanType(probe.PlanType, wham.PlanType),
+	}
+	if len(result.Windows) > 0 || result.PlanType != "" {
+		return result, nil
+	}
+	if probeErr != nil {
+		return officialUsageResult{}, probeErr
+	}
+	if whamErr != nil {
+		return officialUsageResult{}, whamErr
+	}
+	return officialUsageResult{}, &usageQueryError{message: "OpenAI 官方用量响应没有可识别的配额窗口", retryable: true}
+}
+
+func (s *Service) queryOpenAIWhamUsage(ctx context.Context, account model.ProAccount, setup gatewaySetup) (officialUsageResult, error) {
+	result, err := s.gatewayUsageCallAllowStatusWithSetup(ctx, account, setup, proaccountgateway.APICallRequest{
 		Method: http.MethodGet,
 		URL:    codexUsageURL,
 		Headers: map[string]string{
@@ -82,20 +129,67 @@ func (s *Service) queryOpenAIUsage(ctx context.Context, account model.ProAccount
 		},
 	})
 	if err != nil {
-		return nil, err
+		return officialUsageResult{}, err
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return officialUsageResult{}, statusUsageError(account.Platform, result.StatusCode)
 	}
 	payload, err := decodeUsageObject(result.Body)
 	if err != nil {
-		return nil, err
+		return officialUsageResult{}, err
 	}
-	windows := parseCodexWindows(payload, time.Now())
-	if len(windows) == 0 {
-		return nil, &usageQueryError{message: "OpenAI 官方用量响应没有可识别的配额窗口", retryable: true}
-	}
-	return windows, nil
+	planType := stringValue(payload, "plan_type", "planType")
+	return officialUsageResult{Windows: parseCodexWindows(payload, time.Now(), planType), PlanType: planType}, nil
 }
 
-func (s *Service) queryAnthropicUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
+func (s *Service) queryOpenAIResponsesProbe(ctx context.Context, account model.ProAccount, setup gatewaySetup) (officialUsageResult, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, codexUsageProbeTimeout)
+	defer cancel()
+	headers := map[string]string{
+		"Authorization": "Bearer $TOKEN$",
+		"Content-Type":  "application/json",
+		"Accept":        "text/event-stream",
+		"Host":          "chatgpt.com",
+		"OpenAI-Beta":   "responses=experimental",
+		"Originator":    "codex_cli_rs",
+		"Version":       codexUsageProbeVersion,
+		"User-Agent":    codexUsageProbeUserAgent,
+	}
+	if account.Binding != nil {
+		if snapshot, snapshotErr := s.gateway.FindAccountByAuthIndex(probeCtx, setup.baseURL, setup.managementKey, account.Binding.AuthIndex); snapshotErr == nil {
+			if upstreamAccountID := strings.TrimSpace(snapshot.UpstreamAccountID); upstreamAccountID != "" {
+				headers["Chatgpt-Account-Id"] = upstreamAccountID
+			}
+		}
+	}
+	request := proaccountgateway.APICallRequest{
+		Method:  http.MethodPost,
+		URL:     codexResponsesURL,
+		Headers: headers,
+		Body: map[string]any{
+			"model":        openAIUsageProbeModel(account),
+			"input":        []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}}},
+			"stream":       true,
+			"store":        false,
+			"instructions": codexUsageProbeInstructions,
+		},
+	}
+	result, err := s.gatewayUsageCallAllowStatusWithSetup(probeCtx, account, setup, request)
+	if err != nil {
+		return officialUsageResult{}, err
+	}
+	windows, planType := parseCodexProbeWindows(result.Headers, time.Now())
+	// sub2api 会优先采用响应头中的限额，即使上游同时返回 429 等非 2xx 状态。
+	if len(windows) > 0 {
+		return officialUsageResult{Windows: windows, PlanType: planType}, nil
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return officialUsageResult{PlanType: planType}, statusUsageError(account.Platform, result.StatusCode)
+	}
+	return officialUsageResult{PlanType: planType}, &usageQueryError{message: "OpenAI Codex 探针响应没有可识别的配额窗口", retryable: true}
+}
+
+func (s *Service) queryAnthropicUsage(ctx context.Context, account model.ProAccount) (officialUsageResult, error) {
 	result, err := s.gatewayUsageCall(ctx, account, proaccountgateway.APICallRequest{
 		Method: http.MethodGet,
 		URL:    anthropicUsageURL,
@@ -106,17 +200,53 @@ func (s *Service) queryAnthropicUsage(ctx context.Context, account model.ProAcco
 		},
 	})
 	if err != nil {
-		return nil, err
+		return officialUsageResult{}, err
 	}
 	payload, err := decodeUsageObject(result.Body)
 	if err != nil {
-		return nil, err
+		return officialUsageResult{}, err
 	}
 	windows := parseAnthropicWindows(payload)
 	if len(windows) == 0 {
-		return nil, &usageQueryError{message: "Anthropic 官方用量响应没有可识别的配额窗口", retryable: true}
+		return officialUsageResult{}, &usageQueryError{message: "Anthropic 官方用量响应没有可识别的配额窗口", retryable: true}
 	}
-	return windows, nil
+	planType := ""
+	profile, profileErr := s.gatewayUsageCallAllowStatus(ctx, account, proaccountgateway.APICallRequest{
+		Method: http.MethodGet,
+		URL:    anthropicProfileURL,
+		Headers: map[string]string{
+			"Authorization":  "Bearer $TOKEN$",
+			"Content-Type":   "application/json",
+			"anthropic-beta": "oauth-2025-04-20",
+		},
+	})
+	if profileErr == nil && profile.StatusCode >= http.StatusOK && profile.StatusCode < http.StatusMultipleChoices {
+		if profilePayload, decodeErr := decodeUsageObject(profile.Body); decodeErr == nil {
+			planType = resolveAnthropicPlanType(profilePayload)
+		}
+	}
+	return officialUsageResult{Windows: windows, PlanType: planType}, nil
+}
+
+func resolveAnthropicPlanType(payload map[string]any) string {
+	account := mapValue(payload, "account")
+	if value, ok := normalizedBool(account, "has_claude_max", "hasClaudeMax"); ok && value {
+		return "max"
+	}
+	if value, ok := normalizedBool(account, "has_claude_pro", "hasClaudePro"); ok && value {
+		return "pro"
+	}
+	organization := mapValue(payload, "organization")
+	if strings.EqualFold(stringValue(organization, "organization_type", "organizationType"), "claude_team") &&
+		strings.EqualFold(stringValue(organization, "subscription_status", "subscriptionStatus"), "active") {
+		return "team"
+	}
+	maxValue, hasMax := normalizedBool(account, "has_claude_max", "hasClaudeMax")
+	proValue, hasPro := normalizedBool(account, "has_claude_pro", "hasClaudePro")
+	if hasMax && hasPro && !maxValue && !proValue {
+		return "free"
+	}
+	return ""
 }
 
 func (s *Service) queryAntigravityUsage(ctx context.Context, account model.ProAccount) ([]model.ProAccountUsageWindow, error) {
@@ -275,6 +405,13 @@ func (s *Service) gatewayUsageCallAllowStatus(ctx context.Context, account model
 	if err != nil {
 		return proaccountgateway.APICallResult{}, err
 	}
+	return s.gatewayUsageCallAllowStatusWithSetup(ctx, account, setup, request)
+}
+
+func (s *Service) gatewayUsageCallAllowStatusWithSetup(ctx context.Context, account model.ProAccount, setup gatewaySetup, request proaccountgateway.APICallRequest) (proaccountgateway.APICallResult, error) {
+	if account.Binding == nil || strings.TrimSpace(account.Binding.AuthIndex) == "" {
+		return proaccountgateway.APICallResult{}, &usageQueryError{message: "账号缺少可用的 Gateway 运行时绑定", retryable: false}
+	}
 	request.AuthIndex = account.Binding.AuthIndex
 	return s.gateway.APICall(ctx, setup.baseURL, setup.managementKey, request)
 }
@@ -324,9 +461,146 @@ func decodeUsageObject(raw string) (map[string]any, error) {
 	return payload, nil
 }
 
-func parseCodexWindows(payload map[string]any, now time.Time) []model.ProAccountUsageWindow {
-	rateLimit := mapValue(payload, "rate_limit", "rateLimit")
+func openAIUsageProbeModel(account model.ProAccount) string {
+	// sub2api 默认使用 gpt-5.4；但 Gateway 当前账号可能只开放更新的模型。
+	// 线上 Free 账号已验证：不在 allowedModels 中的 gpt-5.4 会返回 400 且没有配额头，
+	// 因此优先使用账号已确认可用的首个非通配模型，仅在目录为空时回退 sub2api 默认值。
+	for _, raw := range account.AllowedModels {
+		candidate := strings.TrimSpace(raw)
+		if candidate == "" || strings.Contains(candidate, "*") {
+			continue
+		}
+		if mapped := strings.TrimSpace(account.ModelMapping[candidate]); mapped != "" && !strings.Contains(mapped, "*") {
+			return mapped
+		}
+		return candidate
+	}
+	return codexUsageProbeDefaultModel
+}
+
+func mergeOpenAIUsageWindows(probeWindows []model.ProAccountUsageWindow, whamWindows []model.ProAccountUsageWindow) []model.ProAccountUsageWindow {
+	result := make([]model.ProAccountUsageWindow, 0, len(probeWindows)+len(whamWindows))
+	seen := make(map[string]struct{}, len(probeWindows)+len(whamWindows))
+	appendUnique := func(windows []model.ProAccountUsageWindow) {
+		for _, window := range windows {
+			id := strings.ToLower(strings.TrimSpace(window.ID))
+			if id == "" {
+				id = strings.ToLower(strings.TrimSpace(window.Label))
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			result = append(result, window)
+		}
+	}
+	// 响应头是 sub2api 对普通 OpenAI OAuth 账号的 5h/7d 权威来源。
+	appendUnique(probeWindows)
+	// wham 仍保留套餐、月度及附加窗口，并在探针失败时作为官方回退。
+	appendUnique(whamWindows)
+	return result
+}
+
+func parseCodexProbeWindows(headers map[string][]string, base time.Time) ([]model.ProAccountUsageWindow, string) {
+	rawHeaders := make(map[string]any, len(headers))
+	for key, values := range headers {
+		rawHeaders[key] = values
+	}
+	metadata := usageheaders.ParseResponseHeaderMetadata(rawHeaders, base)
+	if metadata == nil || metadata.Quota == nil {
+		return nil, ""
+	}
+	quota := metadata.Quota
+	fiveHour, weekly := normalizeCodexProbeQuota(quota.Primary, quota.Secondary)
 	windows := make([]model.ProAccountUsageWindow, 0, 2)
+	if fiveHour != nil {
+		windows = append(windows, codexProbeWindow("five_hour", "5h", fiveHour, base))
+	}
+	if weekly != nil {
+		windows = append(windows, codexProbeWindow("weekly", "7d", weekly, base))
+	}
+	return windows, firstNonEmptyPlanType(quota.PlanType)
+}
+
+func normalizeCodexProbeQuota(primary *usageheaders.HeaderQuotaWindow, secondary *usageheaders.HeaderQuotaWindow) (fiveHour *usageheaders.HeaderQuotaWindow, weekly *usageheaders.HeaderQuotaWindow) {
+	primaryMinutes, hasPrimaryMinutes := codexProbeWindowMinutes(primary)
+	secondaryMinutes, hasSecondaryMinutes := codexProbeWindowMinutes(secondary)
+	useFiveHourFromPrimary := false
+	useWeeklyFromPrimary := false
+	switch {
+	case hasPrimaryMinutes && hasSecondaryMinutes:
+		useFiveHourFromPrimary = primaryMinutes < secondaryMinutes
+		useWeeklyFromPrimary = !useFiveHourFromPrimary
+	case hasPrimaryMinutes:
+		useFiveHourFromPrimary = primaryMinutes <= 360
+		useWeeklyFromPrimary = !useFiveHourFromPrimary
+	case hasSecondaryMinutes:
+		// 与 sub2api 保持一致：仅 secondary 有窗口长度时，据此推断 primary 的槽位。
+		useWeeklyFromPrimary = secondaryMinutes <= 360
+		useFiveHourFromPrimary = !useWeeklyFromPrimary
+	default:
+		// 旧响应没有 window-minutes 时沿用 primary=7d、secondary=5h。
+		useWeeklyFromPrimary = true
+	}
+	if useFiveHourFromPrimary {
+		return primary, secondary
+	}
+	if useWeeklyFromPrimary {
+		return secondary, primary
+	}
+	return nil, nil
+}
+
+func codexProbeWindowMinutes(window *usageheaders.HeaderQuotaWindow) (float64, bool) {
+	if window == nil || window.WindowMinutes == nil {
+		return 0, false
+	}
+	return *window.WindowMinutes, true
+}
+
+func codexProbeWindow(id string, label string, window *usageheaders.HeaderQuotaWindow, base time.Time) model.ProAccountUsageWindow {
+	result := model.ProAccountUsageWindow{ID: id, Label: label, Source: "official"}
+	if window == nil {
+		return result
+	}
+	applyUsedPercent(&result, window.UsedPercent, window.UsedPercent != nil)
+	result.ResetAtMS = window.ResetAtMS
+	if result.ResetAtMS == 0 && window.ResetAfterSeconds != nil && !base.IsZero() {
+		seconds := *window.ResetAfterSeconds
+		if seconds < 0 {
+			seconds = 0
+		}
+		result.ResetAtMS = base.Add(time.Duration(seconds * float64(time.Second))).UnixMilli()
+	}
+	return result
+}
+
+func parseCodexWindows(payload map[string]any, now time.Time, planType string) []model.ProAccountUsageWindow {
+	windows := make([]model.ProAccountUsageWindow, 0, 8)
+	appendCodexRateLimitWindows(&windows, mapValue(payload, "rate_limit", "rateLimit"), "", "", now, planType)
+	appendCodexRateLimitWindows(&windows, mapValue(payload, "code_review_rate_limit", "codeReviewRateLimit"), "code_review_", "CR ", now, planType)
+	for index, raw := range sliceValue(payload, "additional_rate_limits", "additionalRateLimits") {
+		additional, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := stringValue(additional, "limit_name", "limitName", "metered_feature", "meteredFeature")
+		if name == "" {
+			name = fmt.Sprintf("额外 %d", index+1)
+		}
+		idPrefix := stableUsageID(name)
+		if idPrefix == "" {
+			idPrefix = fmt.Sprintf("additional_%d", index+1)
+		}
+		appendCodexRateLimitWindows(&windows, mapValue(additional, "rate_limit", "rateLimit"), idPrefix+"_", name+" ", now, planType)
+	}
+	return windows
+}
+
+func appendCodexRateLimitWindows(windows *[]model.ProAccountUsageWindow, rateLimit map[string]any, idPrefix string, labelPrefix string, now time.Time, planType string) {
+	if len(rateLimit) == 0 {
+		return
+	}
 	for index, key := range []string{"primary_window", "secondary_window"} {
 		window := mapValue(rateLimit, key)
 		if len(window) == 0 {
@@ -360,13 +634,16 @@ func parseCodexWindows(payload map[string]any, now time.Time) []model.ProAccount
 				label, id = fmt.Sprintf("%.0fh", *seconds/3600), fmt.Sprintf("window_%d", index+1)
 			}
 		} else if index == 1 {
-			label, id = "7d", "weekly"
+			if strings.EqualFold(strings.TrimSpace(planType), "team") {
+				label, id = "30d", "monthly"
+			} else {
+				label, id = "7d", "weekly"
+			}
 		}
-		item := model.ProAccountUsageWindow{ID: id, Label: label, ResetAtMS: resetAt, Source: "official"}
+		item := model.ProAccountUsageWindow{ID: idPrefix + id, Label: labelPrefix + label, ResetAtMS: resetAt, Source: "official"}
 		applyUsedPercent(&item, used, hasUsed)
-		windows = append(windows, item)
+		*windows = append(*windows, item)
 	}
-	return windows
 }
 
 func parseAnthropicWindows(payload map[string]any) []model.ProAccountUsageWindow {
@@ -673,6 +950,35 @@ func explicitFalse(raw map[string]any, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+func normalizedBool(raw map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value, exists := raw[key]
+		if !exists || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return typed, true
+		case json.Number:
+			parsed, err := typed.Int64()
+			if err == nil {
+				return parsed != 0, true
+			}
+		case float64:
+			return typed != 0, true
+		case string:
+			normalized := strings.ToLower(strings.TrimSpace(typed))
+			switch normalized {
+			case "true", "1", "yes", "y", "on":
+				return true, true
+			case "false", "0", "no", "n", "off":
+				return false, true
+			}
+		}
+	}
+	return false, false
 }
 
 func applyUsedPercent(window *model.ProAccountUsageWindow, used *float64, ok bool) {

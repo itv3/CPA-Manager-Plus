@@ -113,6 +113,7 @@ func runServer() {
 		serverApp.AppContext().ProAccountLifecycleService,
 	)
 	proAccountRecoveryWorker.Start(ctx)
+	worker.NewProAccountScheduledTestRunner(serverApp.AppContext().ProAccountScheduledTestService).Start(ctx)
 	automationSettingsService := serverApp.AppContext().AccountProcessingPolicyService
 	runtimeSettings := automationSettingsService.RuntimeSettings(ctx)
 	rateLimitAutoDisableWorker := worker.NewRateLimitAutoDisableWorker(db, collector.RuntimeConfig{

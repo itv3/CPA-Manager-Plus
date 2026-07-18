@@ -403,6 +403,55 @@ describe('useVisualConfig', () => {
     harness.unmount();
   });
 
+  it('loads and writes the protocol model list toggle through the exact YAML key', () => {
+    const harness = mountUseVisualConfig();
+    const yaml = ['protocol-model-list-enabled: true', 'custom-setting: kept', ''].join('\n');
+
+    act(() => {
+      expect(harness.getCurrent().loadVisualValuesFromYaml(yaml).ok).toBe(true);
+    });
+    expect(harness.getCurrent().visualValues.protocolModelListEnabled).toBe(true);
+
+    act(() => {
+      harness.getCurrent().setVisualValues({ protocolModelListEnabled: false });
+    });
+
+    const parsed = parseYaml(harness.getCurrent().applyVisualChangesToYaml(yaml)) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed['protocol-model-list-enabled']).toBe(false);
+    expect(parsed['custom-setting']).toBe('kept');
+
+    harness.unmount();
+  });
+
+  it('keeps the protocol model list toggle absent until it is explicitly enabled', () => {
+    const harness = mountUseVisualConfig();
+    const yaml = ['host: 127.0.0.1', ''].join('\n');
+
+    act(() => {
+      expect(harness.getCurrent().loadVisualValuesFromYaml(yaml).ok).toBe(true);
+    });
+    expect(harness.getCurrent().visualValues.protocolModelListEnabled).toBe(false);
+    expect(
+      (parseYaml(harness.getCurrent().applyVisualChangesToYaml(yaml)) as Record<string, unknown>)[
+        'protocol-model-list-enabled'
+      ]
+    ).toBeUndefined();
+
+    act(() => {
+      harness.getCurrent().setVisualValues({ protocolModelListEnabled: true });
+    });
+    expect(
+      (parseYaml(harness.getCurrent().applyVisualChangesToYaml(yaml)) as Record<string, unknown>)[
+        'protocol-model-list-enabled'
+      ]
+    ).toBe(true);
+
+    harness.unmount();
+  });
+
   it('rejects zero Redis usage retention because CPA normalizes it to 60', () => {
     const harness = mountUseVisualConfig();
 
@@ -410,9 +459,9 @@ describe('useVisualConfig', () => {
       harness.getCurrent().setVisualValues({ redisUsageQueueRetentionSeconds: '0' });
     });
 
-    expect(
-      harness.getCurrent().visualValidationErrors.redisUsageQueueRetentionSeconds
-    ).toBe('retention_seconds_range');
+    expect(harness.getCurrent().visualValidationErrors.redisUsageQueueRetentionSeconds).toBe(
+      'retention_seconds_range'
+    );
     harness.unmount();
   });
 

@@ -108,6 +108,7 @@ describe('proAccountsApi', () => {
       name: '主账号',
       testModel: 'client-model',
       saveDisabledOnTestFailure: true,
+      draftOnly: true,
     });
 
     expect(mocks.post.mock.calls[0][0]).toBe('https://manager.example/v0/pro/accounts/probe');
@@ -124,11 +125,12 @@ describe('proAccountsApi', () => {
       api_key: 'secret-key',
       test_model: 'client-model',
       save_disabled_on_test_failure: true,
+      draft_only: true,
     });
     expect(mocks.post.mock.calls[1][2].headers['Idempotency-Key']).toBe('idem-1');
   });
 
-  it('OAuth 分支启动、轮询、完成和取消均使用 Manager 私有路由', async () => {
+  it('OAuth 分支启动、回调、轮询、完成和取消均使用 Manager 私有路由', async () => {
     mocks.post.mockResolvedValue({ data: { operation: { operationId: 'oauth-1' } } });
     mocks.get.mockResolvedValue({ data: { status: 'wait' } });
 
@@ -137,6 +139,13 @@ describe('proAccountsApi', () => {
       idempotencyKey: 'oauth-key',
       platform: 'gemini',
     });
+    await proAccountsApi.submitOAuthCallback(
+      'https://manager.example',
+      'admin-key',
+      'oauth-1',
+      'oauth-code',
+      'oauth-state'
+    );
     await proAccountsApi.oauthStatus('https://manager.example', 'admin-key', 'oauth-1');
     await proAccountsApi.completeDraft(
       'https://manager.example',
@@ -155,17 +164,27 @@ describe('proAccountsApi', () => {
     await proAccountsApi.cancelDraft('https://manager.example', 'admin-key', 'oauth-1');
 
     expect(mocks.post.mock.calls[0][0]).toContain('/v0/pro/accounts/oauth/start');
+    expect(mocks.post.mock.calls[1]).toEqual(
+      expect.arrayContaining([
+        'https://manager.example/v0/pro/accounts/oauth/callback',
+        {
+          operation_id: 'oauth-1',
+          callback_input: 'oauth-code',
+          callback_state: 'oauth-state',
+        },
+      ])
+    );
     expect(mocks.get.mock.calls[0][0]).toContain(
       '/v0/pro/accounts/oauth/status?operation_id=oauth-1'
     );
-    expect(mocks.post.mock.calls[1][0]).toContain('/account%2Fwith%20space/complete');
-    expect(mocks.post.mock.calls[2]).toEqual(
+    expect(mocks.post.mock.calls[2][0]).toContain('/account%2Fwith%20space/complete');
+    expect(mocks.post.mock.calls[3]).toEqual(
       expect.arrayContaining([
         'https://manager.example/v0/pro/accounts/oauth/cancel',
         { operation_id: 'oauth-1' },
       ])
     );
-    expect(mocks.post.mock.calls[3]).toEqual(
+    expect(mocks.post.mock.calls[4]).toEqual(
       expect.arrayContaining([
         'https://manager.example/v0/pro/accounts/drafts/cancel',
         { operation_id: 'oauth-1' },
@@ -229,6 +248,7 @@ describe('proAccountsApi', () => {
       'admin-key',
       account,
       'client-model',
+      'compact',
       'test-1',
       'test-key'
     );
@@ -237,6 +257,10 @@ describe('proAccountsApi', () => {
     expect(mocks.delete.mock.calls[0][1].data).toMatchObject({
       expected_version: 7,
       operation_id: 'delete-1',
+    });
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({
+      model: 'client-model',
+      mode: 'compact',
     });
     expect(mocks.post.mock.calls[0][1]).toMatchObject({
       expected_version: 7,
@@ -296,6 +320,97 @@ describe('proAccountsApi', () => {
       expected_version: 7,
       confirmed: true,
     });
+  });
+
+  it('重新授权与刷新令牌使用账号级 REST 路由', async () => {
+    mocks.post.mockResolvedValue({
+      data: { operation: { operationId: 'reauth-1' }, oauth: { url: 'https://auth.example' } },
+    });
+    mocks.get.mockResolvedValue({ data: { status: 'wait' } });
+
+    await proAccountsApi.startReauthorization(
+      'https://manager.example',
+      'admin-key',
+      account,
+      'reauth-1',
+      'reauth-key'
+    );
+    await proAccountsApi.reauthorizationStatus(
+      'https://manager.example',
+      'admin-key',
+      'account/with space',
+      'reauth-1'
+    );
+    await proAccountsApi.submitReauthorizationCallback(
+      'https://manager.example',
+      'admin-key',
+      account.id,
+      'reauth-1',
+      'callback-value',
+      'callback-state'
+    );
+    await proAccountsApi.refreshToken(
+      'https://manager.example',
+      'admin-key',
+      account,
+      'refresh-1',
+      'refresh-key'
+    );
+
+    expect(mocks.post.mock.calls[0][0]).toContain('/account-1/reauthorize/start');
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({ expected_version: 7 });
+    expect(mocks.get.mock.calls[0][0]).toContain(
+      '/account%2Fwith%20space/reauthorize/status?operation_id=reauth-1'
+    );
+    expect(mocks.post.mock.calls[1][0]).toContain('/account-1/reauthorize/callback');
+    expect(mocks.post.mock.calls[1][1]).toMatchObject({
+      callback_input: 'callback-value',
+      callback_state: 'callback-state',
+    });
+    expect(mocks.post.mock.calls[2][0]).toContain('/account-1/refresh-token');
+    expect(mocks.post.mock.calls[2][2].headers['Idempotency-Key']).toBe('refresh-key');
+  });
+
+  it('定时测试计划 API 序列化表单并兼容数组列表响应', async () => {
+    mocks.get.mockResolvedValueOnce({ data: [{ id: 1 }] });
+    mocks.post.mockResolvedValue({ data: { id: 2 } });
+    mocks.put.mockResolvedValue({ data: { id: 1, enabled: false } });
+    mocks.delete.mockResolvedValue({ data: {} });
+
+    await expect(
+      proAccountsApi.listScheduledTests('https://manager.example', 'admin-key', account.id)
+    ).resolves.toEqual([{ id: 1 }]);
+    await proAccountsApi.createScheduledTest(
+      'https://manager.example',
+      'admin-key',
+      account,
+      {
+        modelId: 'gpt-5.5',
+        cronExpression: '*/30 * * * *',
+        enabled: true,
+        maxResults: 100,
+        autoRecover: true,
+      },
+      'schedule-1',
+      'schedule-key'
+    );
+    await proAccountsApi.updateScheduledTest(
+      'https://manager.example',
+      'admin-key',
+      account.id,
+      1,
+      { enabled: false }
+    );
+    await proAccountsApi.deleteScheduledTest('https://manager.example', 'admin-key', account.id, 1);
+
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({
+      model_id: 'gpt-5.5',
+      cron_expression: '*/30 * * * *',
+      max_results: 100,
+      auto_recover: true,
+    });
+    expect(mocks.put.mock.calls[0][0]).toContain('/scheduled-test-plans/1');
+    expect(mocks.delete.mock.calls[0][0]).toContain('/scheduled-test-plans/1');
   });
 
   it('保留后端机器可识别错误字段', async () => {

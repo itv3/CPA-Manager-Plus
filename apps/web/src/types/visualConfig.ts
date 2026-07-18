@@ -111,6 +111,7 @@ export type VisualConfigValues = {
   pprofEnable: boolean;
   pprofAddr: string;
   commercialMode: boolean;
+  protocolModelListEnabled: boolean;
   usageStatisticsEnabled: boolean;
   loggingToFile: boolean;
   logsMaxTotalSizeMb: string;
@@ -185,6 +186,7 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   pprofEnable: false,
   pprofAddr: '127.0.0.1:8316',
   commercialMode: false,
+  protocolModelListEnabled: false,
   usageStatisticsEnabled: false,
   loggingToFile: false,
   logsMaxTotalSizeMb: '',

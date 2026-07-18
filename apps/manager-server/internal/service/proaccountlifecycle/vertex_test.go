@@ -88,3 +88,20 @@ func TestCreateVertexDraftStopsBeforeModelWriteAndConnectivityTest(t *testing.T)
 		t.Fatalf("重放 Vertex 草稿 = %#v, err=%v", replayed, err)
 	}
 }
+
+func TestCreateVertexReplaysSavedDisabledTerminalState(t *testing.T) {
+	state := &migrationAccountState{account: model.ProAccount{ID: "vertex-account", Enabled: false}}
+	operations := &vertexOperations{migrationOperations: migrationOperations{current: model.ProAccountDraft{
+		OperationID: "vertex-operation", IdempotencyKey: "vertex-key", OperationType: "add",
+		ProAccountID: "vertex-account", State: model.ProOperationStateSavedDisabled, Version: 5,
+	}}}
+	service := New(migrationAccountReader{state: state}, nil, nil, nil, nil, operations)
+
+	result, err := service.CreateVertex(context.Background(), CreateVertexInput{
+		OperationID: "vertex-operation", IdempotencyKey: "vertex-key",
+		ServiceAccount: []byte(`{"project_id":"project-a"}`),
+	})
+	if err != nil || result.Account.ID != "vertex-account" || !result.SavedDisabled || result.Operation.State != model.ProOperationStateSavedDisabled {
+		t.Fatalf("重放 Vertex 停用终态 = %#v, err=%v", result, err)
+	}
+}

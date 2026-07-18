@@ -18,6 +18,7 @@ func (c *Client) CreateDisabledAPI(ctx context.Context, baseURL string, manageme
 	input.SourceType = strings.TrimSpace(input.SourceType)
 	input.APIKey = strings.TrimSpace(input.APIKey)
 	input.BaseURL = strings.TrimRight(strings.TrimSpace(input.BaseURL), "/")
+	input.ProxyURL = strings.TrimSpace(input.ProxyURL)
 	if input.APIKey == "" || input.BaseURL == "" {
 		return AccountSnapshot{}, errors.New("api key and base url are required")
 	}
@@ -25,7 +26,7 @@ func (c *Client) CreateDisabledAPI(ctx context.Context, baseURL string, manageme
 	if err != nil {
 		return AccountSnapshot{}, err
 	}
-	models := modelListFromMapping(rules.ModelMapping)
+	models := modelListForRules(nil, rules, input.CatalogModels)
 	locator := ""
 	if input.SourceType == SourceOpenAICompatibility {
 		providers, err := c.loadConfigEntries(ctx, baseURL, managementKey, "/v0/management/openai-compatibility", "openai-compatibility")
@@ -37,9 +38,13 @@ func (c *Client) CreateDisabledAPI(ctx context.Context, baseURL string, manageme
 		if name == "" {
 			name = "pro-openai-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 		}
+		keyEntry := map[string]any{"api-key": input.APIKey, "allowed-models": rules.AllowedModels}
+		if input.ProxyURL != "" {
+			keyEntry["proxy-url"] = input.ProxyURL
+		}
 		providers = append(providers, map[string]any{
 			"name": name, "base-url": input.BaseURL, "disabled": true,
-			"api-key-entries": []map[string]any{{"api-key": input.APIKey, "allowed-models": rules.AllowedModels}},
+			"api-key-entries": []map[string]any{keyEntry},
 			"models":          models, "headers": cloneHeaders(input.Headers),
 		})
 		if _, _, err := c.requestJSON(ctx, baseURL, managementKey, http.MethodPut, "/v0/management/openai-compatibility", stripReadOnlyList(providers)); err != nil {
@@ -56,16 +61,28 @@ func (c *Client) CreateDisabledAPI(ctx context.Context, baseURL string, manageme
 			return AccountSnapshot{}, err
 		}
 		index := len(entries)
-		entries = append(entries, map[string]any{
+		entry := map[string]any{
 			"api-key": input.APIKey, "base-url": input.BaseURL, "headers": cloneHeaders(input.Headers),
 			"excluded-models": []string{"*"}, "allowed-models": rules.AllowedModels, "models": models,
-		})
+		}
+		if input.ProxyURL != "" {
+			entry["proxy-url"] = input.ProxyURL
+		}
+		entries = append(entries, entry)
 		if _, _, err := c.requestJSON(ctx, baseURL, managementKey, http.MethodPut, endpoint.Path, stripReadOnlyList(entries)); err != nil {
 			return AccountSnapshot{}, err
 		}
 		locator = fmt.Sprintf("index:%d", index)
 	}
-	return c.waitForAccount(ctx, baseURL, managementKey, input.SourceType, locator, false)
+	snapshot, waitErr := c.waitForAccount(ctx, baseURL, managementKey, input.SourceType, locator, false)
+	if waitErr != nil && snapshot.SourceLocator == "" {
+		snapshot = AccountSnapshot{
+			Platform: input.Platform, AuthType: "api", SourceType: input.SourceType,
+			SourceLocator: locator, Name: strings.TrimSpace(input.Name), Enabled: false,
+			BaseURL: input.BaseURL,
+		}
+	}
+	return snapshot, waitErr
 }
 
 func (c *Client) SetAccountEnabled(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, enabled bool) (AccountSnapshot, error) {
@@ -116,6 +133,20 @@ func (c *Client) SetAccountEnabled(ctx context.Context, baseURL string, manageme
 		if err != nil {
 			return AccountSnapshot{}, err
 		}
+	}
+	return c.waitForAccount(ctx, baseURL, managementKey, sourceType, sourceLocator, enabled)
+}
+
+// FinalizeCredentialDraft 原子清除认证文件草稿标记，并直接写入最终启用状态。
+func (c *Client) FinalizeCredentialDraft(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, enabled bool) (AccountSnapshot, error) {
+	if sourceType != SourceAuthFile {
+		return AccountSnapshot{}, ErrUnsupportedSource
+	}
+	_, _, err := c.requestJSON(ctx, baseURL, managementKey, http.MethodPatch, "/v0/management/auth-files/status", map[string]any{
+		"name": sourceLocator, "disabled": !enabled, "finalize_draft": true,
+	})
+	if err != nil {
+		return AccountSnapshot{}, err
 	}
 	return c.waitForAccount(ctx, baseURL, managementKey, sourceType, sourceLocator, enabled)
 }
@@ -178,6 +209,9 @@ func (c *Client) UpdateDisabledAPI(ctx context.Context, baseURL string, manageme
 	if input.BaseURL != nil {
 		value["base-url"] = strings.TrimRight(strings.TrimSpace(*input.BaseURL), "/")
 	}
+	if input.ProxyURL != nil {
+		value["proxy-url"] = strings.TrimSpace(*input.ProxyURL)
+	}
 	if input.Headers != nil {
 		value["headers"] = cloneHeaders(*input.Headers)
 	}
@@ -199,6 +233,10 @@ func (c *Client) UpdateDisabledAPI(ctx context.Context, baseURL string, manageme
 		}
 		if key, ok := value["api-key"]; ok {
 			keys[keyIndex]["api-key"] = key
+		}
+		// openai-compatibility 的代理属于 Key 级配置,写入对应 api-key-entry
+		if proxyValue, ok := value["proxy-url"]; ok {
+			keys[keyIndex]["proxy-url"] = proxyValue
 		}
 		patch := map[string]any{"disabled": true, "api-key-entries": stripReadOnlyList(keys)}
 		if baseValue, ok := value["base-url"]; ok {
@@ -229,12 +267,59 @@ func (c *Client) UpdateDisabledAPI(ctx context.Context, baseURL string, manageme
 	return c.waitForAccount(ctx, baseURL, managementKey, sourceType, sourceLocator, false)
 }
 
+// UpdateAccountProxy 仅更新账号级代理,不重建凭证、不改变启停状态。
+// auth-index 不包含代理信息,因此该操作不会导致绑定漂移。
+func (c *Client) UpdateAccountProxy(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, proxyURL string) error {
+	proxyURL = strings.TrimSpace(proxyURL)
+	switch sourceType {
+	case SourceAuthFile:
+		_, _, err := c.requestJSON(ctx, baseURL, managementKey, http.MethodPatch, "/v0/management/auth-files/fields", map[string]any{
+			"name": sourceLocator, "proxy_url": proxyURL,
+		})
+		return err
+	case SourceOpenAICompatibility:
+		providerIndex, keyIndex, err := parseOpenAICompatibilityLocator(sourceLocator)
+		if err != nil || keyIndex < 0 {
+			return ErrInvalidSourceLocator
+		}
+		providers, err := c.loadConfigEntries(ctx, baseURL, managementKey, "/v0/management/openai-compatibility", "openai-compatibility")
+		if err != nil || providerIndex >= len(providers) {
+			if err == nil {
+				err = ErrGatewayAccountNotFound
+			}
+			return err
+		}
+		keys := mapSlice(providers[providerIndex], "api-key-entries", "api_key_entries", "apiKeyEntries")
+		if keyIndex >= len(keys) {
+			return ErrGatewayAccountNotFound
+		}
+		keys[keyIndex]["proxy-url"] = proxyURL
+		_, _, err = c.requestJSON(ctx, baseURL, managementKey, http.MethodPatch, "/v0/management/openai-compatibility", map[string]any{
+			"index": providerIndex, "value": map[string]any{"api-key-entries": stripReadOnlyList(keys)},
+		})
+		return err
+	default:
+		endpoint, ok := endpointForSource(sourceType)
+		if !ok {
+			return ErrUnsupportedSource
+		}
+		index, err := parseIndexLocator(sourceLocator)
+		if err != nil {
+			return err
+		}
+		_, _, err = c.requestJSON(ctx, baseURL, managementKey, http.MethodPatch, endpoint.Path, map[string]any{
+			"index": index, "value": map[string]any{"proxy-url": proxyURL},
+		})
+		return err
+	}
+}
+
 func (c *Client) EditableAccount(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string) (EditableAccount, error) {
 	runtime, err := c.ResolveAccountRuntime(ctx, baseURL, managementKey, sourceType, sourceLocator)
 	if err != nil {
 		return EditableAccount{}, err
 	}
-	return EditableAccount{BaseURL: runtime.BaseURL, Headers: editableHeaders(runtime.Headers), SharedProvider: sourceType == SourceOpenAICompatibility}, nil
+	return EditableAccount{BaseURL: runtime.BaseURL, ProxyURL: runtime.ProxyURL, Headers: editableHeaders(runtime.Headers), SharedProvider: sourceType == SourceOpenAICompatibility}, nil
 }
 
 func editableHeaders(headers map[string]string) map[string]string {

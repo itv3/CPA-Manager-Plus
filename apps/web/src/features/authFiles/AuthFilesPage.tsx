@@ -67,6 +67,7 @@ import {
   type QuotaCooldownInfo,
   type UsageHeaderSnapshot,
 } from '@/services/api/usageService';
+import { proAccountsApi } from '@/services/api/proAccounts';
 import {
   buildUsageHeaderSnapshotLookup,
   getHighConfidenceUsageHeaderSnapshotForAuthFile,
@@ -285,6 +286,10 @@ export function AuthFilesPage() {
   const accountActionContextRef = useRef({ managerServiceBase, managementKey });
   const cooldownRecoveryContextRef = useRef({ managerServiceBase, managementKey });
   const headerSnapshotContextRef = useRef({ managerServiceBase, managementKey });
+  const syncUnifiedAccountsAfterStatusChange = useCallback(async () => {
+    if (!managerServiceBase || !managementKey) return;
+    await proAccountsApi.sync(managerServiceBase, managementKey);
+  }, [managementKey, managerServiceBase]);
 
   const {
     files,
@@ -316,7 +321,10 @@ export function AuthFilesPage() {
     batchSetStatus,
     batchPatchFields,
     batchDelete,
-  } = useAuthFilesData({ connectionFingerprint });
+  } = useAuthFilesData({
+    connectionFingerprint,
+    onStatusMutationCommitted: syncUnifiedAccountsAfterStatusChange,
+  });
   const loadFilesRef = useRef(loadFiles);
 
   useLayoutEffect(() => {

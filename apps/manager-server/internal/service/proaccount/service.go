@@ -87,7 +87,8 @@ func (s *Service) Sync(ctx context.Context, dryRun bool) (model.ProAccountSyncRe
 func discoveryFromSnapshot(account proaccountgateway.AccountSnapshot) model.ProAccountDiscovery {
 	return model.ProAccountDiscovery{
 		Platform: account.Platform, AuthType: account.AuthType, SourceType: account.SourceType,
-		Name: account.Name, Email: account.Email, Enabled: account.Enabled,
+		PlanType: account.PlanType,
+		Name:     account.Name, Email: account.Email, Enabled: account.Enabled,
 		HealthStatus: account.HealthStatus, LastError: account.LastError,
 		AllowedModels: append([]string(nil), account.AllowedModels...), ModelMapping: cloneStringMap(account.ModelMapping),
 		ModelRuleVersion: account.ModelRuleVersion, ExpiresAtMS: account.ExpiresAtMS,
@@ -133,11 +134,35 @@ func discoveryFromAuthFile(file cpaauthfiles.File) (model.ProAccountDiscovery, b
 	fingerprint := identityFingerprint(platform, authType, email, file.AccountID, file.AccountSnapshot)
 	return model.ProAccountDiscovery{
 		Platform: platform, AuthType: authType, SourceType: "auth_file",
-		Name: name, Email: email, Enabled: !file.Disabled, HealthStatus: healthStatus,
+		PlanType: authFilePlanType(file.Raw),
+		Name:     name, Email: email, Enabled: !file.Disabled, HealthStatus: healthStatus,
 		LastError: lastError, AllowedModels: allowedModels, ModelMapping: modelMapping,
 		ExpiresAtMS: expiresAtMS, AuthIndex: strings.TrimSpace(file.AuthIndex),
 		SourceLocator: locator, SourceFingerprint: fingerprint,
 	}, true
+}
+
+func authFilePlanType(raw map[string]any) string {
+	if planType := rawString(raw, "plan_type", "planType", "chatgpt_plan_type", "chatgptPlanType"); planType != "" {
+		return normalizePlanType(planType)
+	}
+	for _, key := range []string{"id_token", "idToken", "metadata", "attributes"} {
+		nested, ok := raw[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		if planType := rawString(nested, "plan_type", "planType", "chatgpt_plan_type", "chatgptPlanType"); planType != "" {
+			return normalizePlanType(planType)
+		}
+	}
+	return ""
+}
+
+func normalizePlanType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "_")
+	value = strings.Join(strings.Fields(value), "_")
+	return value
 }
 
 func normalizePlatform(provider string, raw map[string]any) string {

@@ -113,7 +113,10 @@ func recoveryAccount() model.ProAccount {
 func TestRecoverDeleteUsesCurrentBindingWhenContextLocatorIsMissing(t *testing.T) {
 	account := recoveryAccount()
 	repository := &recoveryRepositoryStub{}
-	gateway := &recoveryGatewayStub{}
+	// Gateway 中注册该凭证:补偿删除应按稳定 auth_index 反查当前定位后删除
+	gateway := &recoveryGatewayStub{accounts: map[string]proaccountgateway.AccountSnapshot{
+		"auth-1": {SourceType: "auth_file", SourceLocator: "oauth-account.json", AuthIndex: "auth-1"},
+	}}
 	operations := &recoveryOperationStub{}
 	service := New(recoveryAccountReaderStub{account: account}, repository, recoverySetupStub{}, gateway, nil, operations)
 	service.now = func() time.Time { return time.UnixMilli(5000) }
@@ -128,6 +131,31 @@ func TestRecoverDeleteUsesCurrentBindingWhenContextLocatorIsMissing(t *testing.T
 	}
 	if gateway.deletedSourceType != "auth_file" || gateway.deletedLocator != "oauth-account.json" {
 		t.Fatalf("删除定位 = %s/%s", gateway.deletedSourceType, gateway.deletedLocator)
+	}
+	if !repository.softDeleted || operations.lastTransition.State != model.ProOperationStateFailed {
+		t.Fatalf("补偿结果 softDeleted=%v transition=%#v", repository.softDeleted, operations.lastTransition)
+	}
+}
+
+func TestRecoverDeleteFinishesWhenCredentialAlreadyGone(t *testing.T) {
+	account := recoveryAccount()
+	repository := &recoveryRepositoryStub{}
+	// Gateway 已无该凭证:补偿应直接完成,不再无限重试
+	gateway := &recoveryGatewayStub{}
+	operations := &recoveryOperationStub{}
+	service := New(recoveryAccountReaderStub{account: account}, repository, recoverySetupStub{}, gateway, nil, operations)
+	service.now = func() time.Time { return time.UnixMilli(5000) }
+
+	err := service.Recover(context.Background(), model.ProAccountDraft{
+		OperationID: "operation-1", OperationType: "add", ProAccountID: account.ID,
+		State: model.ProOperationStateCompensating, Version: 3,
+		CompensationAction: "delete_new_credential", Context: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("恢复删除：%v", err)
+	}
+	if gateway.deletedLocator != "" {
+		t.Fatalf("不应按过期定位执行删除,实际删除 = %s/%s", gateway.deletedSourceType, gateway.deletedLocator)
 	}
 	if !repository.softDeleted || operations.lastTransition.State != model.ProOperationStateFailed {
 		t.Fatalf("补偿结果 softDeleted=%v transition=%#v", repository.softDeleted, operations.lastTransition)

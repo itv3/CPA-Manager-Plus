@@ -35,10 +35,14 @@
 
 .trigger:focus-visible {
   outline: none;
-  border-color: var(--focus-border, color-mix(in srgb, var(--primary-color, #409eff) 28%, transparent));
+  border-color: var(
+    --focus-border,
+    color-mix(in srgb, var(--primary-color, #409eff) 28%, transparent)
+  );
   background: var(--focus-bg, var(--surface-subtle-hover, #f1f7fe));
   color: var(--focus-text, var(--primary-color, #409eff));
-  box-shadow: inset 0 0 0 1px var(--focus-inset, color-mix(in srgb, var(--primary-color, #409eff) 22%, transparent));
+  box-shadow: inset 0 0 0 1px
+    var(--focus-inset, color-mix(in srgb, var(--primary-color, #409eff) 22%, transparent));
 }
 
 .trigger:disabled {
@@ -116,6 +120,14 @@
   background: color-mix(in srgb, var(--error-color, #dc2626) 10%, var(--bg-primary, #fff));
 }
 
+.itemBlue {
+  color: #2563eb;
+}
+
+.itemPurple {
+  color: #9333ea;
+}
+
 .itemIcon {
   display: inline-flex;
   align-items: center;
@@ -123,6 +135,26 @@
   width: 16px;
   flex: 0 0 16px;
   color: currentColor;
+}
+
+.itemIconGreen {
+  color: #22c55e;
+}
+
+.itemIconIndigo {
+  color: #6366f1;
+}
+
+.itemIconOrange {
+  color: #f97316;
+}
+
+.itemIconBlue {
+  color: #2563eb;
+}
+
+.itemIconPurple {
+  color: #9333ea;
 }
 
 .item:disabled {

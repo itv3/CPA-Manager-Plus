@@ -9,14 +9,16 @@ import (
 
 // ListRuntimeModels 读取指定运行时凭证已经注册的模型列表。
 func (c *Client) ListRuntimeModels(ctx context.Context, baseURL string, managementKey string, authIndex string, sourceLocator string) ([]string, error) {
-	name := strings.TrimSpace(authIndex)
-	if name == "" {
-		name = strings.TrimSpace(sourceLocator)
+	query := url.Values{}
+	if value := strings.TrimSpace(authIndex); value != "" {
+		query.Set("auth_index", value)
+	} else if value := strings.TrimSpace(sourceLocator); value != "" {
+		query.Set("name", value)
 	}
-	if name == "" {
+	if len(query) == 0 {
 		return nil, ErrGatewayAccountNotFound
 	}
-	raw, _, err := c.get(ctx, baseURL, managementKey, "/v0/management/auth-files/models?name="+url.QueryEscape(name))
+	raw, _, err := c.get(ctx, baseURL, managementKey, "/v0/management/auth-files/models?"+query.Encode())
 	if err != nil {
 		return nil, err
 	}

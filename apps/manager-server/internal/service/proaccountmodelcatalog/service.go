@@ -121,7 +121,12 @@ func channelFor(platform string, authType string, sourceType string) string {
 		if strings.EqualFold(strings.TrimSpace(authType), "oauth") || strings.TrimSpace(sourceType) == "config_codex_api_key" {
 			return "codex"
 		}
-		return ""
+		// 共享 OpenAI Compatibility Provider 的模型目录以上游列表和手工配置为准
+		if strings.TrimSpace(sourceType) == "config_openai_compatibility" {
+			return ""
+		}
+		// 添加向导阶段底层类型未定:OpenAI API 默认按 Responses(codex)内置目录提供候选
+		return "codex"
 	case "anthropic":
 		return "claude"
 	case "gemini":

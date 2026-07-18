@@ -2578,6 +2578,12 @@
           "antigravity_signature_strict": "嚴格校驗旁路簽名",
           "antigravity_signature_strict_desc": "僅在關閉簽名快取時生效，按完整 Claude protobuf 樹校驗"
         },
+        "pro": {
+          "title": "Pro 設定",
+          "description": "CLIProxyAPI Pro 專屬功能設定",
+          "protocol_model_list_enabled": "依協定顯示模型清單",
+          "protocol_model_list_enabled_desc": "開啟後依上游帳號協定群組篩選模型目錄；未知、外掛及 Home 模型維持完整清單，且不限制實際呼叫。"
+        },
         "headers": {
           "title": "Header 預設值",
           "description": "Claude 與 Codex OAuth 請求在客戶端缺少 Header 時使用的預設值",

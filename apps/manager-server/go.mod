@@ -2,7 +2,10 @@ module github.com/seakee/cpa-manager-plus/apps/manager-server
 
 go 1.24.0
 
-require modernc.org/sqlite v1.34.5
+require (
+	github.com/robfig/cron/v3 v3.0.1
+	modernc.org/sqlite v1.34.5
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

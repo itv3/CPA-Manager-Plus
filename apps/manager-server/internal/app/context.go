@@ -28,6 +28,7 @@ import (
 	proaccountprobesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
 	proaccountrebindsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountrebind"
 	proaccountresetsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountreset"
+	proaccountscheduledtestsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountscheduledtest"
 	proaccounttestsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccounttest"
 	proaccountusagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountusage"
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
@@ -75,6 +76,8 @@ type Context struct {
 	ProAccountResetService         *proaccountresetsvc.Service
 	ProAccountTestService          *proaccounttestsvc.Service
 	ProAccountUsageService         *proaccountusagesvc.Service
+
+	ProAccountScheduledTestService *proaccountscheduledtestsvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
 }
 
@@ -104,11 +107,12 @@ func FromExisting(
 	proAccountProbeService := proaccountprobesvc.New(nil, proAccountModelCatalogService)
 	proAccountLifecycleService := proaccountlifecyclesvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountProbeService, proAccountOperationService)
 	proAccountTestService := proaccounttestsvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
+	proAccountScheduledTestService := proaccountscheduledtestsvc.New(st.ProAccountScheduledTests, proAccountService, proAccountTestService)
 	proAccountBatchService := proaccountbatchsvc.New(proAccountLifecycleService, proAccountTestService)
 	proAccountRebindService := proaccountrebindsvc.New(proAccountService, st.ProAccounts, managerConfigService, proAccountGateway, proAccountOperationService)
 	proAccountResetService := proaccountresetsvc.New(proAccountService, managerConfigService, proAccountGateway, proAccountOperationService)
 	codexInspectionService := codexinspectionsvc.New(st, managerConfigService)
-	proAccountUsageService := proaccountusagesvc.New(st.ProAccounts, proAccountService, managerConfigService)
+	proAccountUsageService := proaccountusagesvc.New(st.ProAccounts, proAccountService, managerConfigService, st.ModelPrices)
 	proAccountUsageService.SetXAIUsageQuerier(codexInspectionService)
 	return &Context{
 		Config:                         cfg,
@@ -142,6 +146,8 @@ func FromExisting(
 		ProAccountResetService:         proAccountResetService,
 		ProAccountTestService:          proAccountTestService,
 		ProAccountUsageService:         proAccountUsageService,
+
+		ProAccountScheduledTestService: proAccountScheduledTestService,
 		AutomationRuntimeService:       runtimeService,
 	}
 }

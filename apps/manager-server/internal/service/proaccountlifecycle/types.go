@@ -18,12 +18,16 @@ type CreateAPIInput struct {
 	Name           string
 	BaseURL        string
 	APIKey         string
+	ProxyURL       string
 	ProtocolMode   string
 	Headers        map[string]string
 	AllowedModels  []string
 	ModelMapping   map[string]string
 	TestModel      string
 	SaveDisabled   bool
+	DraftOnly      bool
+	// SkipTest 为 true 时保存后直接启用,不执行连通性测试(与 sub2api 创建行为一致)
+	SkipTest bool
 }
 
 type CompleteDraftInput struct {
@@ -61,6 +65,7 @@ type UpdateInput struct {
 	Name          *string
 	BaseURL       *string
 	APIKey        string
+	ProxyURL      *string
 	ProtocolMode  string
 	Headers       *map[string]string
 	AllowedModels []string
@@ -74,12 +79,23 @@ type OAuthStartInput struct {
 	Platform       string
 }
 
+type ReauthorizationStartInput struct {
+	MutationInput
+}
+
+type OAuthCallbackInput struct {
+	OperationID   string
+	CallbackText  string
+	CallbackState string
+}
+
 type Result struct {
-	Account       model.ProAccount                      `json:"account"`
-	Operation     model.ProAccountDraft                 `json:"operation"`
-	Probe         *proaccountprobe.Result               `json:"probe,omitempty"`
-	Connectivity  *proaccountgateway.ConnectivityResult `json:"connectivity,omitempty"`
-	SavedDisabled bool                                  `json:"savedDisabled,omitempty"`
+	Account           model.ProAccount                           `json:"account"`
+	Operation         model.ProAccountDraft                      `json:"operation"`
+	Probe             *proaccountprobe.Result                    `json:"probe,omitempty"`
+	Connectivity      *proaccountgateway.ConnectivityResult      `json:"connectivity,omitempty"`
+	CredentialRefresh *proaccountgateway.CredentialRefreshResult `json:"credentialRefresh,omitempty"`
+	SavedDisabled     bool                                       `json:"savedDisabled,omitempty"`
 }
 
 type OAuthResult struct {
@@ -113,12 +129,14 @@ type Gateway interface {
 	SetAccountEnabled(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, enabled bool) (proaccountgateway.AccountSnapshot, error)
 	DeleteAccount(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string) error
 	EditableAccount(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string) (proaccountgateway.EditableAccount, error)
+	UpdateAccountProxy(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, proxyURL string) error
 	FindAccountByAuthIndex(ctx context.Context, baseURL string, managementKey string, authIndex string) (proaccountgateway.AccountSnapshot, error)
 	WriteAndVerifyModelRules(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, desired proaccountgateway.ModelRules) (proaccountgateway.ModelRules, proaccountgateway.ModelRules, error)
 	RestoreModelRules(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, previous proaccountgateway.ModelRules) error
 	TestAccount(ctx context.Context, gatewayBaseURL string, managementKey string, account proaccountgateway.AccountReference, modelName string) (proaccountgateway.ConnectivityResult, error)
 	StartOAuth(ctx context.Context, baseURL string, managementKey string, platform string) (proaccountgateway.OAuthStartResult, error)
 	OAuthStatus(ctx context.Context, baseURL string, managementKey string, state string) (proaccountgateway.OAuthStatusResult, error)
+	SubmitOAuthCallback(ctx context.Context, baseURL string, managementKey string, input proaccountgateway.OAuthCallbackInput) error
 	CancelOAuth(ctx context.Context, baseURL string, managementKey string, state string) error
 	ImportVertexDraft(ctx context.Context, baseURL string, managementKey string, input proaccountgateway.ImportVertexInput) (proaccountgateway.AccountSnapshot, error)
 }

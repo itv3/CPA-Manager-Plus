@@ -20,6 +20,7 @@ import {
   IconCode,
   IconDiamond,
   IconKey,
+  IconModelCluster,
   IconSatellite,
   IconSettings,
   IconShield,
@@ -55,7 +56,8 @@ type VisualSectionId =
   | 'network'
   | 'quota'
   | 'streaming'
-  | 'payload';
+  | 'payload'
+  | 'pro';
 
 type VisualSection = {
   id: VisualSectionId;
@@ -351,6 +353,13 @@ export function VisualConfigEditor({
         description: t('config_management.visual.sections.payload.description'),
         icon: IconCode,
         errorCount: hasPayloadValidationErrors ? 1 : 0,
+      },
+      {
+        id: 'pro',
+        title: t('config_management.visual.sections.pro.title'),
+        description: t('config_management.visual.sections.pro.description'),
+        icon: IconModelCluster,
+        errorCount: 0,
       },
     ],
     [countErrors, hasPayloadValidationErrors, t]
@@ -723,9 +732,7 @@ export function VisualConfigEditor({
                       variant="secondary"
                       size="xs"
                       disabled={disabled || values.rmSecretKeyAction === 'unchanged'}
-                      onClick={() =>
-                        onChange({ rmSecretKey: '', rmSecretKeyAction: 'unchanged' })
-                      }
+                      onClick={() => onChange({ rmSecretKey: '', rmSecretKeyAction: 'unchanged' })}
                     >
                       {t('config_management.visual.sections.remote.secret_key_keep')}
                     </Button>
@@ -1097,9 +1104,7 @@ export function VisualConfigEditor({
                   value={values.gptImage2BaseModel}
                   onChange={(e) => onChange({ gptImage2BaseModel: e.target.value })}
                   disabled={disabled}
-                  hint={t(
-                    'config_management.visual.sections.network.gpt_image_2_base_model_hint'
-                  )}
+                  hint={t('config_management.visual.sections.network.gpt_image_2_base_model_hint')}
                 />
                 <Input
                   label={t('config_management.visual.sections.network.video_result_auth_cache_ttl')}
@@ -1473,6 +1478,28 @@ export function VisualConfigEditor({
                 />
               </SectionSubsection>
             </SectionStack>
+          </ConfigSection>
+
+          <ConfigSection
+            id="pro"
+            ref={(node) => {
+              sectionRefs.current.pro = node;
+            }}
+            icon={<IconModelCluster size={16} />}
+            title={t('config_management.visual.sections.pro.title')}
+            description={t('config_management.visual.sections.pro.description')}
+          >
+            <SectionGrid>
+              <ToggleRow
+                title={t('config_management.visual.sections.pro.protocol_model_list_enabled')}
+                description={t(
+                  'config_management.visual.sections.pro.protocol_model_list_enabled_desc'
+                )}
+                checked={values.protocolModelListEnabled}
+                disabled={disabled}
+                onChange={(protocolModelListEnabled) => onChange({ protocolModelListEnabled })}
+              />
+            </SectionGrid>
           </ConfigSection>
         </div>
       </div>

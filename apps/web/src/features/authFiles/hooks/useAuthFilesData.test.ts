@@ -11,6 +11,7 @@ const { mocks } = vi.hoisted(() => {
       uploadFiles: vi.fn(),
       deleteFiles: vi.fn(),
       deleteFile: vi.fn(),
+      setStatus: vi.fn(),
       patchFields: vi.fn(),
       patchFieldsForAuthIndexes: vi.fn(),
       showNotification: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock('@/services/api', () => ({
     uploadFiles: mocks.uploadFiles,
     deleteFiles: mocks.deleteFiles,
     deleteFile: mocks.deleteFile,
+    setStatus: mocks.setStatus,
     patchFields: mocks.patchFields,
     patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
   },
@@ -87,7 +89,10 @@ const createStorage = () => {
   } as unknown as Storage;
 };
 
-const mountUseAuthFilesData = (connectionFingerprint?: string): UseAuthFilesDataHarness => {
+const mountUseAuthFilesData = (
+  connectionFingerprint?: string,
+  onStatusMutationCommitted?: () => Promise<void>
+): UseAuthFilesDataHarness => {
   let hook: ReturnType<typeof useAuthFilesData> | null = null;
   let lastSavingState: boolean | undefined;
   const savingHistory: boolean[] = [];
@@ -102,7 +107,7 @@ const mountUseAuthFilesData = (connectionFingerprint?: string): UseAuthFilesData
   };
 
   function HookHarness() {
-    captureHook(useAuthFilesData({ connectionFingerprint }));
+    captureHook(useAuthFilesData({ connectionFingerprint, onStatusMutationCommitted }));
     return null;
   }
 
@@ -133,6 +138,7 @@ beforeEach(() => {
   mocks.uploadFiles.mockReset();
   mocks.deleteFiles.mockReset();
   mocks.deleteFile.mockReset();
+  mocks.setStatus.mockReset();
   mocks.patchFields.mockReset();
   mocks.patchFieldsForAuthIndexes.mockReset();
   mocks.showNotification.mockReset();
@@ -143,6 +149,7 @@ beforeEach(() => {
   mocks.uploadFiles.mockResolvedValue({ status: 'ok', uploaded: 0, files: [], failed: [] });
   mocks.deleteFiles.mockResolvedValue({ deleted: 0, failed: [], files: [] });
   mocks.deleteFile.mockResolvedValue({ deleted: 0, failed: [], files: [] });
+  mocks.setStatus.mockImplementation(async (_name: string, disabled: boolean) => ({ disabled }));
   mocks.patchFields.mockResolvedValue(undefined);
   mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
 });
@@ -1290,6 +1297,72 @@ describe('useAuthFilesData batchPatchFields', () => {
     expect(mocks.patchFields).toHaveBeenCalledWith('single-codex.json', { websockets: false });
     expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
     expect(result).toEqual({ success: 1, failed: 0, failedNames: [] });
+    hook.unmount();
+  });
+});
+
+describe('useAuthFilesData 状态同步', () => {
+  it('单条状态修改成功后只同步一次统一账号投影', async () => {
+    const syncProjection = vi.fn().mockResolvedValue(undefined);
+    const file: AuthFileItem = { name: 'codex-a.json', type: 'codex', disabled: false };
+    const hook = mountUseAuthFilesData(undefined, syncProjection);
+    mocks.list.mockResolvedValueOnce({ files: [file] });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    await act(async () => {
+      await hook.getCurrent().handleStatusToggle(file, false);
+    });
+
+    expect(mocks.setStatus).toHaveBeenCalledWith('codex-a.json', true);
+    expect(syncProjection).toHaveBeenCalledTimes(1);
+    expect(hook.getCurrent().files[0]?.disabled).toBe(true);
+    hook.unmount();
+  });
+
+  it('批量状态修改完成后合并为一次统一账号同步', async () => {
+    const syncProjection = vi.fn().mockResolvedValue(undefined);
+    const files: AuthFileItem[] = [
+      { name: 'codex-a.json', type: 'codex', disabled: false },
+      { name: 'codex-b.json', type: 'codex', disabled: false },
+    ];
+    const hook = mountUseAuthFilesData(undefined, syncProjection);
+    mocks.list.mockResolvedValueOnce({ files });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    await act(async () => {
+      await hook.getCurrent().batchSetStatus(
+        files.map((file) => file.name),
+        false
+      );
+    });
+
+    expect(mocks.setStatus).toHaveBeenCalledTimes(2);
+    expect(syncProjection).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it('统一账号同步失败不会回滚已成功的 Gateway 状态', async () => {
+    const syncProjection = vi.fn().mockRejectedValue(new Error('manager unavailable'));
+    const file: AuthFileItem = { name: 'codex-a.json', type: 'codex', disabled: false };
+    const hook = mountUseAuthFilesData(undefined, syncProjection);
+    mocks.list.mockResolvedValueOnce({ files: [file] });
+
+    await act(async () => {
+      await hook.getCurrent().loadFiles();
+    });
+    await act(async () => {
+      await hook.getCurrent().handleStatusToggle(file, false);
+    });
+
+    expect(hook.getCurrent().files[0]?.disabled).toBe(true);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.stringContaining('统一账号同步失败'),
+      'warning'
+    );
     hook.unmount();
   });
 });

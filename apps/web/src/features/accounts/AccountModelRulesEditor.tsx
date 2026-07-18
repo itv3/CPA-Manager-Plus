@@ -1,23 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { SegmentedTabs } from '@/components/ui/SegmentedTabs';
 import { IconPlus, IconRefreshCw, IconTrash2, IconX } from '@/components/ui/icons';
 import styles from './AccountModals.module.scss';
 
 interface AccountModelRulesEditorProps {
-  allowAll: boolean;
-  onAllowAllChange: (value: boolean) => void;
-  discoveredModels: string[];
-  selectedModels: string[];
-  onSelectedModelsChange: (value: string[]) => void;
-  manualModels: string;
-  onManualModelsChange: (value: string) => void;
+  models: string[];
+  onModelsChange: (value: string[]) => void;
   mappingLines: string;
   onMappingLinesChange: (value: string) => void;
-  testModel: string;
-  onTestModelChange: (value: string) => void;
-  onSyncModels?: () => void;
-  syncingModels?: boolean;
+  onSyncBuiltInModels?: () => void;
+  onSyncUpstreamModels?: () => void;
+  syncingBuiltIn?: boolean;
+  syncingUpstream?: boolean;
 }
 
 type ModelRuleTab = 'whitelist' | 'mapping';
@@ -55,52 +50,42 @@ const serializeMappingRows = (rows: MappingRow[]) =>
     .join('\n');
 
 export function AccountModelRulesEditor({
-  allowAll,
-  onAllowAllChange,
-  discoveredModels,
-  selectedModels,
-  onSelectedModelsChange,
-  manualModels,
-  onManualModelsChange,
+  models,
+  onModelsChange,
   mappingLines,
   onMappingLinesChange,
-  testModel,
-  onTestModelChange,
-  onSyncModels,
-  syncingModels = false,
+  onSyncBuiltInModels,
+  onSyncUpstreamModels,
+  syncingBuiltIn = false,
+  syncingUpstream = false,
 }: AccountModelRulesEditorProps) {
   const [activeTab, setActiveTab] = useState<ModelRuleTab>('whitelist');
   const [manualDraft, setManualDraft] = useState('');
-  const manualEntries = useMemo(() => splitLines(manualModels), [manualModels]);
   const [mappingRows, setMappingRows] = useState<MappingRow[]>(() =>
     mappingRowsFromLines(mappingLines)
   );
-  const selectedCount = allowAll
-    ? discoveredModels.length
-    : selectedModels.length + manualEntries.length;
 
   useEffect(() => {
     setMappingRows(mappingRowsFromLines(mappingLines));
   }, [mappingLines]);
 
-  const toggleModel = (model: string) => {
-    if (selectedModels.includes(model)) {
-      onSelectedModelsChange(selectedModels.filter((item) => item !== model));
-      return;
-    }
-    onSelectedModelsChange([...selectedModels, model]);
+  const removeModel = (model: string) => {
+    onModelsChange(models.filter((item) => item !== model));
   };
 
-  const removeManualModel = (model: string) => {
-    onManualModelsChange(manualEntries.filter((item) => item !== model).join('\n'));
-  };
-
-  const appendManualModel = () => {
+  const appendManualModels = () => {
     const additions = splitLines(manualDraft);
     if (additions.length === 0) return;
-    onManualModelsChange([...new Set([...manualEntries, ...additions])].join('\n'));
+    const seen = new Set(models.map((item) => item.toLowerCase()));
+    const merged = [...models];
+    additions.forEach((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      merged.push(item);
+    });
+    onModelsChange(merged);
     setManualDraft('');
-    onAllowAllChange(false);
   };
 
   const updateMappingRow = (index: number, field: keyof MappingRow, value: string) => {
@@ -121,28 +106,10 @@ export function AccountModelRulesEditor({
     <div className={styles.modelEditor}>
       <div className={styles.modelEditorHeader}>
         <div>
-          <h3 className={styles.sectionTitle}>模型限制</h3>
+          <h3 className={styles.sectionTitle}>模型限制（可选）</h3>
           <p className={styles.sectionDescription}>
-            选择账号允许调用的模型，并按需配置客户端别名到上游模型的映射。
+            列表为空时允许全部模型；同步或填入模型后仅允许列表中的模型。
           </p>
-        </div>
-        <div className={styles.inlineActions}>
-          {onSyncModels ? (
-            <Button variant="secondary" size="xs" onClick={onSyncModels} loading={syncingModels}>
-              <IconRefreshCw size={14} /> 同步最新模型
-            </Button>
-          ) : null}
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={() => {
-              onSelectedModelsChange([]);
-              onManualModelsChange('');
-              onAllowAllChange(true);
-            }}
-          >
-            <IconTrash2 size={14} /> 清空白名单
-          </Button>
         </div>
       </div>
 
@@ -160,113 +127,85 @@ export function AccountModelRulesEditor({
 
       {activeTab === 'whitelist' ? (
         <div className={styles.modelTabPanel}>
-          <div className={styles.allowMode} role="group" aria-label="模型允许范围">
-            <button
-              type="button"
-              className={allowAll ? styles.allowModeActive : ''}
-              onClick={() => onAllowAllChange(true)}
-            >
-              允许全部模型
-            </button>
-            <button
-              type="button"
-              className={!allowAll ? styles.allowModeActive : ''}
-              onClick={() => onAllowAllChange(false)}
-            >
-              使用模型白名单
-            </button>
-          </div>
-
-          {!allowAll ? (
-            <>
-              <div className={styles.field}>
-                <span className={styles.fieldLabel}>已选择模型（{selectedCount}）</span>
-                <div className={styles.selectedModelList}>
-                  {selectedModels.map((model) => (
-                    <span className={styles.selectedModelChip} key={model}>
-                      {model}
-                      <button
-                        type="button"
-                        onClick={() => toggleModel(model)}
-                        aria-label={`移除模型 ${model}`}
-                      >
-                        <IconX size={12} />
-                      </button>
-                    </span>
-                  ))}
-                  {manualEntries.map((model) => (
-                    <span className={styles.selectedModelChip} key={`manual-${model}`}>
-                      {model}
-                      <button
-                        type="button"
-                        onClick={() => removeManualModel(model)}
-                        aria-label={`移除手工模型 ${model}`}
-                      >
-                        <IconX size={12} />
-                      </button>
-                    </span>
-                  ))}
-                  {selectedCount === 0 ? (
-                    <span className={styles.modelEmpty}>尚未选择模型</span>
-                  ) : null}
-                </div>
+          {models.length > 0 ? (
+            <div className={styles.modelListBox}>
+              <div className={styles.modelListGrid}>
+                {models.map((model) => (
+                  <span className={styles.modelListItem} key={model}>
+                    <span className={styles.modelListName}>{model}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeModel(model)}
+                      aria-label={`移除模型 ${model}`}
+                    >
+                      <IconX size={14} />
+                    </button>
+                  </span>
+                ))}
               </div>
-
-              {discoveredModels.length > 0 ? (
-                <div className={styles.field}>
-                  <span className={styles.fieldLabel}>可用模型</span>
-                  <div className={styles.modelChoices}>
-                    {discoveredModels.map((model) => {
-                      const selected = selectedModels.includes(model);
-                      return (
-                        <button
-                          key={model}
-                          type="button"
-                          className={`${styles.modelChoice} ${selected ? styles.modelChoiceSelected : ''}`}
-                          onClick={() => toggleModel(model)}
-                          aria-pressed={selected}
-                        >
-                          {model}
-                          {selected ? <span>已选</span> : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className={styles.notice}>未同步到模型目录，可在下方手工添加模型。</div>
-              )}
-
-              <div className={styles.field}>
-                <span className={styles.fieldLabel}>手工添加模型</span>
-                <div className={styles.manualModelRow}>
-                  <input
-                    className={styles.input}
-                    value={manualDraft}
-                    onChange={(event) => setManualDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter') return;
-                      event.preventDefault();
-                      appendManualModel();
-                    }}
-                    placeholder="输入模型名称，可使用末尾通配符 *"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={appendManualModel}
-                    aria-label="添加手工模型"
-                  >
-                    <IconPlus size={14} /> 添加
-                  </Button>
-                </div>
-              </div>
-            </>
+              <div className={styles.modelListCount}>{`${models.length} 个模型`}</div>
+            </div>
           ) : (
             <div className={styles.modelAllNotice}>
-              当前账号允许使用同步到的全部模型。后续新增模型也会自动允许。
+              尚未选择模型，当前允许全部模型。可点击下方按钮同步，或直接填入模型名称。
             </div>
           )}
+
+          <div className={styles.modelSyncActions}>
+            {onSyncBuiltInModels ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={onSyncBuiltInModels}
+                loading={syncingBuiltIn}
+              >
+                <IconRefreshCw size={14} /> 同步最新支持模型
+              </Button>
+            ) : null}
+            {onSyncUpstreamModels ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={onSyncUpstreamModels}
+                loading={syncingUpstream}
+              >
+                <IconRefreshCw size={14} /> 同步上游支持的模型
+              </Button>
+            ) : null}
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => onModelsChange([])}
+              disabled={models.length === 0}
+            >
+              <IconTrash2 size={14} /> 清除所有模型
+            </Button>
+          </div>
+
+          <div className={styles.field}>
+            <span className={styles.fieldLabel}>自定义模型名称</span>
+            <div className={styles.manualModelRow}>
+              <input
+                className={styles.input}
+                value={manualDraft}
+                onChange={(event) => setManualDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return;
+                  event.preventDefault();
+                  appendManualModels();
+                }}
+                placeholder="输入自定义模型名称，可使用末尾通配符 *"
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={appendManualModels}
+                aria-label="填入自定义模型"
+              >
+                <IconPlus size={14} /> 填入
+              </Button>
+            </div>
+          </div>
         </div>
       ) : (
         <div className={styles.modelTabPanel}>
@@ -316,17 +255,6 @@ export function AccountModelRulesEditor({
           </p>
         </div>
       )}
-
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>连通性测试模型</span>
-        <input
-          className={styles.input}
-          value={testModel}
-          onChange={(event) => onTestModelChange(event.target.value)}
-          placeholder="选择一个有效的客户端模型名"
-        />
-        <span className={styles.fieldHint}>保存前会使用该模型发起真实连通性测试。</span>
-      </label>
     </div>
   );
 }

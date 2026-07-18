@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("pro account operation not found")
-	ErrVersionConflict     = errors.New("pro account operation version conflict")
-	ErrIdempotencyConflict = errors.New("pro account operation idempotency conflict")
-	ErrOperationIDConflict = errors.New("pro account operation id conflict")
+	ErrNotFound              = errors.New("pro account operation not found")
+	ErrVersionConflict       = errors.New("pro account operation version conflict")
+	ErrIdempotencyConflict   = errors.New("pro account operation idempotency conflict")
+	ErrOperationIDConflict   = errors.New("pro account operation id conflict")
+	ErrActiveReauthorization = errors.New("active pro account reauthorization already exists")
 )
 
 type Repository interface {
@@ -24,6 +25,12 @@ type Repository interface {
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (model.ProAccountDraft, bool, error)
 	Update(ctx context.Context, operationID string, expectedVersion int64, update model.ProAccountDraftUpdate, nowMS int64) (model.ProAccountDraft, error)
 	ListRecoverable(ctx context.Context, nowMS int64, limit int) ([]model.ProAccountDraft, error)
+}
+
+// ActiveReauthorizationFinder 是可选查询能力，供需要限制账号重新授权并发数的服务按需使用。
+// 保持它独立于 Repository，避免现有测试桩和第三方实现因新增方法而失效。
+type ActiveReauthorizationFinder interface {
+	FindActiveReauthorization(ctx context.Context, accountID string) (model.ProAccountDraft, bool, error)
 }
 
 type repository struct {
@@ -78,7 +85,7 @@ func (r *repository) Create(ctx context.Context, input model.ProAccountDraftCrea
 
 	existing, err := getDraft(ctx, tx, "idempotency_key", input.IdempotencyKey)
 	if err == nil {
-		if existing.OperationType != input.OperationType || existing.ProAccountID != input.ProAccountID {
+		if existing.OperationType != input.OperationType || (input.ProAccountID != "" && existing.ProAccountID != input.ProAccountID) {
 			return model.ProAccountDraft{}, false, ErrIdempotencyConflict
 		}
 		if err := tx.Commit(); err != nil {
@@ -94,6 +101,15 @@ func (r *repository) Create(ctx context.Context, input model.ProAccountDraftCrea
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return model.ProAccountDraft{}, false, err
 	}
+	if input.OperationType == "reauthorize" && input.ProAccountID != "" {
+		active, activeErr := findActiveReauthorization(ctx, tx, input.ProAccountID)
+		if activeErr == nil {
+			return active, false, ErrActiveReauthorization
+		}
+		if !errors.Is(activeErr, sql.ErrNoRows) {
+			return model.ProAccountDraft{}, false, activeErr
+		}
+	}
 	return model.ProAccountDraft{}, false, ErrOperationIDConflict
 }
 
@@ -107,6 +123,18 @@ func (r *repository) Get(ctx context.Context, operationID string) (model.ProAcco
 
 func (r *repository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (model.ProAccountDraft, bool, error) {
 	item, err := getDraft(ctx, r.db, "idempotency_key", strings.TrimSpace(idempotencyKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ProAccountDraft{}, false, nil
+	}
+	return item, err == nil, err
+}
+
+func (r *repository) FindActiveReauthorization(ctx context.Context, accountID string) (model.ProAccountDraft, bool, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return model.ProAccountDraft{}, false, nil
+	}
+	item, err := findActiveReauthorization(ctx, r.db, accountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.ProAccountDraft{}, false, nil
 	}
@@ -157,9 +185,9 @@ func (r *repository) ListRecoverable(ctx context.Context, nowMS int64, limit int
 		limit = 100
 	}
 	rows, err := r.db.QueryContext(ctx, `select `+draftColumns+` from pro_account_drafts
-		where state not in (?, ?, ?) and cleanup_deadline_ms <= ?
+		where state not in (?, ?, ?, ?) and cleanup_deadline_ms <= ?
 		order by cleanup_deadline_ms asc, updated_at_ms asc limit ?`,
-		model.ProOperationStateEnabled, model.ProOperationStateCancelled, model.ProOperationStateFailed, nowMS, limit)
+		model.ProOperationStateEnabled, model.ProOperationStateSavedDisabled, model.ProOperationStateCancelled, model.ProOperationStateFailed, nowMS, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +216,15 @@ func getDraft(ctx context.Context, queryer queryRower, column string, value stri
 		return model.ProAccountDraft{}, fmt.Errorf("unsupported draft lookup column %q", column)
 	}
 	return scanDraft(queryer.QueryRowContext(ctx, `select `+draftColumns+` from pro_account_drafts where `+column+` = ?`, value))
+}
+
+func findActiveReauthorization(ctx context.Context, queryer queryRower, accountID string) (model.ProAccountDraft, error) {
+	return scanDraft(queryer.QueryRowContext(ctx, `select `+draftColumns+` from pro_account_drafts
+		where operation_type = 'reauthorize' and pro_account_id = ?
+			and state not in (?, ?, ?, ?)
+		order by updated_at_ms desc, operation_id desc limit 1`,
+		strings.TrimSpace(accountID), model.ProOperationStateEnabled, model.ProOperationStateSavedDisabled,
+		model.ProOperationStateCancelled, model.ProOperationStateFailed))
 }
 
 type rowScanner interface {

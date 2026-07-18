@@ -4,8 +4,12 @@ import { Modal } from '@/components/ui/Modal';
 import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import {
   IconBot,
+  IconCheck,
+  IconCopy,
   IconCrosshair,
+  IconExternalLink,
   IconFileText,
+  IconInfo,
   IconKey,
   IconModelCluster,
   IconRefreshCw,
@@ -18,6 +22,7 @@ import type {
   ProAccountProbeResult,
 } from '@/services/api/proAccounts';
 import { proAccountsApi } from '@/services/api/proAccounts';
+import { copyToClipboard } from '@/utils/clipboard';
 import { AccountModelRulesEditor } from './AccountModelRulesEditor';
 import {
   ACCOUNT_PLATFORMS,
@@ -25,15 +30,12 @@ import {
   accountDisplayName,
   authTypesForPlatform,
   createRequestIdentity,
-  formatModelLines,
   parseHeaderLines,
   parseMappingLines,
-  parseModelLines,
   platformOption,
-  suggestedTestModel,
+  resolveAccountModelRules,
   type AccountAuthType,
   type AccountPlatform,
-  type RequestIdentity,
 } from './accountFormUtils';
 import styles from './AccountModals.module.scss';
 
@@ -52,10 +54,48 @@ const protocolLabel = (value?: string) => {
   return '自动探测';
 };
 
+const mergeUnique = (current: string[], additions: string[]) => {
+  const seen = new Set(current.map((item) => item.toLowerCase()));
+  const merged = [...current];
+  additions.forEach((item) => {
+    const normalized = item.trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) return;
+    seen.add(key);
+    merged.push(normalized);
+  });
+  return merged;
+};
+
+// 与 sub2api 一致：粘贴完整回调地址时，仅在输入框保留授权 Code，state 单独保存。
+const normalizeOAuthCallbackInput = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed.includes('code=')) {
+    return { code: value, state: '' };
+  }
+  try {
+    const callbackUrl = trimmed.includes('?')
+      ? new URL(trimmed)
+      : new URL(`http://localhost/callback?${trimmed.replace(/^\?/, '')}`);
+    const code = callbackUrl.searchParams.get('code');
+    const state = callbackUrl.searchParams.get('state') ?? '';
+    if (code && code !== trimmed) {
+      return { code, state };
+    }
+  } catch {
+    const codeMatch = trimmed.match(/[?&]code=([^&]+)/);
+    const stateMatch = trimmed.match(/[?&]state=([^&]+)/);
+    if (codeMatch?.[1] && codeMatch[1] !== trimmed) {
+      return { code: codeMatch[1], state: stateMatch?.[1] ?? '' };
+    }
+  }
+  return { code: value, state: '' };
+};
+
 const authTypeDescription = (authType: AccountAuthType) => {
   if (authType === 'oauth') return '使用官方授权流程，凭证由 Gateway 安全保存并自动刷新。';
   if (authType === 'vertex') return '上传 Google Cloud Service Account JSON 并设置运行地区。';
-  return '填写上游地址和 API Key，自动探测协议能力与可用模型。';
+  return '填写上游地址和 API Key，直接保存为中转账号。';
 };
 
 const platformIcon = (platform: AccountPlatform) => {
@@ -86,40 +126,40 @@ export function AccountWizardModal({
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com');
   const [apiKey, setApiKey] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
   const [protocolMode, setProtocolMode] = useState('auto');
   const [headerLines, setHeaderLines] = useState('');
   const [vertexFile, setVertexFile] = useState<File | null>(null);
   const [location, setLocation] = useState('us-central1');
-  const [allowAll, setAllowAll] = useState(true);
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
-  const [selectedModels, setSelectedModels] = useState<string[]>([]);
-  const [manualModels, setManualModels] = useState('');
+  const [whitelistModels, setWhitelistModels] = useState<string[]>([]);
+  const [catalogModels, setCatalogModels] = useState<string[]>([]);
   const [mappingLines, setMappingLines] = useState('');
-  const [testModel, setTestModel] = useState('');
   const [saveDisabled, setSaveDisabled] = useState(false);
   const [probeResult, setProbeResult] = useState<ProAccountProbeResult | null>(null);
-  const [operationIdentity, setOperationIdentity] = useState<RequestIdentity>(() =>
-    createRequestIdentity('account-add')
-  );
+  const [oauthOperationId, setOAuthOperationId] = useState('');
   const [oauthWaiting, setOAuthWaiting] = useState(false);
   const [oauthUrl, setOAuthUrl] = useState('');
+  const [oauthCallbackInput, setOAuthCallbackInput] = useState('');
+  const [oauthCallbackState, setOAuthCallbackState] = useState('');
+  const [oauthCallbackSubmitted, setOAuthCallbackSubmitted] = useState(false);
+  const [oauthFinalizeRequested, setOAuthFinalizeRequested] = useState(false);
+  const [oauthLinkCopied, setOAuthLinkCopied] = useState(false);
   const [draftAccount, setDraftAccount] = useState<ProAccount | null>(null);
   const [busy, setBusy] = useState(false);
-  const [syncingModels, setSyncingModels] = useState(false);
+  const [syncingBuiltIn, setSyncingBuiltIn] = useState(false);
+  const [syncingUpstream, setSyncingUpstream] = useState(false);
   const [error, setError] = useState('');
-  const oauthWindowRef = useRef<Window | null>(null);
+  const oauthCopyTimerRef = useRef<number | null>(null);
+  const oauthDraftAcceptedRef = useRef(false);
 
-  const credentialReady =
-    authType === 'api' ? Boolean(probeResult?.sourceType) : Boolean(draftAccount);
-  const configurationLocked = busy || oauthWaiting || credentialReady;
+  const syncingModels = syncingBuiltIn || syncingUpstream;
+  const configurationLocked =
+    busy || syncingModels || oauthWaiting || (authType !== 'api' && Boolean(draftAccount));
 
   const resetModelState = useCallback(() => {
-    setAllowAll(true);
-    setDiscoveredModels([]);
-    setSelectedModels([]);
-    setManualModels('');
+    setWhitelistModels([]);
+    setCatalogModels([]);
     setMappingLines('');
-    setTestModel('');
   }, []);
 
   const reset = useCallback(() => {
@@ -129,6 +169,7 @@ export function AccountWizardModal({
     setName('');
     setBaseUrl('https://api.openai.com');
     setApiKey('');
+    setProxyUrl('');
     setProtocolMode('auto');
     setHeaderLines('');
     setVertexFile(null);
@@ -136,43 +177,51 @@ export function AccountWizardModal({
     resetModelState();
     setSaveDisabled(false);
     setProbeResult(null);
-    setOperationIdentity(createRequestIdentity('account-add'));
+    setOAuthOperationId('');
     setOAuthWaiting(false);
     setOAuthUrl('');
+    setOAuthCallbackInput('');
+    setOAuthCallbackState('');
+    setOAuthCallbackSubmitted(false);
+    setOAuthFinalizeRequested(false);
+    setOAuthLinkCopied(false);
     setDraftAccount(null);
     setBusy(false);
-    setSyncingModels(false);
+    setSyncingBuiltIn(false);
+    setSyncingUpstream(false);
     setError('');
-    oauthWindowRef.current = null;
+    oauthDraftAcceptedRef.current = false;
+    if (oauthCopyTimerRef.current !== null) {
+      window.clearTimeout(oauthCopyTimerRef.current);
+      oauthCopyTimerRef.current = null;
+    }
   }, [resetModelState]);
 
   useEffect(() => {
     if (open) reset();
   }, [open, reset]);
 
-  const rules = useCallback(() => {
-    const manual = parseModelLines(manualModels);
-    const allowedModels = allowAll ? [] : [...new Set([...selectedModels, ...manual])];
-    const modelMapping = parseMappingLines(mappingLines);
-    const resolvedTestModel = suggestedTestModel(
-      testModel,
-      allowedModels,
-      modelMapping,
-      discoveredModels
-    );
-    if (!resolvedTestModel) {
-      throw new Error('请输入连通性测试模型');
-    }
-    return { allowedModels, modelMapping, testModel: resolvedTestModel };
-  }, [allowAll, discoveredModels, manualModels, mappingLines, selectedModels, testModel]);
+  useEffect(
+    () => () => {
+      if (oauthCopyTimerRef.current !== null) {
+        window.clearTimeout(oauthCopyTimerRef.current);
+      }
+    },
+    []
+  );
 
   const clearCredentialResult = useCallback(() => {
     setProbeResult(null);
     setDraftAccount(null);
+    setOAuthOperationId('');
     setOAuthWaiting(false);
     setOAuthUrl('');
+    setOAuthCallbackInput('');
+    setOAuthCallbackState('');
+    setOAuthCallbackSubmitted(false);
+    setOAuthFinalizeRequested(false);
+    setOAuthLinkCopied(false);
     resetModelState();
-    setOperationIdentity(createRequestIdentity('account-add'));
     setError('');
   }, [resetModelState]);
 
@@ -205,9 +254,10 @@ export function AccountWizardModal({
     return true;
   };
 
-  const runAPIProbe = async (preserveSelection = false) => {
+  // 同步上游支持的模型(API 方式):独立的候选凭证探测,结果直接填入白名单
+  const runAPIProbe = async () => {
     if (!baseUrl.trim() || !apiKey.trim()) {
-      setError('请输入 Base URL 和 API Key');
+      setError('请先填写 Base URL 和 API Key，再同步上游支持的模型');
       return;
     }
     let headers: Record<string, string>;
@@ -217,10 +267,8 @@ export function AccountWizardModal({
       setError(parseError instanceof Error ? parseError.message : String(parseError));
       return;
     }
-    const identity = createRequestIdentity('account-add');
-    setOperationIdentity(identity);
-    if (preserveSelection) setSyncingModels(true);
-    else setBusy(true);
+    const identity = createRequestIdentity('account-probe');
+    setSyncingUpstream(true);
     setError('');
     try {
       const result = await proAccountsApi.probe(managerBase, managementKey, {
@@ -228,104 +276,201 @@ export function AccountWizardModal({
         platform,
         baseUrl: baseUrl.trim(),
         apiKey,
+        proxyUrl: proxyUrl.trim() || undefined,
         protocolMode,
         allowedModels: [],
         modelMapping: {},
         headers,
       });
-      if (!result.probe?.sourceType) {
-        throw new Error(result.probe?.errorCode || '未能确定可用协议，请检查凭证后重试');
-      }
-      const models = result.probe.models ?? [];
-      setProbeResult(result.probe);
-      setDiscoveredModels(models);
-      if (preserveSelection) {
-        setSelectedModels((current) => current.filter((model) => models.includes(model)));
+      const upstream = result.probe?.upstreamModels ?? [];
+      const models = result.probe?.models ?? [];
+      setProbeResult(result.probe ?? null);
+      setCatalogModels((current) => mergeUnique(current, models));
+      if (upstream.length > 0) {
+        setWhitelistModels((current) => mergeUnique(current, upstream));
       } else {
-        setSelectedModels(models);
-        setAllowAll(models.length === 0);
+        setError('上游未提供模型列表，可同步最新支持模型或直接填入自定义模型名称');
       }
-      setTestModel((current) => current || result.probe.testModel || models[0] || '');
     } catch (probeError) {
       setError(probeError instanceof Error ? probeError.message : String(probeError));
     } finally {
-      if (preserveSelection) setSyncingModels(false);
-      else setBusy(false);
+      setSyncingUpstream(false);
     }
   };
 
   const loadDraftModels = useCallback(
-    async (account: ProAccount, preserveSelection = false) => {
+    async (account: ProAccount, mergeSelection = false) => {
       const savedModels = account.allowedModels ?? [];
       const catalog = await proAccountsApi.modelCatalog(managerBase, managementKey, account.id);
       const models = catalog.models ?? [];
-      setDiscoveredModels(models);
-      if (preserveSelection) {
-        setSelectedModels((current) => current.filter((model) => models.includes(model)));
+      setCatalogModels((current) => (mergeSelection ? mergeUnique(current, models) : models));
+      if (mergeSelection) {
+        const upstream = catalog.upstream?.length ? catalog.upstream : models;
+        setWhitelistModels((current) => mergeUnique(current, upstream));
       } else {
-        setSelectedModels(savedModels.filter((model) => !model.includes('*')));
-        setManualModels(formatModelLines(savedModels.filter((model) => model.includes('*'))));
-        setAllowAll(savedModels.length === 0);
+        setWhitelistModels(savedModels);
       }
-      setTestModel((current) =>
-        suggestedTestModel(current, savedModels, account.modelMapping, models)
-      );
     },
     [managementKey, managerBase]
   );
 
-  const checkOAuth = useCallback(async () => {
-    if (!oauthWaiting || !operationIdentity.operationId) return;
+  // OAuth 第二步沿用第一页已选择的白名单，只补充凭证可见的模型目录。
+  const loadDraftCatalog = useCallback(
+    async (account: ProAccount) => {
+      const catalog = await proAccountsApi.modelCatalog(managerBase, managementKey, account.id);
+      const models = catalog.models ?? [];
+      setCatalogModels((current) => mergeUnique(current, models));
+      return models;
+    },
+    [managementKey, managerBase]
+  );
+
+  const finalizeOAuthDraft = useCallback(
+    async (account: ProAccount, discoveredModels = catalogModels) => {
+      let resolvedRules: ReturnType<typeof resolveAccountModelRules>;
+      try {
+        resolvedRules = resolveAccountModelRules({
+          models: whitelistModels,
+          mappingLines,
+          discoveredModels,
+        });
+      } catch (rulesError) {
+        setError(rulesError instanceof Error ? rulesError.message : String(rulesError));
+        return;
+      }
+      setBusy(true);
+      setError('');
+      try {
+        const result = await proAccountsApi.completeDraft(managerBase, managementKey, account.id, {
+          operationId: oauthOperationId,
+          expectedVersion: account.version,
+          ...resolvedRules,
+          saveDisabledOnTestFailure: saveDisabled,
+        });
+        onSaved(result);
+        onClose();
+      } catch (completeError) {
+        setError(completeError instanceof Error ? completeError.message : String(completeError));
+      } finally {
+        setBusy(false);
+        setOAuthFinalizeRequested(false);
+      }
+    },
+    [
+      catalogModels,
+      managementKey,
+      managerBase,
+      mappingLines,
+      onClose,
+      onSaved,
+      oauthOperationId,
+      saveDisabled,
+      whitelistModels,
+    ]
+  );
+
+  const acceptOAuthDraft = useCallback(
+    async (account: ProAccount, finalize: boolean) => {
+      setDraftAccount(account);
+      setOAuthWaiting(false);
+      let discoveredModels = catalogModels;
+      try {
+        const accountModels = await loadDraftCatalog(account);
+        discoveredModels = mergeUnique(catalogModels, accountModels);
+      } catch {
+        setError('模型目录同步失败，将使用第一页配置的模型规则继续');
+      }
+      if (finalize) {
+        await finalizeOAuthDraft(account, discoveredModels);
+      }
+    },
+    [catalogModels, finalizeOAuthDraft, loadDraftCatalog]
+  );
+
+  // 同步最新支持模型:项目内置目录,不依赖账号凭证,结果直接填入白名单
+  const syncBuiltInModels = async () => {
+    setSyncingBuiltIn(true);
+    setError('');
     try {
-      const result = await proAccountsApi.oauthStatus(
+      const catalog = await proAccountsApi.staticModelCatalog(
         managerBase,
         managementKey,
-        operationIdentity.operationId
+        platform,
+        authType
       );
+      const builtIn = catalog.builtIn?.length ? catalog.builtIn : (catalog.models ?? []);
+      if (builtIn.length === 0) {
+        setError('项目内置目录暂无该平台模型，可同步上游支持的模型或填入自定义模型名称');
+        return;
+      }
+      setCatalogModels((current) => mergeUnique(current, builtIn));
+      setWhitelistModels((current) => mergeUnique(current, builtIn));
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : String(syncError));
+    } finally {
+      setSyncingBuiltIn(false);
+    }
+  };
+
+  const syncUpstreamModels = async () => {
+    if (authType === 'api') {
+      await runAPIProbe();
+      return;
+    }
+    if (!draftAccount) {
+      setError('请先完成授权或读取凭证，再同步上游支持的模型');
+      return;
+    }
+    setSyncingUpstream(true);
+    setError('');
+    try {
+      await loadDraftModels(draftAccount, true);
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : String(syncError));
+    } finally {
+      setSyncingUpstream(false);
+    }
+  };
+
+  const checkOAuth = useCallback(async () => {
+    if (!oauthWaiting || !oauthOperationId) return;
+    try {
+      const result = await proAccountsApi.oauthStatus(managerBase, managementKey, oauthOperationId);
       if (result.account && result.status === 'ok') {
-        setDraftAccount(result.account);
-        setOAuthWaiting(false);
-        try {
-          await loadDraftModels(result.account);
-        } catch {
-          const savedModels = result.account.allowedModels ?? [];
-          setDiscoveredModels(savedModels.filter((model) => !model.includes('*')));
-          setSelectedModels([]);
-          setManualModels(formatModelLines(savedModels));
-          setTestModel(suggestedTestModel('', savedModels, result.account.modelMapping));
-          setAllowAll(savedModels.length === 0);
-          setError('模型目录同步失败，可手工添加模型后继续');
-        }
-        oauthWindowRef.current?.close();
-        oauthWindowRef.current = null;
+        if (oauthDraftAcceptedRef.current) return;
+        oauthDraftAcceptedRef.current = true;
+        await acceptOAuthDraft(result.account, oauthFinalizeRequested);
         return;
       }
       if (result.status === 'ambiguous' || result.status === 'error') {
         setOAuthWaiting(false);
+        setOAuthFinalizeRequested(false);
         setError(result.operation.errorSummary || 'OAuth 授权未完成');
       }
     } catch (statusError) {
       setError(statusError instanceof Error ? statusError.message : String(statusError));
     }
-  }, [loadDraftModels, managementKey, managerBase, oauthWaiting, operationIdentity.operationId]);
+  }, [
+    acceptOAuthDraft,
+    managementKey,
+    managerBase,
+    oauthFinalizeRequested,
+    oauthOperationId,
+    oauthWaiting,
+  ]);
 
   useEffect(() => {
-    if (!open || !oauthWaiting) return;
+    if (!open || !oauthWaiting || typeof window === 'undefined') return;
     const timer = window.setInterval(() => void checkOAuth(), 2000);
     return () => window.clearInterval(timer);
   }, [checkOAuth, oauthWaiting, open]);
 
   const startOAuth = async () => {
     const identity = createRequestIdentity('account-oauth');
-    setOperationIdentity(identity);
+    setOAuthOperationId(identity.operationId);
     setBusy(true);
     setError('');
-    const popup =
-      typeof window === 'undefined'
-        ? null
-        : window.open('about:blank', 'pro-account-oauth', 'width=720,height=760');
-    oauthWindowRef.current = popup;
-    if (popup) popup.opener = null;
+    oauthDraftAcceptedRef.current = false;
     try {
       const result = await proAccountsApi.startOAuth(managerBase, managementKey, {
         ...identity,
@@ -334,12 +479,128 @@ export function AccountWizardModal({
       const url = result.oauth?.url ?? '';
       if (!url) throw new Error('Gateway 未返回授权地址');
       setOAuthUrl(url);
+      setOAuthCallbackState(result.oauth?.state ?? '');
       setOAuthWaiting(true);
-      if (popup) popup.location.href = url;
     } catch (oauthError) {
-      popup?.close();
-      oauthWindowRef.current = null;
       setError(oauthError instanceof Error ? oauthError.message : String(oauthError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyOAuthLink = async () => {
+    if (!oauthUrl) return;
+    const copied = await copyToClipboard(oauthUrl);
+    if (!copied) {
+      setError('复制授权链接失败，请手工选择并复制');
+      return;
+    }
+    setOAuthLinkCopied(true);
+    if (oauthCopyTimerRef.current !== null) {
+      window.clearTimeout(oauthCopyTimerRef.current);
+    }
+    oauthCopyTimerRef.current = window.setTimeout(() => {
+      setOAuthLinkCopied(false);
+      oauthCopyTimerRef.current = null;
+    }, 1800);
+  };
+
+  const openOAuthLink = () => {
+    if (!oauthUrl) return;
+    window.open(oauthUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const clearOAuthSessionState = () => {
+    setOAuthOperationId('');
+    setOAuthWaiting(false);
+    setOAuthUrl('');
+    setOAuthCallbackInput('');
+    setOAuthCallbackState('');
+    setOAuthCallbackSubmitted(false);
+    setOAuthFinalizeRequested(false);
+    setOAuthLinkCopied(false);
+    setDraftAccount(null);
+    oauthDraftAcceptedRef.current = false;
+  };
+
+  const regenerateOAuthLink = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (oauthOperationId) {
+        await proAccountsApi.cancelDraft(managerBase, managementKey, oauthOperationId);
+      }
+      clearOAuthSessionState();
+    } catch (restartError) {
+      setError(restartError instanceof Error ? restartError.message : String(restartError));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    await startOAuth();
+  };
+
+  const backToOAuthConfiguration = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (oauthOperationId) {
+        await proAccountsApi.cancelDraft(managerBase, managementKey, oauthOperationId);
+      }
+      clearOAuthSessionState();
+      setStep(0);
+    } catch (backError) {
+      setError(backError instanceof Error ? backError.message : String(backError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const completeOAuthAuthorization = async () => {
+    if (draftAccount) {
+      await finalizeOAuthDraft(draftAccount);
+      return;
+    }
+    if (!oauthOperationId || !oauthUrl) {
+      setError('请先生成授权链接');
+      return;
+    }
+    if (!oauthCallbackInput.trim()) {
+      setError('请输入完整回调地址、回调参数或授权 Code');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await proAccountsApi.submitOAuthCallback(
+        managerBase,
+        managementKey,
+        oauthOperationId,
+        oauthCallbackInput.trim(),
+        oauthCallbackState
+      );
+      setOAuthCallbackSubmitted(true);
+      setOAuthFinalizeRequested(true);
+      setOAuthWaiting(true);
+      const result = await proAccountsApi.oauthStatus(managerBase, managementKey, oauthOperationId);
+      if (result.account && result.status === 'ok') {
+        if (oauthDraftAcceptedRef.current) return;
+        oauthDraftAcceptedRef.current = true;
+        setBusy(false);
+        await acceptOAuthDraft(result.account, true);
+        return;
+      }
+      if (result.status === 'ambiguous' || result.status === 'error') {
+        setOAuthWaiting(false);
+        setOAuthFinalizeRequested(false);
+        setError(result.operation.errorSummary || 'OAuth 授权未完成');
+      }
+    } catch (callbackError) {
+      setOAuthCallbackSubmitted(false);
+      setOAuthFinalizeRequested(false);
+      setError(callbackError instanceof Error ? callbackError.message : String(callbackError));
     } finally {
       setBusy(false);
     }
@@ -358,8 +619,8 @@ export function AccountWizardModal({
       setError('请输入 Vertex 地区');
       return;
     }
-    const identity = createRequestIdentity('account-add');
-    setOperationIdentity(identity);
+    const identity = createRequestIdentity('account-vertex');
+    setOAuthOperationId(identity.operationId);
     setBusy(true);
     setError('');
     try {
@@ -377,13 +638,10 @@ export function AccountWizardModal({
       try {
         await loadDraftModels(result.account);
       } catch {
-        setDiscoveredModels([]);
-        setSelectedModels([]);
-        setAllowAll(true);
-        setError('模型目录同步失败，可手工添加模型后继续');
+        setWhitelistModels([]);
+        setError('模型目录同步失败，可手工填入模型后继续');
       }
     } catch (vertexError) {
-      setOperationIdentity(createRequestIdentity('account-add'));
       setError(vertexError instanceof Error ? vertexError.message : String(vertexError));
     } finally {
       setBusy(false);
@@ -393,33 +651,8 @@ export function AccountWizardModal({
   const prepareCredential = () => {
     if (!validateSelection()) return;
     setError('');
-    if (authType === 'api') {
-      void runAPIProbe();
-      return;
-    }
-    if (authType === 'oauth') {
-      if (!oauthWaiting) void startOAuth();
-      else void checkOAuth();
-      return;
-    }
+    if (authType === 'oauth') return;
     void createVertexDraft();
-  };
-
-  const syncModels = async () => {
-    if (authType === 'api') {
-      await runAPIProbe(true);
-      return;
-    }
-    if (!draftAccount) return;
-    setSyncingModels(true);
-    setError('');
-    try {
-      await loadDraftModels(draftAccount, true);
-    } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : String(syncError));
-    } finally {
-      setSyncingModels(false);
-    }
   };
 
   const restartCredential = async () => {
@@ -427,11 +660,9 @@ export function AccountWizardModal({
     setBusy(true);
     setError('');
     try {
-      if ((oauthWaiting || draftAccount) && operationIdentity.operationId) {
-        await proAccountsApi.cancelDraft(managerBase, managementKey, operationIdentity.operationId);
+      if ((oauthWaiting || draftAccount) && oauthOperationId) {
+        await proAccountsApi.cancelDraft(managerBase, managementKey, oauthOperationId);
       }
-      oauthWindowRef.current?.close();
-      oauthWindowRef.current = null;
       clearCredentialResult();
       if (authType === 'vertex') setVertexFile(null);
     } catch (restartError) {
@@ -442,13 +673,31 @@ export function AccountWizardModal({
   };
 
   const advanceToReview = () => {
-    if (!credentialReady) {
+    if (authType === 'oauth') {
+      if (!validateSelection()) return;
+      try {
+        resolveAccountModelRules({
+          models: whitelistModels,
+          mappingLines,
+          discoveredModels: catalogModels,
+        });
+        setError('');
+        setStep(1);
+      } catch (rulesError) {
+        setError(rulesError instanceof Error ? rulesError.message : String(rulesError));
+      }
+      return;
+    }
+    if (!draftAccount) {
       prepareCredential();
       return;
     }
     try {
-      const resolved = rules();
-      setTestModel(resolved.testModel);
+      resolveAccountModelRules({
+        models: whitelistModels,
+        mappingLines,
+        discoveredModels: catalogModels,
+      });
       setError('');
       setStep(1);
     } catch (rulesError) {
@@ -457,35 +706,50 @@ export function AccountWizardModal({
   };
 
   const submit = async () => {
-    let resolvedRules: ReturnType<typeof rules>;
+    if (!validateSelection()) return;
+    let resolvedRules: ReturnType<typeof resolveAccountModelRules>;
     let headers: Record<string, string> = {};
     try {
-      resolvedRules = rules();
-      if (authType === 'api') headers = parseHeaderLines(headerLines);
+      resolvedRules = resolveAccountModelRules({
+        models: whitelistModels,
+        mappingLines,
+        discoveredModels: catalogModels,
+      });
+      if (authType === 'api') {
+        if (!baseUrl.trim() || !apiKey.trim()) {
+          throw new Error('请输入 Base URL 和 API Key');
+        }
+        headers = parseHeaderLines(headerLines);
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
       return;
     }
+    // 每次保存使用独立操作 ID,与探测操作互不影响
+    const identity = createRequestIdentity('account-save');
     setBusy(true);
     setError('');
     try {
       let result: ProAccountLifecycleResult;
       if (authType === 'api') {
         result = await proAccountsApi.createAPI(managerBase, managementKey, {
-          ...operationIdentity,
+          ...identity,
           platform,
           name: name.trim(),
           baseUrl: baseUrl.trim(),
           apiKey,
+          proxyUrl: proxyUrl.trim() || undefined,
           protocolMode,
           headers,
           ...resolvedRules,
-          saveDisabledOnTestFailure: saveDisabled,
+          saveDisabledOnTestFailure: true,
+          // 与 sub2api 一致:保存即启用,连通性由列表中的"测试"入口单独验证
+          skipTest: true,
         });
       } else {
         if (!draftAccount) throw new Error('账号凭证草稿尚未保存');
         result = await proAccountsApi.completeDraft(managerBase, managementKey, draftAccount.id, {
-          operationId: operationIdentity.operationId,
+          operationId: oauthOperationId,
           expectedVersion: draftAccount.version,
           ...resolvedRules,
           saveDisabledOnTestFailure: saveDisabled,
@@ -496,7 +760,6 @@ export function AccountWizardModal({
       onClose();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
-      if (authType === 'api') setOperationIdentity(createRequestIdentity('account-add'));
     } finally {
       setBusy(false);
     }
@@ -507,46 +770,88 @@ export function AccountWizardModal({
     if ((authType === 'oauth' || authType === 'vertex') && (oauthWaiting || draftAccount)) {
       setBusy(true);
       try {
-        await proAccountsApi.cancelDraft(managerBase, managementKey, operationIdentity.operationId);
+        await proAccountsApi.cancelDraft(managerBase, managementKey, oauthOperationId);
       } catch (cancelError) {
         setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
         setBusy(false);
         return;
       }
     }
-    oauthWindowRef.current?.close();
     setApiKey('');
     onClose();
   };
 
   const primaryLabel = useMemo(() => {
-    if (step === 1) return '测试并保存';
-    if (credentialReady) return '下一步';
-    if (authType === 'api') return '探测账号能力';
-    if (authType === 'oauth') return oauthWaiting ? '检查授权结果' : '开始授权';
+    if (step === 1 && authType === 'oauth') {
+      if (oauthFinalizeRequested) return '等待授权结果';
+      if (draftAccount) return '保存账号';
+      return '完成授权';
+    }
+    if (step === 1) return '保存';
+    if (draftAccount) return '下一步';
+    if (authType === 'oauth') return '下一步';
     return '读取凭证并同步模型';
-  }, [authType, credentialReady, oauthWaiting, step]);
+  }, [authType, draftAccount, oauthFinalizeRequested, step]);
 
-  const footer = (
+  const apiFooter = (
+    <div className={styles.footer}>
+      <Button variant="secondary" onClick={() => void close()} disabled={busy || syncingModels}>
+        取消
+      </Button>
+      <span className={styles.footerSpacer} />
+      <Button
+        variant="primary"
+        onClick={() => void submit()}
+        loading={busy}
+        disabled={busy || syncingModels}
+      >
+        保存
+      </Button>
+    </div>
+  );
+
+  const stagedFooter = (
     <div className={styles.footer}>
       {step === 1 ? (
-        <Button variant="secondary" onClick={() => setStep(0)} disabled={busy}>
-          返回配置
+        <Button
+          variant="secondary"
+          onClick={authType === 'oauth' ? () => void backToOAuthConfiguration() : () => setStep(0)}
+          disabled={busy || oauthFinalizeRequested}
+        >
+          {authType === 'oauth' ? '返回' : '返回配置'}
         </Button>
       ) : null}
       <span className={styles.footerSpacer} />
-      <Button variant="secondary" onClick={() => void close()} disabled={busy}>
-        取消
-      </Button>
+      {step === 0 || authType !== 'oauth' ? (
+        <Button variant="secondary" onClick={() => void close()} disabled={busy}>
+          取消
+        </Button>
+      ) : null}
       <Button
         variant="primary"
-        onClick={step === 1 ? () => void submit() : advanceToReview}
+        onClick={
+          step === 1
+            ? authType === 'oauth'
+              ? () => void completeOAuthAuthorization()
+              : () => void submit()
+            : advanceToReview
+        }
         loading={busy}
+        disabled={
+          busy ||
+          oauthFinalizeRequested ||
+          (step === 1 &&
+            authType === 'oauth' &&
+            !draftAccount &&
+            (!oauthUrl || !oauthCallbackInput.trim()))
+        }
       >
         {primaryLabel}
       </Button>
     </div>
   );
+
+  const footer = authType === 'api' ? apiFooter : stagedFooter;
 
   return (
     <Modal
@@ -559,23 +864,33 @@ export function AccountWizardModal({
       closeDisabled={busy}
     >
       <div className={styles.body}>
-        <div className={styles.stepper} aria-label="添加账号步骤">
-          <div className={`${styles.stepperItem} ${styles.stepperItemActive}`}>
-            <span>1</span>
-            <div>
-              <strong>账号配置</strong>
-              <small>平台、认证和模型规则</small>
+        {authType !== 'api' ? (
+          <div className={styles.stepper} aria-label="添加账号步骤">
+            <div className={`${styles.stepperItem} ${styles.stepperItemActive}`}>
+              <span>1</span>
+              <div>
+                <strong>{authType === 'oauth' ? '授权方式' : '账号配置'}</strong>
+                <small>{authType === 'oauth' ? '平台、认证和模型规则' : '凭证与模型规则'}</small>
+              </div>
+            </div>
+            <div
+              className={`${styles.stepperLine} ${step === 1 ? styles.stepperLineActive : ''}`}
+            />
+            <div className={`${styles.stepperItem} ${step === 1 ? styles.stepperItemActive : ''}`}>
+              <span>2</span>
+              <div>
+                <strong>
+                  {authType === 'oauth'
+                    ? `${platformOption(platform)?.label ?? platform} 账户授权`
+                    : '确认并保存'}
+                </strong>
+                <small>
+                  {authType === 'oauth' ? '生成链接并提交授权结果' : '确认配置和连通性测试'}
+                </small>
+              </div>
             </div>
           </div>
-          <div className={`${styles.stepperLine} ${step === 1 ? styles.stepperLineActive : ''}`} />
-          <div className={`${styles.stepperItem} ${step === 1 ? styles.stepperItemActive : ''}`}>
-            <span>2</span>
-            <div>
-              <strong>测试并保存</strong>
-              <small>确认配置和连通性测试</small>
-            </div>
-          </div>
-        </div>
+        ) : null}
 
         {step === 0 ? (
           <div className={styles.wizardStack}>
@@ -641,10 +956,14 @@ export function AccountWizardModal({
                 <div>
                   <h3 className={styles.sectionTitle}>账号与凭证</h3>
                   <p className={styles.sectionDescription}>
-                    完成凭证探测或授权后，模型配置会直接显示在本页下方。
+                    {authType === 'api'
+                      ? '填写上游地址和 API Key，点击保存即完成添加。'
+                      : authType === 'oauth'
+                        ? '配置模型规则后点击下一步，再生成授权链接并完成官方授权。'
+                        : '读取凭证后，可同步账号的模型目录。'}
                   </p>
                 </div>
-                {credentialReady ? (
+                {draftAccount && authType !== 'api' ? (
                   <Button variant="secondary" size="xs" onClick={() => void restartCredential()}>
                     <IconRefreshCw size={14} /> 重新配置凭证
                   </Button>
@@ -663,7 +982,7 @@ export function AccountWizardModal({
                         ? accountDisplayName(platform, authType)
                         : '授权后自动使用账号名称或邮箱'
                     }
-                    disabled={authType !== 'api' || credentialReady}
+                    disabled={authType !== 'api' || busy}
                   />
                   <span className={styles.fieldHint}>
                     {authType === 'api'
@@ -679,35 +998,43 @@ export function AccountWizardModal({
                       <input
                         className={styles.input}
                         value={baseUrl}
-                        onChange={(event) => setBaseUrl(event.target.value)}
+                        onChange={(event) => {
+                          setBaseUrl(event.target.value);
+                          setProbeResult(null);
+                        }}
                         autoComplete="url"
-                        disabled={credentialReady}
+                        disabled={busy || syncingModels}
                       />
                     </label>
-                    {platform === 'openai' ? (
-                      <label className={styles.field}>
-                        <span className={styles.fieldLabel}>协议模式</span>
-                        <select
-                          className={styles.select}
-                          value={protocolMode}
-                          onChange={(event) => setProtocolMode(event.target.value)}
-                          disabled={credentialReady}
-                        >
-                          <option value="auto">自动探测</option>
-                          <option value="responses">强制 Responses</option>
-                          <option value="chat_completions">强制 Chat Completions</option>
-                        </select>
-                      </label>
-                    ) : null}
+                    <label className={styles.field}>
+                      <span className={styles.fieldLabel}>代理 URL</span>
+                      <input
+                        className={styles.input}
+                        value={proxyUrl}
+                        onChange={(event) => {
+                          setProxyUrl(event.target.value);
+                          setProbeResult(null);
+                        }}
+                        placeholder="http:// 或 socks5://，留空直连"
+                        autoComplete="off"
+                        disabled={busy || syncingModels}
+                      />
+                      <span className={styles.fieldHint}>
+                        可选；仅此账号的上游请求经该代理转发。
+                      </span>
+                    </label>
                     <label className={`${styles.field} ${styles.fieldFull}`}>
                       <span className={styles.fieldLabel}>API Key</span>
                       <input
                         className={styles.input}
                         type="password"
                         value={apiKey}
-                        onChange={(event) => setApiKey(event.target.value)}
+                        onChange={(event) => {
+                          setApiKey(event.target.value);
+                          setProbeResult(null);
+                        }}
                         autoComplete="new-password"
-                        disabled={credentialReady}
+                        disabled={busy || syncingModels}
                         placeholder="输入上游 API Key"
                       />
                     </label>
@@ -716,15 +1043,47 @@ export function AccountWizardModal({
                       <textarea
                         className={styles.textarea}
                         value={headerLines}
-                        onChange={(event) => setHeaderLines(event.target.value)}
+                        onChange={(event) => {
+                          setHeaderLines(event.target.value);
+                          setProbeResult(null);
+                        }}
                         rows={3}
                         placeholder="Header-Name: value"
-                        disabled={credentialReady}
+                        disabled={busy || syncingModels}
                       />
                       <span className={styles.fieldHint}>
                         每行一个 Header，凭证 Header 不允许覆盖。
                       </span>
                     </label>
+                    {platform === 'openai' ? (
+                      <details className={`${styles.advancedSettings} ${styles.fieldFull}`}>
+                        <summary>
+                          <span>高级设置</span>
+                          <small>协议模式：{protocolLabel(protocolMode)}</small>
+                        </summary>
+                        <div className={styles.advancedSettingsBody}>
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>协议模式</span>
+                            <select
+                              className={styles.select}
+                              value={protocolMode}
+                              onChange={(event) => {
+                                setProtocolMode(event.target.value);
+                                setProbeResult(null);
+                              }}
+                              disabled={busy || syncingModels}
+                            >
+                              <option value="auto">自动探测</option>
+                              <option value="responses">强制 Responses</option>
+                              <option value="chat_completions">强制 Chat Completions</option>
+                            </select>
+                            <span className={styles.fieldHint}>
+                              默认按上游能力自动选择；仅在已明确上游协议时强制指定。
+                            </span>
+                          </label>
+                        </div>
+                      </details>
+                    ) : null}
                   </>
                 ) : null}
 
@@ -737,7 +1096,7 @@ export function AccountWizardModal({
                         type="file"
                         accept="application/json,.json"
                         onChange={(event) => setVertexFile(event.target.files?.[0] ?? null)}
-                        disabled={credentialReady}
+                        disabled={Boolean(draftAccount)}
                       />
                       <span className={styles.fieldHint}>文件最大 2 MiB，仅在创建过程中上传。</span>
                     </label>
@@ -748,74 +1107,189 @@ export function AccountWizardModal({
                         value={location}
                         onChange={(event) => setLocation(event.target.value)}
                         placeholder="us-central1"
-                        disabled={credentialReady}
+                        disabled={Boolean(draftAccount)}
                       />
                     </label>
                   </>
                 ) : null}
               </div>
 
-              {authType === 'oauth' ? (
-                <div className={styles.oauthPanel}>
-                  <span className={styles.oauthPanelIcon}>
-                    <IconShield size={22} />
-                  </span>
+              {authType === 'api' && probeResult?.sourceType ? (
+                <div className={styles.credentialSuccess}>
+                  <span>✓</span>
                   <div>
-                    <strong>{platformOption(platform)?.label} OAuth</strong>
+                    <strong>已同步上游能力</strong>
                     <p>
-                      {credentialReady
-                        ? '授权已完成，凭证草稿已安全保存。'
-                        : oauthWaiting
-                          ? '等待浏览器中的授权流程完成，页面会自动检查结果。'
-                          : '点击底部“开始授权”，在新窗口完成官方授权。'}
+                      {protocolLabel(probeResult.selectedProtocol)} · 已同步{' '}
+                      {probeResult.models?.length ?? 0} 个模型
                     </p>
-                    {oauthUrl && oauthWaiting ? (
-                      <a href={oauthUrl} target="_blank" rel="noreferrer">
-                        在新窗口继续授权
-                      </a>
-                    ) : null}
                   </div>
                 </div>
               ) : null}
 
-              {credentialReady ? (
+              {authType !== 'api' && draftAccount ? (
                 <div className={styles.credentialSuccess}>
                   <span>✓</span>
                   <div>
                     <strong>凭证准备完成</strong>
-                    <p>
-                      {authType === 'api'
-                        ? `${protocolLabel(probeResult?.selectedProtocol)} · 已同步 ${discoveredModels.length} 个模型`
-                        : `凭证草稿已保存 · 已同步 ${discoveredModels.length} 个模型`}
-                    </p>
+                    <p>凭证草稿已保存 · 白名单 {whitelistModels.length} 个模型</p>
                   </div>
                 </div>
               ) : null}
 
-              {probeResult?.warnings?.length ? (
+              {probeResult?.warnings?.length && !error ? (
                 <div className={styles.notice}>{probeResult.warnings.join('；')}</div>
               ) : null}
             </section>
 
-            {credentialReady ? (
-              <section className={styles.formSection}>
-                <AccountModelRulesEditor
-                  allowAll={allowAll}
-                  onAllowAllChange={setAllowAll}
-                  discoveredModels={discoveredModels}
-                  selectedModels={selectedModels}
-                  onSelectedModelsChange={setSelectedModels}
-                  manualModels={manualModels}
-                  onManualModelsChange={setManualModels}
-                  mappingLines={mappingLines}
-                  onMappingLinesChange={setMappingLines}
-                  testModel={testModel}
-                  onTestModelChange={setTestModel}
-                  onSyncModels={() => void syncModels()}
-                  syncingModels={syncingModels}
-                />
-              </section>
-            ) : null}
+            <section className={styles.formSection}>
+              <AccountModelRulesEditor
+                models={whitelistModels}
+                onModelsChange={setWhitelistModels}
+                mappingLines={mappingLines}
+                onMappingLinesChange={setMappingLines}
+                onSyncBuiltInModels={() => void syncBuiltInModels()}
+                onSyncUpstreamModels={
+                  authType === 'api' || draftAccount ? () => void syncUpstreamModels() : undefined
+                }
+                syncingBuiltIn={syncingBuiltIn}
+                syncingUpstream={syncingUpstream}
+              />
+            </section>
+          </div>
+        ) : authType === 'oauth' ? (
+          <div className={styles.oauthAuthorizationPage}>
+            <section className={styles.oauthAuthorizationCard}>
+              <div className={styles.oauthAuthorizationLayout}>
+                <span className={styles.oauthAuthorizationIcon}>
+                  <IconExternalLink size={22} />
+                </span>
+                <div className={styles.oauthAuthorizationContent}>
+                  <h3>{platformOption(platform)?.label ?? platform} 账户授权</h3>
+
+                  <div className={styles.oauthMethod}>
+                    <span>Authorization Method</span>
+                    <label>
+                      <input type="radio" checked readOnly />
+                      <span>手动授权</span>
+                    </label>
+                  </div>
+
+                  <p className={styles.oauthAuthorizationIntro}>
+                    请按照以下步骤完成 {platformOption(platform)?.label ?? platform} 账户的授权：
+                  </p>
+
+                  <div className={styles.oauthInstructionList}>
+                    <section className={styles.oauthInstructionCard}>
+                      <span className={styles.oauthInstructionNumber}>1</span>
+                      <div className={styles.oauthInstructionContent}>
+                        <h4>点击下方按钮生成授权链接</h4>
+                        {!oauthUrl ? (
+                          <Button
+                            type="button"
+                            onClick={() => void startOAuth()}
+                            loading={busy}
+                            disabled={busy}
+                          >
+                            <IconExternalLink size={15} /> 生成授权链接
+                          </Button>
+                        ) : (
+                          <div className={styles.oauthGeneratedLink}>
+                            <div className={styles.oauthLinkRow}>
+                              <input
+                                className={styles.input}
+                                value={oauthUrl}
+                                readOnly
+                                aria-label="OAuth 授权链接"
+                              />
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                onClick={() => void copyOAuthLink()}
+                              >
+                                <IconCopy size={14} /> {oauthLinkCopied ? '已复制' : '复制'}
+                              </Button>
+                            </div>
+                            <div className={styles.oauthLinkActions}>
+                              <Button type="button" size="sm" onClick={openOAuthLink}>
+                                <IconExternalLink size={14} /> 打开授权链接
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => void regenerateOAuthLink()}
+                                disabled={busy || oauthFinalizeRequested}
+                              >
+                                <IconRefreshCw size={14} /> 重新生成
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className={styles.oauthInstructionCard}>
+                      <span className={styles.oauthInstructionNumber}>2</span>
+                      <div className={styles.oauthInstructionContent}>
+                        <h4>在浏览器中打开链接并完成授权</h4>
+                        <p>请在新标签页中登录账号并确认官方授权。</p>
+                        <div className={styles.oauthImportantNotice}>
+                          重要提示：授权后页面可能加载较长时间。当浏览器地址栏变为
+                          http://localhost... 开头时，即可复制当前完整地址返回本页面。
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className={styles.oauthInstructionCard}>
+                      <span className={styles.oauthInstructionNumber}>3</span>
+                      <div className={styles.oauthInstructionContent}>
+                        <h4>输入授权链接或 Code</h4>
+                        <p>
+                          授权完成后，粘贴浏览器中的完整回调地址、回调参数，或仅粘贴 code 参数值。
+                        </p>
+                        <label className={styles.oauthCallbackField}>
+                          <span>
+                            <IconCheck size={15} /> 授权链接或 Code
+                          </span>
+                          <textarea
+                            value={oauthCallbackInput}
+                            onChange={(event) => {
+                              const normalized = normalizeOAuthCallbackInput(event.target.value);
+                              setOAuthCallbackInput(normalized.code);
+                              if (normalized.state) {
+                                setOAuthCallbackState(normalized.state);
+                              }
+                              setOAuthCallbackSubmitted(false);
+                              setError('');
+                            }}
+                            rows={3}
+                            placeholder={
+                              '方式1：复制完整回调地址\n(http://localhost:xxx/auth/callback?code=...)\n方式2：仅复制 code 参数值'
+                            }
+                            disabled={!oauthUrl || busy || Boolean(draftAccount)}
+                          />
+                        </label>
+                        <div className={styles.oauthCallbackHint}>
+                          <IconInfo size={13} />
+                          系统会使用当前授权会话自动识别并校验参数。
+                        </div>
+                        {oauthCallbackSubmitted && !draftAccount ? (
+                          <div className={styles.oauthWaitingStatus}>
+                            回调已提交，正在等待凭证保存...
+                          </div>
+                        ) : null}
+                        {draftAccount ? (
+                          <div className={styles.oauthSuccessStatus}>
+                            授权成功，凭证草稿已安全保存，可以保存账号。
+                          </div>
+                        ) : null}
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         ) : (
           <div className={styles.reviewPage}>
@@ -823,7 +1297,7 @@ export function AccountWizardModal({
               <span className={styles.reviewHeroIcon}>✓</span>
               <div>
                 <h3>配置已准备完成</h3>
-                <p>保存时将使用所选模型发起真实请求，测试成功后才会启用账号。</p>
+                <p>保存时会自动发起连通性测试，测试成功后启用账号。</p>
               </div>
             </section>
 
@@ -837,30 +1311,12 @@ export function AccountWizardModal({
               <dl className={styles.review}>
                 <dt>平台 / 类型</dt>
                 <dd>{accountDisplayName(platform, authType)}</dd>
-                {authType === 'api' ? (
-                  <>
-                    <dt>账号名称</dt>
-                    <dd>{name.trim() || accountDisplayName(platform, authType)}</dd>
-                    <dt>Base URL</dt>
-                    <dd>{baseUrl}</dd>
-                  </>
-                ) : null}
-                {platform === 'openai' && authType === 'api' ? (
-                  <>
-                    <dt>协议</dt>
-                    <dd>{protocolLabel(probeResult?.selectedProtocol)}</dd>
-                  </>
-                ) : null}
                 <dt>允许模型</dt>
                 <dd>
-                  {allowAll
-                    ? '全部模型'
-                    : `${selectedModels.length + parseModelLines(manualModels).length} 个模型`}
+                  {whitelistModels.length === 0 ? '全部模型' : `${whitelistModels.length} 个模型`}
                 </dd>
                 <dt>模型映射</dt>
                 <dd>{Object.keys(parseMappingLines(mappingLines)).length} 条</dd>
-                <dt>测试模型</dt>
-                <dd>{testModel}</dd>
               </dl>
             </section>
 

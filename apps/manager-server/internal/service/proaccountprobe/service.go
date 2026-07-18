@@ -31,6 +31,7 @@ type Input struct {
 	AuthType      string
 	BaseURL       string
 	APIKey        string
+	ProxyURL      string
 	ProtocolMode  string
 	Model         string
 	AllowedModels []string
@@ -39,10 +40,11 @@ type Input struct {
 }
 
 type ProtocolResult struct {
-	Status     string `json:"status"`
-	StatusCode int    `json:"statusCode,omitempty"`
-	ErrorCode  string `json:"errorCode,omitempty"`
-	Retryable  bool   `json:"retryable"`
+	Status       string `json:"status"`
+	StatusCode   int    `json:"statusCode,omitempty"`
+	ErrorCode    string `json:"errorCode,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	Retryable    bool   `json:"retryable"`
 }
 
 type Result struct {
@@ -60,6 +62,7 @@ type Result struct {
 	ChatCompletions   ProtocolResult `json:"chatCompletions"`
 	BasicConnectivity ProtocolResult `json:"basicConnectivity"`
 	ErrorCode         string         `json:"errorCode,omitempty"`
+	ErrorMessage      string         `json:"errorMessage,omitempty"`
 	Retryable         bool           `json:"retryable"`
 }
 
@@ -109,7 +112,10 @@ func (s *Service) ProbeCandidate(ctx context.Context, input Input) (Result, erro
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	client := s.sameOriginClient(base)
+	client, err := s.probeClient(base, input.ProxyURL)
+	if err != nil {
+		return Result{}, ErrInvalidProbeRequest
+	}
 	result := Result{
 		Platform: input.Platform, Models: []string{}, UpstreamModels: []string{}, BuiltInModels: []string{},
 		ManualModels: []string{}, ModelsStatus: CapabilityUnknown, Warnings: []string{},
@@ -121,20 +127,24 @@ func (s *Service) ProbeCandidate(ctx context.Context, input Input) (Result, erro
 		result.ModelsStatus = CapabilitySupported
 	} else if errors.Is(modelErr, errModelsUnsupported) {
 		result.ModelsStatus = CapabilityUnsupported
+		result.Warnings = append(result.Warnings, "上游未提供模型列表，可使用内置目录或手工添加模型")
+	} else {
+		result.Warnings = append(result.Warnings, "上游模型列表同步失败，可使用内置目录或手工添加模型")
 	}
 	if s.builtIn != nil {
 		builtIn, builtInErr := s.builtIn.BuiltIn(requestCtx, input.Platform, input.AuthType)
 		if builtInErr == nil {
 			result.BuiltInModels = normalizeModels(builtIn)
 		} else {
-			result.Warnings = append(result.Warnings, "built_in_models_unavailable")
+			result.Warnings = append(result.Warnings, "当前 Gateway 的内置模型目录暂不可用")
 		}
 	}
 	result.ManualModels = manualModels(input.AllowedModels, input.ModelMapping)
 	result.Models = mergeModels(result.UpstreamModels, result.BuiltInModels, result.ManualModels)
+	// 预探测只验证协议能力:请求的模型不在白名单内时忽略请求值并自动重选,不因此中断探测
 	testModel := chooseRuleAwareTestModel(input.Model, result.Models, input.Platform, rules)
 	if !proaccountgateway.ModelAllowed(testModel, rules) {
-		return Result{}, fmt.Errorf("%w: test model is outside allowed models", proaccountgateway.ErrInvalidModelRule)
+		testModel = chooseRuleAwareTestModel("", result.Models, input.Platform, rules)
 	}
 	testModel = proaccountgateway.ResolveMappedModel(testModel, rules)
 	result.TestModel = testModel
@@ -143,15 +153,16 @@ func (s *Service) ProbeCandidate(ctx context.Context, input Input) (Result, erro
 	case "openai":
 		return s.probeOpenAI(requestCtx, client, base, input, result)
 	case "anthropic", "gemini":
+		if input.Platform == "anthropic" {
+			result.SourceType = proaccountgateway.SourceClaudeAPIKey
+		} else {
+			result.SourceType = proaccountgateway.SourceGeminiAPIKey
+		}
 		probe := s.probeBasic(requestCtx, client, base, input, testModel)
 		result.BasicConnectivity = probe
-		result.ErrorCode, result.Retryable = resultError(probe)
-		if probe.Status == CapabilitySupported {
-			if input.Platform == "anthropic" {
-				result.SourceType = proaccountgateway.SourceClaudeAPIKey
-			} else {
-				result.SourceType = proaccountgateway.SourceGeminiAPIKey
-			}
+		if probe.Status != CapabilitySupported {
+			applyResultDiagnostic(&result, probe)
+			result.Warnings = append(result.Warnings, protocolWarning("基础连通性", probe, "基础能力暂时无法确认，账号仍可保存为停用状态"))
 		}
 		return result, nil
 	default:
@@ -160,26 +171,118 @@ func (s *Service) ProbeCandidate(ctx context.Context, input Input) (Result, erro
 }
 
 func (s *Service) probeOpenAI(ctx context.Context, client *http.Client, base *url.URL, input Input, result Result) (Result, error) {
-	if input.ProtocolMode != "chat_completions" {
-		result.Responses = s.probeResponses(ctx, client, base, input, result.TestModel)
-		if result.Responses.Status == CapabilitySupported {
-			result.SelectedProtocol = "responses"
-			result.SourceType = proaccountgateway.SourceCodexAPIKey
-			return result, nil
+	switch input.ProtocolMode {
+	case "responses":
+		result.SelectedProtocol = "responses"
+		result.SourceType = proaccountgateway.SourceCodexAPIKey
+		result.Responses, result.TestModel = s.probeResponsesCandidates(ctx, client, base, input, result)
+		if result.Responses.Status != CapabilitySupported {
+			applyResultDiagnostic(&result, result.Responses)
+			result.Warnings = append(result.Warnings, protocolWarning("Responses", result.Responses, "已按高级选项强制选择 Responses，建议保存为停用账号后排查"))
 		}
-		if input.ProtocolMode == "responses" || result.Responses.Status == CapabilityUnknown {
-			result.ErrorCode, result.Retryable = resultError(result.Responses)
-			return result, nil
-		}
-	}
-	result.ChatCompletions = s.probeChatCompletions(ctx, client, base, input, result.TestModel)
-	if result.ChatCompletions.Status == CapabilitySupported {
+		return result, nil
+	case "chat_completions":
 		result.SelectedProtocol = "chat_completions"
 		result.SourceType = proaccountgateway.SourceOpenAICompatibility
+		result.ChatCompletions = s.probeChatCompletions(ctx, client, base, input, result.TestModel)
+		if result.ChatCompletions.Status != CapabilitySupported {
+			applyResultDiagnostic(&result, result.ChatCompletions)
+			result.Warnings = append(result.Warnings, protocolWarning("Chat Completions", result.ChatCompletions, "已按高级选项强制选择 Chat Completions，建议保存为停用账号后排查"))
+		}
 		return result, nil
 	}
-	result.ErrorCode, result.Retryable = resultError(result.ChatCompletions)
+
+	result.Responses, result.TestModel = s.probeResponsesCandidates(ctx, client, base, input, result)
+	switch result.Responses.Status {
+	case CapabilitySupported:
+		result.SelectedProtocol = "responses"
+		result.SourceType = proaccountgateway.SourceCodexAPIKey
+	case CapabilityUnsupported:
+		result.SelectedProtocol = "chat_completions"
+		result.SourceType = proaccountgateway.SourceOpenAICompatibility
+		result.ChatCompletions = s.probeChatCompletions(ctx, client, base, input, result.TestModel)
+		if result.ChatCompletions.Status != CapabilitySupported {
+			applyResultDiagnostic(&result, result.ChatCompletions)
+			result.Warnings = append(result.Warnings, protocolWarning("Chat Completions", result.ChatCompletions, "Responses 明确不支持，已自动选择 Chat Completions；建议先保存为停用账号并检查上游配置"))
+		}
+	default:
+		result.SelectedProtocol = "responses"
+		result.SourceType = proaccountgateway.SourceCodexAPIKey
+		applyResultDiagnostic(&result, result.Responses)
+		result.Warnings = append(result.Warnings, protocolWarning("Responses", result.Responses, "Responses 能力暂时无法确认，已按默认策略选择 Responses；保存后请执行连通性测试"))
+	}
 	return result, nil
+}
+
+// probeResponsesCandidates 依次使用明确配置的具体模型探测 Responses。
+// 模型级 404 只能说明当前模型不支持该协议，不能据此把整个端点误判为不存在。
+func (s *Service) probeResponsesCandidates(ctx context.Context, client *http.Client, base *url.URL, input Input, result Result) (ProtocolResult, string) {
+	candidates := responsesProbeCandidates(input, result)
+	lastResult := ProtocolResult{Status: CapabilityUnknown, ErrorCode: "probe_failed", ErrorMessage: "没有可用的 Responses 探测模型"}
+	lastModel := result.TestModel
+	for _, modelName := range candidates {
+		lastModel = modelName
+		lastResult = s.probeResponses(ctx, client, base, input, modelName)
+		if lastResult.ErrorCode != "model_unavailable" {
+			return lastResult, lastModel
+		}
+	}
+	return lastResult, lastModel
+}
+
+func responsesProbeCandidates(input Input, result Result) []string {
+	rules, err := proaccountgateway.NormalizeModelRules(proaccountgateway.ModelRules{
+		AllowedModels: input.AllowedModels,
+		ModelMapping:  input.ModelMapping,
+	})
+	if err != nil {
+		return normalizeModels([]string{result.TestModel})
+	}
+
+	candidates := make([]string, 0, len(rules.AllowedModels)+len(rules.ModelMapping)+1)
+	requested := strings.TrimSpace(input.Model)
+	if requested != "" && proaccountgateway.ModelAllowed(requested, rules) {
+		candidates = append(candidates, proaccountgateway.ResolveMappedModel(requested, rules))
+	}
+
+	mappingTargets := make([]string, 0, len(rules.ModelMapping))
+	for _, target := range rules.ModelMapping {
+		if target = strings.TrimSpace(target); target != "" {
+			mappingTargets = append(mappingTargets, target)
+		}
+	}
+	sort.Strings(mappingTargets)
+	candidates = append(candidates, mappingTargets...)
+	for _, modelName := range rules.AllowedModels {
+		if modelName = strings.TrimSpace(modelName); modelName != "" && !strings.Contains(modelName, "*") {
+			candidates = append(candidates, proaccountgateway.ResolveMappedModel(modelName, rules))
+		}
+	}
+
+	// 没有明确模型规则时优先尝试常见 OpenAI/Responses 模型，避免按字典序先选到其他协议模型。
+	if len(candidates) == 0 {
+		catalog := result.UpstreamModels
+		if len(catalog) == 0 {
+			catalog = result.Models
+		}
+		candidates = append(candidates, prioritizeResponsesModels(catalog)...)
+	}
+	candidates = append(candidates, result.TestModel)
+	return normalizeModels(candidates)
+}
+
+func prioritizeResponsesModels(models []string) []string {
+	preferred := make([]string, 0, len(models))
+	remaining := make([]string, 0, len(models))
+	for _, modelName := range models {
+		normalized := strings.ToLower(strings.TrimSpace(modelName))
+		if strings.HasPrefix(normalized, "gpt-") || strings.HasPrefix(normalized, "o1") || strings.HasPrefix(normalized, "o3") || strings.HasPrefix(normalized, "o4") || strings.Contains(normalized, "codex") {
+			preferred = append(preferred, modelName)
+		} else {
+			remaining = append(remaining, modelName)
+		}
+	}
+	return append(preferred, remaining...)
 }
 
 func (s *Service) probeResponses(ctx context.Context, client *http.Client, base *url.URL, input Input, modelName string) ProtocolResult {
@@ -190,20 +293,50 @@ func (s *Service) probeResponses(ctx context.Context, client *http.Client, base 
 	}
 	status, body, err := s.doJSON(ctx, client, endpoint(base, "/v1/responses"), bearerHeaders(input), payload)
 	if err != nil {
-		return ProtocolResult{Status: CapabilityUnknown, ErrorCode: "network_error", Retryable: true}
+		return ProtocolResult{Status: CapabilityUnknown, ErrorCode: "network_error", ErrorMessage: "网络连接失败或请求超时", Retryable: true}
+	}
+	if status == http.StatusNotFound && isModelSpecificProbeFailure(body, modelName) {
+		return ProtocolResult{
+			Status: CapabilityUnknown, StatusCode: status, ErrorCode: "model_unavailable",
+			ErrorMessage: fmt.Sprintf("探测模型 %s 不支持 Responses（HTTP %d）", modelName, status), Retryable: true,
+		}
 	}
 	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
-		return ProtocolResult{Status: CapabilityUnsupported, StatusCode: status, ErrorCode: "protocol_not_supported"}
+		return ProtocolResult{Status: CapabilityUnsupported, StatusCode: status, ErrorCode: "protocol_not_supported", ErrorMessage: "上游未提供 Responses 协议端点"}
 	}
 	if status >= 200 && status < 300 {
 		var value any
 		if json.Unmarshal(body, &value) == nil && containsFunctionCall(value) {
 			return ProtocolResult{Status: CapabilitySupported, StatusCode: status}
 		}
-		return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: "responses_tool_call_missing", Retryable: true}
+		return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: "responses_tool_call_missing", ErrorMessage: "Responses 响应未包含必需的工具调用", Retryable: true}
 	}
 	code, retryable := classifyStatus(status)
-	return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: code, Retryable: retryable}
+	return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: code, ErrorMessage: statusMessage(status, code), Retryable: retryable}
+}
+
+func isModelSpecificProbeFailure(body []byte, modelName string) bool {
+	message := strings.ToLower(strings.TrimSpace(string(body)))
+	if message == "" {
+		return false
+	}
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	mentionsModel := strings.Contains(message, "model") || strings.Contains(message, "模型")
+	if modelName != "" && strings.Contains(message, modelName) {
+		mentionsModel = true
+	}
+	if !mentionsModel {
+		return false
+	}
+	for _, marker := range []string{
+		"not found", "not support", "unsupported", "unavailable", "does not exist",
+		"不支持", "不可用", "不存在", "无权", "无法访问",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) probeChatCompletions(ctx context.Context, client *http.Client, base *url.URL, input Input, modelName string) ProtocolResult {
@@ -220,16 +353,16 @@ func (s *Service) probeChatCompletions(ctx context.Context, client *http.Client,
 	}
 	status, _, err := s.doJSON(ctx, client, endpoint(base, "/v1/chat/completions"), bearerHeaders(input), payload)
 	if err != nil {
-		return ProtocolResult{Status: CapabilityUnknown, ErrorCode: "network_error", Retryable: true}
+		return ProtocolResult{Status: CapabilityUnknown, ErrorCode: "network_error", ErrorMessage: "网络连接失败或请求超时", Retryable: true}
 	}
 	if status >= 200 && status < 300 {
 		return ProtocolResult{Status: CapabilitySupported, StatusCode: status}
 	}
 	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
-		return ProtocolResult{Status: CapabilityUnsupported, StatusCode: status, ErrorCode: "protocol_not_supported"}
+		return ProtocolResult{Status: CapabilityUnsupported, StatusCode: status, ErrorCode: "protocol_not_supported", ErrorMessage: "上游未提供 Chat Completions 协议端点"}
 	}
 	code, retryable := classifyStatus(status)
-	return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: code, Retryable: retryable}
+	return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: code, ErrorMessage: statusMessage(status, code), Retryable: retryable}
 }
 
 func (s *Service) probeBasic(ctx context.Context, client *http.Client, base *url.URL, input Input, modelName string) ProtocolResult {
@@ -250,13 +383,13 @@ func (s *Service) probeBasic(ctx context.Context, client *http.Client, base *url
 	}
 	status, _, err := s.doJSON(ctx, client, target, headers, payload)
 	if err != nil {
-		return ProtocolResult{Status: CapabilityUnknown, ErrorCode: "network_error", Retryable: true}
+		return ProtocolResult{Status: CapabilityUnknown, ErrorCode: "network_error", ErrorMessage: "网络连接失败或请求超时", Retryable: true}
 	}
 	if status >= 200 && status < 300 {
 		return ProtocolResult{Status: CapabilitySupported, StatusCode: status}
 	}
 	code, retryable := classifyStatus(status)
-	return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: code, Retryable: retryable}
+	return ProtocolResult{Status: CapabilityUnknown, StatusCode: status, ErrorCode: code, ErrorMessage: statusMessage(status, code), Retryable: retryable}
 }
 
 var errModelsUnsupported = errors.New("model listing is unsupported")
@@ -360,6 +493,33 @@ func (s *Service) sameOriginClient(base *url.URL) *http.Client {
 		return nil
 	}
 	return &clone
+}
+
+// probeClient 在同源客户端基础上按账号级代理路由探测请求,与 CLIProxyAPI 的 proxy-url 语义一致。
+func (s *Service) probeClient(base *url.URL, proxyURL string) (*http.Client, error) {
+	client := s.sameOriginClient(base)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return client, nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, errors.New("invalid proxy url")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return nil, errors.New("unsupported proxy scheme")
+	}
+	var transport *http.Transport
+	if existing, ok := client.Transport.(*http.Transport); ok && existing != nil {
+		transport = existing.Clone()
+	} else {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	transport.Proxy = http.ProxyURL(parsed)
+	client.Transport = transport
+	return client, nil
 }
 
 func validateBaseURL(raw string) (*url.URL, error) {
@@ -483,11 +643,33 @@ func classifyStatus(status int) (string, bool) {
 	}
 }
 
-func resultError(result ProtocolResult) (string, bool) {
-	if result.Status == CapabilitySupported {
-		return "", false
+func statusMessage(status int, code string) string {
+	switch code {
+	case "authentication_failed":
+		return fmt.Sprintf("上游拒绝了凭证（HTTP %d）", status)
+	case "rate_limited":
+		return "上游正在限流，请稍后重试"
+	case "upstream_unavailable":
+		return fmt.Sprintf("上游服务暂时不可用（HTTP %d）", status)
+	case "protocol_not_supported":
+		return fmt.Sprintf("上游未提供所选协议端点（HTTP %d）", status)
+	default:
+		return fmt.Sprintf("上游拒绝了能力探测请求（HTTP %d）", status)
 	}
-	return result.ErrorCode, result.Retryable
+}
+
+func protocolWarning(protocol string, result ProtocolResult, guidance string) string {
+	diagnostic := strings.TrimSpace(result.ErrorMessage)
+	if diagnostic == "" {
+		diagnostic = "能力探测未得到确定结果"
+	}
+	return protocol + "：" + diagnostic + "。" + guidance
+}
+
+func applyResultDiagnostic(result *Result, diagnostic ProtocolResult) {
+	result.ErrorCode = diagnostic.ErrorCode
+	result.ErrorMessage = diagnostic.ErrorMessage
+	result.Retryable = diagnostic.Retryable
 }
 
 func manualModels(allowed []string, mapping map[string]string) []string {

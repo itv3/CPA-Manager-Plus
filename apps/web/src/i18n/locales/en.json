@@ -2578,6 +2578,12 @@
           "antigravity_signature_strict": "Strict Bypass Signature Validation",
           "antigravity_signature_strict_desc": "Only applies when the signature cache is disabled; validates the full Claude protobuf tree"
         },
+        "pro": {
+          "title": "Pro Configuration",
+          "description": "CLIProxyAPI Pro-specific feature settings",
+          "protocol_model_list_enabled": "Group Model Lists by Protocol",
+          "protocol_model_list_enabled_desc": "Filter model catalogs by upstream account protocol. Unknown, plugin, and Home models remain unfiltered, and actual calls are not restricted."
+        },
         "headers": {
           "title": "Header Defaults",
           "description": "Default headers for Claude and Codex OAuth requests when the client omits them",

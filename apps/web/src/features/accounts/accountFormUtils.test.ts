@@ -7,6 +7,8 @@ import {
   parseHeaderLines,
   parseMappingLines,
   parseModelLines,
+  resolveAccountModelRules,
+  resolveMappedModel,
   usageRequestOptions,
 } from './accountFormUtils';
 
@@ -62,6 +64,49 @@ describe('统一账号表单规则', () => {
     });
     expect(() => parseModelLines('bad*model')).toThrow('通配符');
     expect(() => parseMappingLines('alias=target*')).toThrow('目标不允许通配符');
+  });
+
+  it('空白名单表示允许全部模型且测试模型可为空', () => {
+    expect(
+      resolveAccountModelRules({
+        models: [],
+        mappingLines: '',
+      })
+    ).toEqual({ allowedModels: [], modelMapping: {}, testModel: '' });
+  });
+
+  it('测试模型自动从白名单、映射或目录中选取', () => {
+    expect(
+      resolveAccountModelRules({
+        models: ['custom-*'],
+        mappingLines: 'fast=gpt-5',
+      })
+    ).toEqual({
+      allowedModels: ['custom-*'],
+      modelMapping: { fast: 'gpt-5' },
+      testModel: 'fast',
+    });
+    expect(
+      resolveAccountModelRules({
+        models: ['gpt-5.5', 'gpt-5.6-sol'],
+        mappingLines: '',
+      }).testModel
+    ).toBe('gpt-5.5');
+    expect(
+      resolveAccountModelRules({
+        models: [],
+        mappingLines: '',
+        discoveredModels: ['gpt-first'],
+      }).testModel
+    ).toBe('gpt-first');
+  });
+
+  it('解析连通性测试的精确和通配模型映射', () => {
+    expect(resolveMappedModel('fast', { fast: 'gpt-5' })).toBe('gpt-5');
+    expect(resolveMappedModel('claude-sonnet', { 'claude-*': 'claude-upstream' })).toBe(
+      'claude-upstream'
+    );
+    expect(resolveMappedModel('unchanged', {})).toBe('unchanged');
   });
 
   it('拒绝在自定义 Header 中覆盖凭证 Header', () => {

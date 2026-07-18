@@ -24,6 +24,7 @@ const (
 	ProOperationStateModelsConfigured        = "models_configured"
 	ProOperationStateTested                  = "tested"
 	ProOperationStateEnabled                 = "enabled"
+	ProOperationStateSavedDisabled           = "saved_disabled"
 	ProOperationStateCancelled               = "cancelled"
 	ProOperationStateCompensating            = "compensating"
 	ProOperationStateFailed                  = "failed"
@@ -35,6 +36,7 @@ type ProAccount struct {
 	Platform         string             `json:"platform"`
 	AuthType         string             `json:"authType"`
 	SourceType       string             `json:"sourceType"`
+	PlanType         string             `json:"planType,omitempty"`
 	Name             string             `json:"name,omitempty"`
 	Email            string             `json:"email,omitempty"`
 	Enabled          bool               `json:"enabled"`
@@ -114,6 +116,7 @@ type ProAccountDiscovery struct {
 	Platform          string
 	AuthType          string
 	SourceType        string
+	PlanType          string
 	Name              string
 	Email             string
 	Enabled           bool
@@ -218,9 +221,30 @@ type ProAccountLocalUsage struct {
 	LastActivityAtMS    int64    `json:"lastActivityAtMs,omitempty"`
 }
 
+// ProAccountUsageCostStat 保存统一账号在一个计费模型与服务等级下的 Token 聚合。
+// 数据层只负责保持账号绑定和 Token 口径准确，具体价格解析由共享 pricing 服务完成。
+type ProAccountUsageCostStat struct {
+	Model                   string
+	BillingModel            string
+	ServiceTier             string
+	Calls                   int64
+	InputTokens             int64
+	OutputTokens            int64
+	CachedTokens            int64
+	CacheReadTokens         int64
+	CacheCreationTokens     int64
+	LongInputTokens         int64
+	LongOutputTokens        int64
+	LongCachedTokens        int64
+	LongCacheReadTokens     int64
+	LongCacheCreationTokens int64
+	TotalTokens             int64
+}
+
 type ProAccountUsageResult struct {
 	Source          string                  `json:"source"`
 	UpdatedAtMS     int64                   `json:"updatedAtMs"`
+	PlanType        string                  `json:"planType,omitempty"`
 	OfficialWindows []ProAccountUsageWindow `json:"officialWindows"`
 	Local           ProAccountLocalUsage    `json:"local"`
 	ErrorCode       string                  `json:"errorCode,omitempty"`

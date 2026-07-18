@@ -27,9 +27,9 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 		return Result{Operation: operation}, err
 	}
 	if !created {
-		if operation.State == model.ProOperationStateEnabled && operation.ProAccountID != "" {
+		if (operation.State == model.ProOperationStateEnabled || operation.State == model.ProOperationStateSavedDisabled) && operation.ProAccountID != "" {
 			account, getErr := s.accounts.Get(ctx, operation.ProAccountID)
-			return Result{Account: account, Operation: operation}, getErr
+			return Result{Account: account, Operation: operation, SavedDisabled: operation.State == model.ProOperationStateSavedDisabled}, getErr
 		}
 		if operation.State != model.ProOperationStateProbed && operation.State != model.ProOperationStateDraftCreated {
 			return Result{Operation: operation}, ErrOperationState
@@ -37,7 +37,7 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 	}
 	probe, err := s.probe.ProbeCandidate(ctx, proaccountprobe.Input{
 		Platform: input.Platform, AuthType: "api", BaseURL: input.BaseURL, APIKey: input.APIKey,
-		ProtocolMode: input.ProtocolMode, Model: input.TestModel,
+		ProxyURL: input.ProxyURL, ProtocolMode: input.ProtocolMode, Model: input.TestModel,
 		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping, Headers: input.Headers,
 	})
 	if err != nil || probe.SourceType == "" {
@@ -66,10 +66,13 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 	}
 	snapshot, err := s.gateway.CreateDisabledAPI(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.CreateAPIInput{
 		Platform: input.Platform, SourceType: probe.SourceType, Name: input.Name,
-		BaseURL: input.BaseURL, APIKey: input.APIKey, Headers: input.Headers,
-		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping,
+		BaseURL: input.BaseURL, APIKey: input.APIKey, ProxyURL: input.ProxyURL, Headers: input.Headers,
+		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping, CatalogModels: probe.Models,
 	})
 	if err != nil {
+		if snapshot.SourceType != "" && snapshot.SourceLocator != "" {
+			_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, snapshot.SourceType, snapshot.SourceLocator)
+		}
 		operation = s.fail(ctx, operation, "credential_create_failed", "停用凭证创建失败")
 		return Result{Operation: operation, Probe: &probe}, err
 	}
@@ -98,7 +101,11 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, snapshot.SourceType, snapshot.SourceLocator)
 		return Result{Account: account, Operation: operation, Probe: &probe}, err
 	}
-	result, err := s.completeCredential(ctx, setup, operation, account, input.AllowedModels, input.ModelMapping, chooseClientTestModel(input.TestModel, input.AllowedModels, input.ModelMapping, probe.TestModel), input.SaveDisabled)
+	result, err := s.completeCredential(ctx, setup, operation, account, completeOptions{
+		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping,
+		TestModel:    chooseClientTestModel(input.TestModel, input.AllowedModels, input.ModelMapping, probe.TestModel),
+		SaveDisabled: input.SaveDisabled, DraftOnly: input.DraftOnly, SkipTest: input.SkipTest,
+	})
 	result.Probe = &probe
 	return result, err
 }
@@ -122,10 +129,31 @@ func (s *Service) CompleteDraft(ctx context.Context, input CompleteDraftInput) (
 	if err != nil {
 		return Result{Account: account, Operation: operation}, err
 	}
-	return s.completeCredential(ctx, setup, operation, account, input.AllowedModels, input.ModelMapping, input.TestModel, input.SaveDisabled)
+	// CPA 与 sub2api 的 OAuth 创建在令牌兑换成功后直接保存并启用，不以额外连通性测试作为保存门槛。
+	skipTest := strings.EqualFold(contextString(operation.Context, "authType"), "oauth") && account.AuthType == "oauth"
+	return s.completeCredential(ctx, setup, operation, account, completeOptions{
+		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping,
+		TestModel: input.TestModel, SaveDisabled: input.SaveDisabled, SkipTest: skipTest,
+	})
 }
 
-func (s *Service) completeCredential(ctx context.Context, setup store.Setup, operation model.ProAccountDraft, account model.ProAccount, allowedModels []string, modelMapping map[string]string, testModel string, saveDisabled bool) (Result, error) {
+// completeOptions 汇总凭证落地后的模型规则与启用策略。
+type completeOptions struct {
+	AllowedModels []string
+	ModelMapping  map[string]string
+	TestModel     string
+	SaveDisabled  bool
+	DraftOnly     bool
+	// SkipTest 跳过最终连通性测试直接启用
+	SkipTest bool
+}
+
+func (s *Service) completeCredential(ctx context.Context, setup store.Setup, operation model.ProAccountDraft, account model.ProAccount, options completeOptions) (Result, error) {
+	allowedModels := options.AllowedModels
+	modelMapping := options.ModelMapping
+	testModel := options.TestModel
+	saveDisabled := options.SaveDisabled
+	draftOnly := options.DraftOnly
 	if account.Binding == nil {
 		return Result{Account: account, Operation: operation}, ErrInvalidRequest
 	}
@@ -147,30 +175,44 @@ func (s *Service) completeCredential(ctx context.Context, setup store.Setup, ope
 	if err != nil {
 		return Result{Account: account, Operation: operation}, err
 	}
-	testModel = chooseClientTestModel(testModel, applied.AllowedModels, applied.ModelMapping, "")
-	if !proaccountgateway.ModelAllowed(testModel, applied) {
-		return s.handleFailedFinalTest(ctx, setup, operation, account, proaccountgateway.ConnectivityResult{ErrorCode: "model_not_allowed"}, saveDisabled)
+	if draftOnly {
+		operation, err = s.transition(ctx, operation, model.ProOperationStateSavedDisabled, account.ID, operation.Context, "", "账号已保存为停用状态", "")
+		return Result{Account: account, Operation: operation, SavedDisabled: true}, err
 	}
-	upstreamModel := proaccountgateway.ResolveMappedModel(testModel, applied)
-	connectivity, err := s.gateway.TestAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.AccountReference{
-		Platform: account.Platform, AuthType: account.AuthType, SourceType: account.Binding.SourceType,
-		SourceLocator: account.Binding.SourceLocator, AuthIndex: account.Binding.AuthIndex,
-	}, upstreamModel)
-	if err != nil {
-		connectivity.ErrorCode = "connectivity_request_failed"
-		return s.handleFailedFinalTest(ctx, setup, operation, account, connectivity, saveDisabled)
-	}
-	if !connectivity.Success {
-		return s.handleFailedFinalTest(ctx, setup, operation, account, connectivity, saveDisabled)
-	}
-	_, _ = s.repository.RecordTestResult(ctx, account.ID, true, "", s.now().UnixMilli())
-	operation, err = s.transition(ctx, operation, model.ProOperationStateTested, account.ID, operation.Context, "", "", "delete_new_credential")
-	if err != nil {
-		return Result{Account: account, Operation: operation, Connectivity: &connectivity}, err
+	var connectivity *proaccountgateway.ConnectivityResult
+	if options.SkipTest {
+		// 与 sub2api 创建行为一致:保存即启用,连通性由独立的测试入口验证
+		operation, err = s.transition(ctx, operation, model.ProOperationStateTested, account.ID, operation.Context, "", "已跳过保存前连通性测试", "delete_new_credential")
+		if err != nil {
+			return Result{Account: account, Operation: operation}, err
+		}
+	} else {
+		testModel = chooseClientTestModel(testModel, applied.AllowedModels, applied.ModelMapping, "")
+		if !proaccountgateway.ModelAllowed(testModel, applied) {
+			return s.handleFailedFinalTest(ctx, setup, operation, account, proaccountgateway.ConnectivityResult{ErrorCode: "model_not_allowed"}, saveDisabled)
+		}
+		upstreamModel := proaccountgateway.ResolveMappedModel(testModel, applied)
+		result, err := s.gateway.TestAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.AccountReference{
+			Platform: account.Platform, AuthType: account.AuthType, SourceType: account.Binding.SourceType,
+			SourceLocator: account.Binding.SourceLocator, AuthIndex: account.Binding.AuthIndex,
+		}, upstreamModel)
+		if err != nil {
+			result.ErrorCode = "connectivity_request_failed"
+			return s.handleFailedFinalTest(ctx, setup, operation, account, result, saveDisabled)
+		}
+		if !result.Success {
+			return s.handleFailedFinalTest(ctx, setup, operation, account, result, saveDisabled)
+		}
+		connectivity = &result
+		_, _ = s.repository.RecordTestResult(ctx, account.ID, true, "", s.now().UnixMilli())
+		operation, err = s.transition(ctx, operation, model.ProOperationStateTested, account.ID, operation.Context, "", "", "delete_new_credential")
+		if err != nil {
+			return Result{Account: account, Operation: operation, Connectivity: connectivity}, err
+		}
 	}
 	enabledSnapshot, err := s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey, account.Binding.SourceType, account.Binding.SourceLocator, true)
 	if err != nil {
-		return Result{Account: account, Operation: operation, Connectivity: &connectivity}, err
+		return Result{Account: account, Operation: operation, Connectivity: connectivity}, err
 	}
 	discovery := discoveryFromSnapshot(enabledSnapshot)
 	if account.Name != "" {
@@ -179,10 +221,10 @@ func (s *Service) completeCredential(ctx context.Context, setup store.Setup, ope
 	account, err = s.repository.RebindManaged(ctx, account.ID, account.Version, discovery, s.now().UnixMilli())
 	if err != nil {
 		_, _ = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey, enabledSnapshot.SourceType, enabledSnapshot.SourceLocator, false)
-		return Result{Account: account, Operation: operation, Connectivity: &connectivity}, err
+		return Result{Account: account, Operation: operation, Connectivity: connectivity}, err
 	}
 	operation, err = s.transition(ctx, operation, model.ProOperationStateEnabled, account.ID, operation.Context, "", "", "")
-	return Result{Account: account, Operation: operation, Connectivity: &connectivity}, err
+	return Result{Account: account, Operation: operation, Connectivity: connectivity}, err
 }
 
 func (s *Service) handleFailedFinalTest(ctx context.Context, setup store.Setup, operation model.ProAccountDraft, account model.ProAccount, connectivity proaccountgateway.ConnectivityResult, saveDisabled bool) (Result, error) {
@@ -192,8 +234,9 @@ func (s *Service) handleFailedFinalTest(ctx context.Context, setup store.Setup, 
 	}
 	_, _ = s.repository.RecordTestResult(ctx, account.ID, false, code, s.now().UnixMilli())
 	if saveDisabled {
-		operation = s.fail(ctx, operation, "saved_disabled_after_test_failure", "连通性测试失败，凭证按用户选择保持停用")
-		return Result{Account: account, Operation: operation, Connectivity: &connectivity, SavedDisabled: true}, nil
+		var err error
+		operation, err = s.transition(ctx, operation, model.ProOperationStateSavedDisabled, account.ID, operation.Context, code, "连通性测试失败，凭证按用户选择保持停用", "")
+		return Result{Account: account, Operation: operation, Connectivity: &connectivity, SavedDisabled: true}, err
 	}
 	result, err := s.compensateCreated(ctx, setup, operation, account, code, ErrConnectivityFailed)
 	result.Connectivity = &connectivity

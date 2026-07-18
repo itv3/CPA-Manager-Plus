@@ -13,13 +13,16 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 type Repository interface {
 	List(ctx context.Context, filter model.ProAccountListFilter) (model.ProAccountListResult, error)
 	Get(ctx context.Context, id string) (model.ProAccount, bool, error)
 	Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error)
-	Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, error)
+	Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, string, error)
+	UsageCostStats(ctx context.Context, accountID string, fromMS int64, toMS int64) ([]model.ProAccountUsageCostStat, error)
+	UpdatePlanType(ctx context.Context, accountID string, planType string) error
 	UpdateModelRules(ctx context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error)
 	RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error)
 	RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error)
@@ -62,7 +65,7 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 	}
 
 	query := `select
-		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
+		a.id, a.platform, a.auth_type, a.source_type, a.plan_type, a.name, a.email, a.enabled,
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
 		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
@@ -160,7 +163,7 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 		return model.ProAccount{}, false, nil
 	}
 	row := r.db.QueryRowContext(ctx, `select
-		a.id, a.platform, a.auth_type, a.source_type, a.name, a.email, a.enabled,
+		a.id, a.platform, a.auth_type, a.source_type, a.plan_type, a.name, a.email, a.enabled,
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
 		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
@@ -176,10 +179,8 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 	return item, err == nil, err
 }
 
-func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, error) {
+func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, string, error) {
 	local := model.ProAccountLocalUsage{FromMS: fromMS, ToMS: toMS}
-	var estimatedCost sql.NullFloat64
-	var unknownPriceEvents int64
 	err := r.db.QueryRowContext(ctx, `select
 		count(e.id),
 		coalesce(sum(case when e.failed = 0 then 1 else 0 end), 0),
@@ -191,40 +192,28 @@ func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, 
 		coalesce(sum(e.cache_creation_tokens), 0),
 		coalesce(sum(e.reasoning_tokens), 0),
 		coalesce(sum(e.total_tokens), 0),
-		coalesce(max(e.timestamp_ms), 0),
-		coalesce(sum(case when mp.model is null then 1 else 0 end), 0),
-		sum(case when mp.model is null then null else
-			(coalesce(e.input_tokens, 0) * mp.prompt_per_1m +
-			 coalesce(e.output_tokens, 0) * mp.completion_per_1m +
-			 coalesce(e.cache_read_tokens, e.cached_tokens, 0) * mp.cache_read_per_1m +
-			 coalesce(e.cache_creation_tokens, 0) * mp.cache_creation_per_1m) / 1000000.0 end)
+		coalesce(max(e.timestamp_ms), 0)
 		from usage_events e
 		join pro_account_bindings b on b.pro_account_id = ?
 			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
 			and b.attribution_quality <> ?
 			and e.timestamp_ms >= b.valid_from_ms
 			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
-		left join model_prices mp on mp.model = coalesce(nullif(e.resolved_model, ''), e.model)
 		where e.timestamp_ms >= ? and e.timestamp_ms < ?`, accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS).Scan(
 		&local.Requests, &local.Successes, &local.Failures, &local.InputTokens, &local.OutputTokens,
 		&local.CachedTokens, &local.CacheReadTokens, &local.CacheCreationTokens, &local.ReasoningTokens,
-		&local.TotalTokens, &local.LastActivityAtMS, &unknownPriceEvents, &estimatedCost,
+		&local.TotalTokens, &local.LastActivityAtMS,
 	)
 	if err != nil {
-		return local, nil, err
-	}
-	if local.Requests > 0 && unknownPriceEvents == 0 && estimatedCost.Valid {
-		cost := estimatedCost.Float64
-		local.EstimatedCost = &cost
-		local.CostKnown = true
+		return local, nil, "", err
 	}
 
-	windows := make([]model.ProAccountUsageWindow, 0, 1)
+	windows := make([]model.ProAccountUsageWindow, 0, 2)
 	var usedPercent sql.NullFloat64
 	var resetAt sql.NullInt64
-	var label sql.NullString
+	var metadataJSON sql.NullString
 	err = r.db.QueryRowContext(ctx, `select
-		e.header_quota_used_percent, e.header_quota_recover_at_ms, e.header_quota_plan_type
+		e.header_quota_used_percent, e.header_quota_recover_at_ms, e.response_metadata_json
 		from usage_events e
 		join pro_account_bindings b on b.pro_account_id = ?
 			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
@@ -232,25 +221,181 @@ func (r *repository) Usage(ctx context.Context, accountID string, fromMS int64, 
 			and e.timestamp_ms >= b.valid_from_ms
 			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
 		where e.timestamp_ms >= ? and e.timestamp_ms < ?
-			and (e.header_quota_used_percent is not null or e.header_quota_recover_at_ms is not null)
-		order by e.timestamp_ms desc, e.id desc limit 1`, accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS).Scan(&usedPercent, &resetAt, &label)
+			and (e.header_quota_used_percent is not null or e.header_quota_recover_at_ms is not null
+				or case when json_valid(e.response_metadata_json)
+					then json_type(e.response_metadata_json, '$.quota.primary') = 'object'
+						or json_type(e.response_metadata_json, '$.quota.secondary') = 'object'
+					else 0 end)
+		order by e.timestamp_ms desc, e.id desc limit 1`, accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS).
+		Scan(&usedPercent, &resetAt, &metadataJSON)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return local, nil, err
+		return local, nil, "", err
 	}
 	if err == nil {
-		window := model.ProAccountUsageWindow{ID: "response_header", Label: valueOr(label.String, "上游响应头"), ResetAtMS: resetAt.Int64, Source: "passive"}
-		if usedPercent.Valid {
-			used := usedPercent.Float64
-			remaining := 100 - used
-			if remaining < 0 {
-				remaining = 0
-			}
-			window.UsedPercent = &used
-			window.RemainingPercent = &remaining
-		}
-		windows = append(windows, window)
+		windows = passiveUsageWindows(metadataJSON.String, usedPercent, resetAt)
 	}
-	return local, windows, nil
+
+	var planType sql.NullString
+	err = r.db.QueryRowContext(ctx, `select e.header_quota_plan_type
+		from usage_events e
+		join pro_account_bindings b on b.pro_account_id = ?
+			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and b.attribution_quality <> ?
+			and e.timestamp_ms >= b.valid_from_ms
+			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
+		where e.timestamp_ms >= ? and e.timestamp_ms < ?
+			and coalesce(e.header_quota_plan_type, '') <> ''
+		order by e.timestamp_ms desc, e.id desc limit 1`, accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS).
+		Scan(&planType)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return local, nil, "", err
+	}
+	return local, windows, normalizePlanType(planType.String), nil
+}
+
+// UsageCostStats 按统一账号的历史绑定有效期聚合计费所需 Token。
+// 这里与 Monitoring 使用相同的输入、缓存和长上下文口径，但不在数据层解析价格。
+func (r *repository) UsageCostStats(ctx context.Context, accountID string, fromMS int64, toMS int64) ([]model.ProAccountUsageCostStat, error) {
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(`select
+		e.model,
+		coalesce(nullif(e.resolved_model, ''), e.model) as billing_model,
+		coalesce(e.service_tier, '') as service_tier,
+		count(e.id),
+		coalesce(sum(coalesce(e.normalized_total_input_tokens, e.input_tokens)), 0),
+		coalesce(sum(e.output_tokens), 0),
+		coalesce(sum(max(max(e.cached_tokens, e.cache_tokens) - max(e.cache_read_tokens, 0) - max(e.cache_creation_tokens, 0), 0)), 0),
+		coalesce(sum(e.cache_read_tokens), 0),
+		coalesce(sum(e.cache_creation_tokens), 0),
+		coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then coalesce(e.normalized_total_input_tokens, e.input_tokens) else 0 end), 0),
+		coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.output_tokens else 0 end), 0),
+		coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then max(max(e.cached_tokens, e.cache_tokens) - max(e.cache_read_tokens, 0) - max(e.cache_creation_tokens, 0), 0) else 0 end), 0),
+		coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.cache_read_tokens else 0 end), 0),
+		coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.cache_creation_tokens else 0 end), 0),
+		coalesce(sum(e.total_tokens), 0)
+		from usage_events e
+		join pro_account_bindings b on b.pro_account_id = ?
+			and coalesce(b.auth_index, '') <> '' and e.auth_index = b.auth_index
+			and b.attribution_quality <> ?
+			and e.timestamp_ms >= b.valid_from_ms
+			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
+		where e.timestamp_ms >= ? and e.timestamp_ms < ?
+		group by e.model, billing_model, service_tier
+		order by e.model, billing_model, service_tier`, usage.LongContextInputTokenThreshold),
+		accountID, model.ProAttributionQualityAmbiguous, fromMS, toMS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]model.ProAccountUsageCostStat, 0)
+	for rows.Next() {
+		var stat model.ProAccountUsageCostStat
+		if err := rows.Scan(
+			&stat.Model,
+			&stat.BillingModel,
+			&stat.ServiceTier,
+			&stat.Calls,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.CachedTokens,
+			&stat.CacheReadTokens,
+			&stat.CacheCreationTokens,
+			&stat.LongInputTokens,
+			&stat.LongOutputTokens,
+			&stat.LongCachedTokens,
+			&stat.LongCacheReadTokens,
+			&stat.LongCacheCreationTokens,
+			&stat.TotalTokens,
+		); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+func (r *repository) UpdatePlanType(ctx context.Context, accountID string, planType string) error {
+	accountID = strings.TrimSpace(accountID)
+	planType = normalizePlanType(planType)
+	if accountID == "" || planType == "" {
+		return nil
+	}
+	// 套餐属于上游派生元数据，不参与账号编辑版本冲突；只更新实际发生变化的有效账号。
+	_, err := r.db.ExecContext(ctx, `update pro_accounts set plan_type = ?
+		where id = ? and deleted_at_ms is null and plan_type is not ?`, planType, accountID, planType)
+	return err
+}
+
+func passiveUsageWindows(metadataJSON string, usedPercent sql.NullFloat64, resetAt sql.NullInt64) []model.ProAccountUsageWindow {
+	metadata := usage.ResponseHeaderMetadata{}
+	if strings.TrimSpace(metadataJSON) != "" {
+		_ = json.Unmarshal([]byte(metadataJSON), &metadata)
+	}
+	windows := make([]model.ProAccountUsageWindow, 0, 2)
+	if metadata.Quota != nil {
+		for index, quotaWindow := range []*usage.HeaderQuotaWindow{metadata.Quota.Primary, metadata.Quota.Secondary} {
+			if quotaWindow == nil {
+				continue
+			}
+			id, label := passiveWindowIdentity(quotaWindow.WindowMinutes, index)
+			item := model.ProAccountUsageWindow{ID: id, Label: label, ResetAtMS: quotaWindow.ResetAtMS, Source: "passive"}
+			if quotaWindow.UsedPercent != nil {
+				used := clampUsagePercent(*quotaWindow.UsedPercent)
+				remaining := 100 - used
+				item.UsedPercent = &used
+				item.RemainingPercent = &remaining
+			}
+			windows = append(windows, item)
+		}
+	}
+	if len(windows) == 0 && (usedPercent.Valid || resetAt.Valid) {
+		item := model.ProAccountUsageWindow{ID: "response_header", Label: "配额", ResetAtMS: resetAt.Int64, Source: "passive"}
+		if usedPercent.Valid {
+			used := clampUsagePercent(usedPercent.Float64)
+			remaining := 100 - used
+			item.UsedPercent = &used
+			item.RemainingPercent = &remaining
+		}
+		windows = append(windows, item)
+	}
+	return windows
+}
+
+func passiveWindowIdentity(minutes *float64, index int) (string, string) {
+	if minutes != nil {
+		switch {
+		case *minutes >= 28*24*60:
+			return "monthly", "30d"
+		case *minutes >= 6*24*60:
+			return "weekly", "7d"
+		case *minutes >= 4*60 && *minutes <= 6*60:
+			return "five_hour", "5h"
+		case *minutes >= 60:
+			return fmt.Sprintf("window_%d", index+1), fmt.Sprintf("%.0fh", *minutes/60)
+		case *minutes > 0:
+			return fmt.Sprintf("window_%d", index+1), fmt.Sprintf("%.0fm", *minutes)
+		}
+	}
+	if index == 0 {
+		return "five_hour", "5h"
+	}
+	return "weekly", "7d"
+}
+
+func clampUsagePercent(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func normalizePlanType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "_")
+	return strings.Join(strings.Fields(value), "_")
 }
 
 func (r *repository) Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error) {
@@ -365,11 +510,11 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 		return item, err
 	}
 	if _, err := tx.ExecContext(ctx, `insert into pro_accounts (
-		id, platform, auth_type, source_type, name, email, enabled, health_status, last_error,
+		id, platform, auth_type, source_type, plan_type, name, email, enabled, health_status, last_error,
 		allowed_models_json, model_mapping_json, model_rule_version, expires_at_ms, created_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		accountID, strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
-		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled), valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown),
+		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled), valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown),
 		nullString(discovery.LastError), allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, nowMS); err != nil {
 		return item, err
 	}
@@ -537,20 +682,20 @@ func updateDiscoveredAccount(ctx context.Context, tx *sql.Tx, accountID string, 
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `update pro_accounts set
-		platform = ?, auth_type = ?, source_type = ?, name = ?, email = ?, enabled = ?,
+		platform = ?, auth_type = ?, source_type = ?, plan_type = coalesce(?, plan_type), name = ?, email = ?, enabled = ?,
 		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?, model_rule_version = ?,
 		expires_at_ms = ?, updated_at_ms = ?, version = version + 1
 		where id = ? and (
-			platform is not ? or auth_type is not ? or source_type is not ? or name is not ? or email is not ? or
+			platform is not ? or auth_type is not ? or source_type is not ? or plan_type is not coalesce(?, plan_type) or name is not ? or email is not ? or
 			enabled is not ? or health_status is not ? or last_error is not ? or allowed_models_json is not ? or
 			model_mapping_json is not ? or model_rule_version is not ? or expires_at_ms is not ?
 		)`,
 		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
-		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
 		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
 		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, accountID,
 		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
-		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
 		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
 		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS))
 	return err
@@ -561,8 +706,9 @@ func findFingerprintCandidates(ctx context.Context, tx *sql.Tx, fingerprint stri
 	if fingerprint == "" {
 		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, `select distinct pro_account_id from pro_account_bindings
-		where source_fingerprint = ? order by pro_account_id limit 20`, fingerprint)
+	rows, err := tx.QueryContext(ctx, `select distinct b.pro_account_id from pro_account_bindings b
+		join pro_accounts a on a.id = b.pro_account_id and a.deleted_at_ms is null
+		where b.source_fingerprint = ? order by b.pro_account_id limit 20`, fingerprint)
 	if err != nil {
 		return nil, err
 	}
@@ -607,7 +753,7 @@ type rowScanner interface {
 
 func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var item model.ProAccount
-	var name, email, lastError, allowedJSON, mappingJSON, modelRuleVersion sql.NullString
+	var planType, name, email, lastError, allowedJSON, mappingJSON, modelRuleVersion sql.NullString
 	var lastUsed, lastTested, expires, deletedAt sql.NullInt64
 	var enabled int
 	var bindingID sql.NullInt64
@@ -615,7 +761,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var isCurrent sql.NullInt64
 	var validFrom, validTo, firstSeen, lastSeen, bindingCreated, bindingUpdated sql.NullInt64
 	if err := row.Scan(
-		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &name, &email, &enabled,
+		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &planType, &name, &email, &enabled,
 		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON, &modelRuleVersion,
 		&lastUsed, &lastTested, &expires, &deletedAt, &item.CreatedAtMS, &item.UpdatedAtMS, &item.Version,
 		&bindingID, &authIndex, &bindingSourceType, &sourceLocator, &sourceFingerprint,
@@ -625,6 +771,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 		return model.ProAccount{}, err
 	}
 	item.Name = name.String
+	item.PlanType = planType.String
 	item.Email = email.String
 	item.Enabled = enabled != 0
 	item.LastError = lastError.String
@@ -821,12 +968,12 @@ func rebindManagedTx(ctx context.Context, tx *sql.Tx, accountID string, expected
 		}
 	}
 	result, err := tx.ExecContext(ctx, `update pro_accounts set
-		platform = ?, auth_type = ?, source_type = ?, name = ?, email = ?, enabled = ?,
+		platform = ?, auth_type = ?, source_type = ?, plan_type = coalesce(?, plan_type), name = ?, email = ?, enabled = ?,
 		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?,
 		model_rule_version = ?, expires_at_ms = ?, updated_at_ms = ?, version = version + 1
 		where id = ? and version = ? and deleted_at_ms is null`,
 		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
-		nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
 		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
 		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS,
 		accountID, expectedVersion)

@@ -19,9 +19,9 @@ func (s *Service) CreateVertex(ctx context.Context, input CreateVertexInput) (Re
 		return Result{Operation: operation}, err
 	}
 	if !created {
-		if (operation.State == model.ProOperationStateEnabled || (input.DraftOnly && operation.State == model.ProOperationStateCredentialSavedDisabled)) && operation.ProAccountID != "" {
+		if (operation.State == model.ProOperationStateEnabled || operation.State == model.ProOperationStateSavedDisabled || (input.DraftOnly && operation.State == model.ProOperationStateCredentialSavedDisabled)) && operation.ProAccountID != "" {
 			account, getErr := s.accounts.Get(ctx, operation.ProAccountID)
-			return Result{Account: account, Operation: operation}, getErr
+			return Result{Account: account, Operation: operation, SavedDisabled: operation.State == model.ProOperationStateSavedDisabled}, getErr
 		}
 		return Result{Operation: operation}, ErrOperationState
 	}
@@ -68,5 +68,8 @@ func (s *Service) CreateVertex(ctx context.Context, input CreateVertexInput) (Re
 	if input.DraftOnly {
 		return Result{Account: account, Operation: operation}, nil
 	}
-	return s.completeCredential(ctx, setup, operation, account, input.AllowedModels, input.ModelMapping, input.TestModel, input.SaveDisabled)
+	return s.completeCredential(ctx, setup, operation, account, completeOptions{
+		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping,
+		TestModel: input.TestModel, SaveDisabled: input.SaveDisabled,
+	})
 }

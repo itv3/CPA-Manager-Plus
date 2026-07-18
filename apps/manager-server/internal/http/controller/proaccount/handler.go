@@ -62,12 +62,24 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleOAuthStart(w, r)
 	case path == "/v0/pro/accounts/oauth/status":
 		h.handleOAuthStatus(w, r)
+	case path == "/v0/pro/accounts/oauth/callback":
+		h.handleOAuthCallback(w, r)
 	case path == "/v0/pro/accounts/oauth/cancel":
 		h.handleOAuthCancel(w, r)
 	case path == "/v0/pro/accounts/drafts/cancel":
 		h.handleDraftCancel(w, r)
 	case path == "/v0/pro/accounts/sync":
 		h.handleSync(w, r)
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/reauthorize/start"):
+		h.handleReauthorizationStart(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/reauthorize/start"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/reauthorize/status"):
+		h.handleReauthorizationStatus(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/reauthorize/status"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/reauthorize/callback"):
+		h.handleReauthorizationCallback(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/reauthorize/callback"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/reauthorize/cancel"):
+		h.handleReauthorizationCancel(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/reauthorize/cancel"))
+	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/refresh-token"):
+		h.handleRefreshToken(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/refresh-token"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/usage"):
 		h.handleUsage(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/v0/pro/accounts/"), "/usage"))
 	case strings.HasPrefix(path, "/v0/pro/accounts/") && strings.HasSuffix(path, "/openai-reset-credits"):
@@ -293,10 +305,29 @@ func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			Status: proaccountgateway.CapabilityUnsupported, ReasonCode: "gateway_account_draft_unavailable",
 		}
 	}
+	refreshTokenCapability := proaccountgateway.AuthCapability{Status: proaccountgateway.CapabilitySupported}
+	if !capabilities.CredentialRefresh {
+		refreshTokenCapability = proaccountgateway.AuthCapability{
+			Status: proaccountgateway.CapabilityUnsupported, ReasonCode: "gateway_credential_refresh_unavailable",
+		}
+	}
+	reauthorizeCapability := proaccountgateway.AuthCapability{Status: proaccountgateway.CapabilitySupported, Provider: "codex"}
+	if !capabilities.TargetedReauthorization || !capabilities.CredentialDraft || !capabilities.AllowedModels {
+		reauthorizeCapability = proaccountgateway.AuthCapability{
+			Status: proaccountgateway.CapabilityUnsupported, ReasonCode: "gateway_targeted_reauthorization_unavailable", Provider: "codex",
+		}
+	}
 	response.JSON(w, http.StatusOK, map[string]any{
 		"credentialDraft": capabilities.CredentialDraft,
 		"allowedModels":   capabilities.AllowedModels,
 		"stores":          map[string]string{"file": "supported", "object": "supported", "postgresql": "supported", "git": "supported"},
+		"accountActions": map[string]any{
+			"refreshToken": refreshTokenCapability,
+			"reauthorize":  reauthorizeCapability,
+			"scheduledTests": proaccountgateway.AuthCapability{
+				Status: proaccountgateway.CapabilitySupported, Provider: "manager", Version: "manager-scheduled-test-v1",
+			},
+		},
 		"platforms": map[string]any{
 			"openai":      map[string]any{"oauth": nativeCapability, "api": nativeCapability},
 			"anthropic":   map[string]any{"oauth": nativeCapability, "api": nativeCapability},
@@ -370,6 +401,7 @@ func (h *Handler) handleProbe(w http.ResponseWriter, r *http.Request) {
 		AuthType       string            `json:"auth_type"`
 		BaseURL        string            `json:"base_url"`
 		APIKey         string            `json:"api_key"`
+		ProxyURL       string            `json:"proxy_url"`
 		ProtocolMode   string            `json:"protocol_mode"`
 		Model          string            `json:"model"`
 		AllowedModels  []string          `json:"allowed_models"`
@@ -395,15 +427,28 @@ func (h *Handler) handleProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.App.ProAccountProbeService.ProbeCandidate(r.Context(), proaccountprobe.Input{
 		Platform: request.Platform, AuthType: request.AuthType, BaseURL: request.BaseURL,
-		APIKey: request.APIKey, ProtocolMode: request.ProtocolMode, Model: request.Model,
+		APIKey: request.APIKey, ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Model: request.Model,
 		AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping, Headers: request.Headers,
 	})
 	if err != nil {
+		code := "candidate_probe_failed"
+		message := "候选账号探测失败，请检查账号配置后重试"
+		retryable := false
+		switch {
+		case errors.Is(err, proaccountprobe.ErrInvalidProbeRequest):
+			code = "invalid_probe_request"
+			message = "探测参数无效，请检查平台、Base URL、API Key 和协议模式"
+		case errors.Is(err, proaccountgateway.ErrInvalidModelRule):
+			code = "invalid_model_rules"
+			message = "模型白名单、映射或测试模型无效"
+		default:
+			retryable = true
+		}
 		operation, _ = h.App.ProAccountOperationService.Transition(r.Context(), operation.OperationID, proaccountoperation.TransitionInput{
 			ExpectedVersion: operation.Version, State: model.ProOperationStateFailed,
-			ErrorCode: "candidate_probe_failed", ErrorSummary: "候选账号探测失败", Context: operation.Context,
+			ErrorCode: code, ErrorSummary: message, Context: operation.Context,
 		})
-		h.writeError(w, http.StatusBadRequest, "candidate_probe_failed", "候选账号探测失败", false, map[string]any{"operation": operation})
+		h.writeError(w, http.StatusBadRequest, code, message, retryable, map[string]any{"operation": operation})
 		return
 	}
 	operation, err = h.App.ProAccountOperationService.Transition(r.Context(), operation.OperationID, proaccountoperation.TransitionInput{
@@ -446,6 +491,30 @@ func (h *Handler) handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.App.ProAccountLifecycleService.OAuthStatus(r.Context(), r.URL.Query().Get("operation_id"))
+	if err != nil {
+		h.writeLifecycleOAuthError(w, err, result)
+		return
+	}
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不受支持", false, nil)
+		return
+	}
+	var request struct {
+		OperationID   string `json:"operation_id"`
+		CallbackText  string `json:"callback_input"`
+		CallbackState string `json:"callback_state"`
+	}
+	if err := decodeBody(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", "OAuth 回调请求无效", false, nil)
+		return
+	}
+	result, err := h.App.ProAccountLifecycleService.SubmitOAuthCallback(r.Context(), proaccountlifecycle.OAuthCallbackInput{
+		OperationID: request.OperationID, CallbackText: request.CallbackText, CallbackState: request.CallbackState,
+	})
 	if err != nil {
 		h.writeLifecycleOAuthError(w, err, result)
 		return
@@ -564,6 +633,7 @@ func (h *Handler) handleTest(w http.ResponseWriter, r *http.Request, accountID s
 		IdempotencyKey  string `json:"idempotency_key"`
 		ExpectedVersion int64  `json:"expected_version"`
 		Model           string `json:"model"`
+		Mode            string `json:"mode"`
 	}
 	if err := decodeBody(w, r, &request); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "连通性测试请求无效", false, nil)
@@ -572,7 +642,7 @@ func (h *Handler) handleTest(w http.ResponseWriter, r *http.Request, accountID s
 	result, err := h.App.ProAccountTestService.Test(r.Context(), proaccounttest.Input{
 		AccountID: accountID, OperationID: request.OperationID,
 		IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), ExpectedVersion: request.ExpectedVersion,
-		Model: request.Model,
+		Model: request.Model, Mode: request.Mode,
 	})
 	if err != nil {
 		h.writeTestError(w, err, result)
@@ -705,12 +775,15 @@ func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
 		Name           string            `json:"name"`
 		BaseURL        string            `json:"base_url"`
 		APIKey         string            `json:"api_key"`
+		ProxyURL       string            `json:"proxy_url"`
 		ProtocolMode   string            `json:"protocol_mode"`
 		Headers        map[string]string `json:"headers"`
 		AllowedModels  []string          `json:"allowed_models"`
 		ModelMapping   map[string]string `json:"model_mapping"`
 		TestModel      string            `json:"test_model"`
 		SaveDisabled   bool              `json:"save_disabled_on_test_failure"`
+		DraftOnly      bool              `json:"draft_only"`
+		SkipTest       bool              `json:"skip_test"`
 	}
 	if err := decodeBody(w, r, &request); err != nil || (request.AuthType != "" && request.AuthType != "api") {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "API 账号添加请求无效", false, nil)
@@ -719,9 +792,10 @@ func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
 	result, err := h.App.ProAccountLifecycleService.CreateAPI(r.Context(), proaccountlifecycle.CreateAPIInput{
 		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey),
 		Platform: request.Platform, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
-		ProtocolMode: request.ProtocolMode, Headers: request.Headers,
+		ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Headers: request.Headers,
 		AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping,
-		TestModel: request.TestModel, SaveDisabled: request.SaveDisabled,
+		TestModel: request.TestModel, SaveDisabled: request.SaveDisabled, DraftOnly: request.DraftOnly,
+		SkipTest: request.SkipTest,
 	})
 	if err != nil {
 		h.writeLifecycleError(w, err, result)
@@ -789,6 +863,7 @@ func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accou
 		Name            *string            `json:"name"`
 		BaseURL         *string            `json:"base_url"`
 		APIKey          string             `json:"api_key"`
+		ProxyURL        *string            `json:"proxy_url"`
 		ProtocolMode    string             `json:"protocol_mode"`
 		Headers         *map[string]string `json:"headers"`
 		AllowedModels   []string           `json:"allowed_models"`
@@ -810,7 +885,7 @@ func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accou
 	} else {
 		result, err = h.App.ProAccountLifecycleService.Update(r.Context(), proaccountlifecycle.UpdateInput{
 			MutationInput: mutation, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
-			ProtocolMode: request.ProtocolMode, Headers: request.Headers,
+			ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Headers: request.Headers,
 			AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping, TestModel: request.TestModel,
 		})
 	}
@@ -925,6 +1000,8 @@ func (h *Handler) writeTestError(w http.ResponseWriter, err error, result proacc
 		h.writeError(w, http.StatusConflict, "version_conflict", "账号版本已变化，请刷新后重试", true, details)
 	case errors.Is(err, proaccounttest.ErrModelNotAllowed):
 		h.writeError(w, http.StatusBadRequest, "model_not_allowed", "测试模型不在账号有效白名单内", false, details)
+	case errors.Is(err, proaccounttest.ErrInvalidTestMode):
+		h.writeError(w, http.StatusBadRequest, "invalid_test_mode", "测试模式无效，Compact 探测仅支持 OpenAI Responses 账号", false, details)
 	case errors.Is(err, proaccounttest.ErrAccountBindingMissing):
 		h.writeError(w, http.StatusConflict, "binding_missing", "账号缺少可测试的运行时绑定", false, details)
 	case errors.Is(err, proaccountdraft.ErrIdempotencyConflict), errors.Is(err, proaccountdraft.ErrOperationIDConflict):
@@ -936,6 +1013,12 @@ func (h *Handler) writeTestError(w http.ResponseWriter, err error, result proacc
 
 func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result proaccountlifecycle.Result) {
 	details := map[string]any{"operation": result.Operation}
+	if result.Probe != nil {
+		details["probe"] = result.Probe
+	}
+	if result.Connectivity != nil {
+		details["connectivity"] = result.Connectivity
+	}
 	switch {
 	case errors.Is(err, proaccountsvc.ErrAccountNotFound), errors.Is(err, proaccountrepo.ErrAccountNotFound):
 		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, details)
@@ -945,7 +1028,7 @@ func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result p
 		h.writeError(w, http.StatusBadRequest, "unsupported_account_type", "该平台不支持所选认证方式", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrGatewayCapability):
 		h.writeError(w, http.StatusPreconditionFailed, "gateway_capability_required", "当前 Gateway 不具备安全添加账号所需能力", false, details)
-	case errors.Is(err, proaccountlifecycle.ErrInvalidRequest), errors.Is(err, proaccountgateway.ErrInvalidModelRule):
+	case errors.Is(err, proaccountlifecycle.ErrInvalidRequest), errors.Is(err, proaccountprobe.ErrInvalidProbeRequest), errors.Is(err, proaccountgateway.ErrInvalidModelRule):
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "账号生命周期请求无效", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrOperationState), errors.Is(err, proaccountlifecycle.ErrOperationConflict):
 		h.writeError(w, http.StatusConflict, "operation_state_conflict", "账号操作状态不允许执行当前步骤", false, details)
@@ -953,6 +1036,8 @@ func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result p
 		h.writeError(w, http.StatusConflict, "operation_conflict", "操作 ID 或幂等键发生冲突", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrConnectivityFailed):
 		h.writeError(w, http.StatusUnprocessableEntity, "connectivity_test_failed", "账号连通性测试失败，未启用凭证", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrReauthorizationRequired):
+		h.writeError(w, http.StatusUnprocessableEntity, "reauthorization_required", "刷新令牌已失效，请重新授权", false, details)
 	case errors.Is(err, proaccountgateway.ErrCredentialNotReady):
 		h.writeError(w, http.StatusGatewayTimeout, "credential_not_ready", "Gateway 尚未完成凭证重载", true, details)
 	default:
@@ -963,6 +1048,10 @@ func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result p
 func (h *Handler) writeLifecycleOAuthError(w http.ResponseWriter, err error, result proaccountlifecycle.OAuthResult) {
 	details := map[string]any{"operation": result.Operation}
 	switch {
+	case errors.Is(err, proaccountsvc.ErrAccountNotFound), errors.Is(err, proaccountrepo.ErrAccountNotFound):
+		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrResourceVersionConflict):
+		h.writeError(w, http.StatusConflict, "version_conflict", "账号版本已变化，请刷新后重试", true, details)
 	case errors.Is(err, proaccountlifecycle.ErrUnsupportedAccountType), errors.Is(err, proaccountlifecycle.ErrInvalidRequest):
 		h.writeError(w, http.StatusBadRequest, "invalid_oauth_request", "OAuth 请求无效", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrGatewayCapability):
@@ -971,6 +1060,16 @@ func (h *Handler) writeLifecycleOAuthError(w http.ResponseWriter, err error, res
 		h.writeError(w, http.StatusConflict, "oauth_credential_ambiguous", "同时发现多个 OAuth 草稿，需人工确认", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrOAuthCredentialMissing):
 		h.writeError(w, http.StatusNotFound, "oauth_credential_missing", "未找到本次 OAuth 授权保存的草稿凭证", true, details)
+	case errors.Is(err, proaccountlifecycle.ErrOAuthCallbackInvalid):
+		h.writeError(w, http.StatusBadRequest, "invalid_oauth_callback", "请输入完整回调地址、回调参数或授权 Code", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrOAuthStateMismatch):
+		h.writeError(w, http.StatusBadRequest, "oauth_state_mismatch", "回调参数不属于当前 OAuth 授权会话", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrOAuthIdentityMismatch):
+		h.writeError(w, http.StatusConflict, "oauth_identity_mismatch", "新授权账号与目标账号身份不一致，旧凭据保持不变", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrConnectivityFailed):
+		h.writeError(w, http.StatusUnprocessableEntity, "reauthorization_test_failed", "新授权凭据测试失败，旧凭据保持不变", false, details)
+	case errors.Is(err, proaccountlifecycle.ErrReauthorizationInProgress):
+		h.writeError(w, http.StatusConflict, "reauthorization_in_progress", "该账号已有重新授权会话正在进行", true, details)
 	case errors.Is(err, proaccountlifecycle.ErrOperationState), errors.Is(err, proaccountlifecycle.ErrOperationConflict):
 		h.writeError(w, http.StatusConflict, "operation_state_conflict", "OAuth 操作状态不允许执行当前步骤", false, details)
 	case errors.Is(err, proaccountoperation.ErrOperationNotFound):

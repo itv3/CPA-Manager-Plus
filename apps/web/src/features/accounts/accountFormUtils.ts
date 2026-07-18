@@ -175,6 +175,36 @@ export const suggestedTestModel = (
   return discoveredModels[0] ?? '';
 };
 
+interface ResolveAccountModelRulesInput {
+  models: string[];
+  mappingLines: string;
+  discoveredModels?: string[];
+}
+
+// 白名单列表为空表示允许全部模型;测试模型自动从白名单/映射/目录中选取,无需用户填写
+export const resolveAccountModelRules = ({
+  models,
+  mappingLines,
+  discoveredModels = [],
+}: ResolveAccountModelRulesInput) => {
+  const allowedModels = parseModelLines(formatModelLines(models));
+  const modelMapping = parseMappingLines(mappingLines);
+  const testModel = suggestedTestModel('', allowedModels, modelMapping, discoveredModels);
+  return { allowedModels, modelMapping, testModel };
+};
+
+export const resolveMappedModel = (modelName: string, mapping: Record<string, string>) => {
+  const normalized = modelName.trim();
+  const exact = mapping[normalized]?.trim();
+  if (exact) return exact;
+  for (const [alias, target] of Object.entries(mapping)) {
+    if (!alias.endsWith('*') || !normalized.startsWith(alias.slice(0, -1))) continue;
+    const resolved = target.trim();
+    if (resolved) return resolved;
+  }
+  return normalized;
+};
+
 export const accountDisplayName = (platform: string, authType: string) => {
   const platformLabel = platformOption(platform)?.label ?? platform;
   const authLabel = AUTH_TYPE_LABELS[authType as AccountAuthType] ?? authType;

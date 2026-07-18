@@ -1,0 +1,380 @@
+.footer,
+.inlineActions,
+.planFormActions,
+.planActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer,
+.planFormActions {
+  justify-content: flex-end;
+}
+
+.actionModalBody,
+.scheduledBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.intro {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.accountSummary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.accountSummary span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.accountSummary strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oauthPanel,
+.callbackPanel,
+.planForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-subtle) 58%, var(--surface-primary));
+}
+
+.oauthPanel,
+.planForm {
+  border-color: color-mix(in srgb, var(--primary-color) 25%, var(--border-subtle));
+  background: color-mix(in srgb, var(--primary-color) 5%, var(--surface-primary));
+}
+
+.oauthPrimaryRow,
+.scheduledHeader,
+.planHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.actionStatus {
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+  color: var(--primary-color);
+  font-size: 12px;
+}
+
+.actionStatus[data-status='success'] {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+.actionStatus[data-status='error'],
+.actionError {
+  background: rgba(239, 68, 68, 0.11);
+  color: var(--danger-color, #dc2626);
+}
+
+.linkPreview {
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-primary);
+  color: var(--text-secondary);
+  font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.callbackPanel :global(.form-group),
+.planForm :global(.form-group) {
+  margin-bottom: 0;
+}
+
+.scheduledHeader > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.scheduledHeader strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduledHeader span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.actionError {
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.loadingState,
+.emptyPlans {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 12px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.loadingState svg {
+  animation: scheduled-spin 0.9s linear infinite;
+}
+
+.emptyPlans {
+  flex-direction: column;
+}
+
+.planForm > strong,
+.planResults > strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.planFormGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.planFormGrid > label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.planToggleFields {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.planList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.planCard {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface-primary);
+}
+
+.planHeader {
+  min-height: 62px;
+  padding: 10px 12px;
+}
+
+.planHeader > button:first-child {
+  display: flex;
+  min-width: 150px;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.planHeader > button:first-child > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.planHeader strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planHeader code {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.expandedChevron {
+  transform: rotate(180deg);
+}
+
+.planScheduleInfo {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-align: right;
+}
+
+.recoverBadge {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.13);
+  color: #059669;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.planActions button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.planActions button:hover {
+  background: var(--surface-subtle);
+  color: var(--primary-color);
+}
+
+.planActions button:last-child:hover {
+  color: var(--danger-color, #dc2626);
+}
+
+.planCard .planForm,
+.planResults {
+  border-width: 1px 0 0;
+  border-radius: 0;
+}
+
+.planResults {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-subtle) 46%, var(--surface-primary));
+}
+
+.planResults > span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.resultRow {
+  display: grid;
+  grid-template-columns: 54px 58px 140px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-primary);
+  font-size: 11px;
+}
+
+.resultRow > span {
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  font-weight: 650;
+}
+
+.resultRow > span[data-status='success'] {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+.resultRow > span[data-status='running'] {
+  background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+  color: var(--primary-color);
+}
+
+.resultRow small,
+.resultRow time {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.resultRow p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes scheduled-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .oauthPrimaryRow,
+  .scheduledHeader,
+  .planHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .planFormGrid,
+  .resultRow {
+    grid-template-columns: 1fr;
+  }
+
+  .planScheduleInfo {
+    text-align: left;
+  }
+}

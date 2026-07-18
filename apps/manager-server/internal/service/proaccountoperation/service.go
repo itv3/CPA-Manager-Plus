@@ -103,6 +103,16 @@ func (s *Service) Get(ctx context.Context, operationID string) (model.ProAccount
 	return item, nil
 }
 
+// FindActiveReauthorization 通过仓储的可选能力查询账号当前活动的重新授权会话。
+// 不支持该能力的仓储返回未找到，保持轻量测试桩和兼容实现可继续使用。
+func (s *Service) FindActiveReauthorization(ctx context.Context, accountID string) (model.ProAccountDraft, bool, error) {
+	finder, ok := s.repository.(proaccountdraft.ActiveReauthorizationFinder)
+	if !ok {
+		return model.ProAccountDraft{}, false, nil
+	}
+	return finder.FindActiveReauthorization(ctx, strings.TrimSpace(accountID))
+}
+
 func (s *Service) Transition(ctx context.Context, operationID string, input TransitionInput) (model.ProAccountDraft, error) {
 	current, err := s.Get(ctx, operationID)
 	if err != nil {
@@ -149,10 +159,10 @@ func canTransition(from string, to string) bool {
 	if from == "" || to == "" || from == to {
 		return false
 	}
-	if from == model.ProOperationStateEnabled || from == model.ProOperationStateCancelled || from == model.ProOperationStateFailed {
+	if from == model.ProOperationStateEnabled || from == model.ProOperationStateSavedDisabled || from == model.ProOperationStateCancelled || from == model.ProOperationStateFailed {
 		return false
 	}
-	if to == model.ProOperationStateCancelled || to == model.ProOperationStateCompensating || to == model.ProOperationStateFailed {
+	if to == model.ProOperationStateSavedDisabled || to == model.ProOperationStateCancelled || to == model.ProOperationStateCompensating || to == model.ProOperationStateFailed {
 		return true
 	}
 	allowed := map[string]map[string]bool{
@@ -187,7 +197,7 @@ func canTransition(from string, to string) bool {
 
 func validOperationType(value string) bool {
 	switch value {
-	case "add", "edit", "model_update", "test", "enable", "disable", "delete", "migrate", "rebind", "reset":
+	case "add", "edit", "model_update", "test", "enable", "disable", "delete", "migrate", "rebind", "reset", "refresh_token", "reauthorize":
 		return true
 	default:
 		return false

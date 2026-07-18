@@ -39,6 +39,21 @@ func (c *Client) OAuthStatus(ctx context.Context, baseURL string, managementKey 
 	return result, nil
 }
 
+func (c *Client) SubmitOAuthCallback(ctx context.Context, baseURL string, managementKey string, input OAuthCallbackInput) error {
+	provider := oauthProvider(input.Platform)
+	if provider == "" {
+		return ErrUnsupportedSource
+	}
+	payload := map[string]string{
+		"provider": provider,
+		"code":     strings.TrimSpace(input.Code),
+		"state":    strings.TrimSpace(input.State),
+		"error":    strings.TrimSpace(input.Error),
+	}
+	_, _, err := c.requestJSON(ctx, baseURL, managementKey, http.MethodPost, "/v0/management/oauth-callback", payload)
+	return err
+}
+
 func (c *Client) CancelOAuth(ctx context.Context, baseURL string, managementKey string, state string) error {
 	query := url.Values{"state": []string{strings.TrimSpace(state)}}
 	_, _, err := c.request(ctx, baseURL, managementKey, http.MethodDelete, "/v0/management/oauth-session?"+query.Encode(), nil)

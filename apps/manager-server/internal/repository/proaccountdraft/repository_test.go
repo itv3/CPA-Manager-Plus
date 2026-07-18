@@ -68,6 +68,7 @@ func TestRepositoryRecoveryScanExcludesTerminalStates(t *testing.T) {
 	}{
 		{id: "recoverable", state: model.ProOperationStateCompensating},
 		{id: "enabled", state: model.ProOperationStateEnabled},
+		{id: "saved-disabled", state: model.ProOperationStateSavedDisabled},
 		{id: "cancelled", state: model.ProOperationStateCancelled},
 		{id: "failed", state: model.ProOperationStateFailed},
 	} {
@@ -91,5 +92,64 @@ func TestRepositoryRecoveryScanExcludesTerminalStates(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].OperationID != "recoverable" {
 		t.Fatalf("恢复扫描结果 = %#v", items)
+	}
+}
+
+func TestRepositoryAllowsOnlyOneActiveReauthorizationPerAccount(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "manager.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`insert into pro_accounts (
+		id, platform, auth_type, source_type, enabled, health_status, created_at_ms, updated_at_ms
+	) values ('account-1', 'openai', 'oauth', 'auth_file', 1, 'unknown', 1, 1)`); err != nil {
+		t.Fatalf("创建测试账号：%v", err)
+	}
+
+	repository := proaccountdraft.New(db)
+	ctx := context.Background()
+	firstInput := model.ProAccountDraftCreate{
+		OperationID: "reauthorize-1", IdempotencyKey: "reauthorize-key-1", OperationType: "reauthorize",
+		ProAccountID: "account-1", CleanupDeadlineMS: 5000,
+	}
+	first, created, err := repository.Create(ctx, firstInput, 1000)
+	if err != nil || !created {
+		t.Fatalf("创建首个重新授权：item=%#v created=%v err=%v", first, created, err)
+	}
+
+	replayedInput := firstInput
+	replayedInput.OperationID = "reauthorize-replayed"
+	replayed, created, err := repository.Create(ctx, replayedInput, 1100)
+	if err != nil || created || replayed.OperationID != first.OperationID {
+		t.Fatalf("幂等重放活动会话：item=%#v created=%v err=%v", replayed, created, err)
+	}
+
+	secondInput := model.ProAccountDraftCreate{
+		OperationID: "reauthorize-2", IdempotencyKey: "reauthorize-key-2", OperationType: "reauthorize",
+		ProAccountID: "account-1", CleanupDeadlineMS: 5000,
+	}
+	conflicting, created, err := repository.Create(ctx, secondInput, 1200)
+	if !errors.Is(err, proaccountdraft.ErrActiveReauthorization) || created || conflicting.OperationID != first.OperationID {
+		t.Fatalf("并发重新授权：item=%#v created=%v err=%v", conflicting, created, err)
+	}
+
+	finder := repository.(proaccountdraft.ActiveReauthorizationFinder)
+	active, found, err := finder.FindActiveReauthorization(ctx, "account-1")
+	if err != nil || !found || active.OperationID != first.OperationID {
+		t.Fatalf("查询活动重新授权：item=%#v found=%v err=%v", active, found, err)
+	}
+	first, err = repository.Update(ctx, first.OperationID, first.Version, model.ProAccountDraftUpdate{
+		State: model.ProOperationStateFailed, CleanupDeadlineMS: first.CleanupDeadlineMS,
+	}, 1300)
+	if err != nil {
+		t.Fatalf("结束首个重新授权：%v", err)
+	}
+	if _, found, err = finder.FindActiveReauthorization(ctx, "account-1"); err != nil || found {
+		t.Fatalf("终态后仍返回活动会话：found=%v err=%v", found, err)
+	}
+	second, created, err := repository.Create(ctx, secondInput, 1400)
+	if err != nil || !created || second.OperationID != secondInput.OperationID {
+		t.Fatalf("终态后创建新重新授权：item=%#v created=%v err=%v", second, created, err)
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 var (
 	ErrModelNotAllowed         = errors.New("test model is not allowed for this account")
+	ErrInvalidTestMode         = errors.New("account test mode is invalid")
 	ErrAccountBindingMissing   = errors.New("pro account binding is unavailable")
 	ErrResourceVersionConflict = errors.New("pro account version conflict")
 )
@@ -25,6 +26,7 @@ type Input struct {
 	IdempotencyKey  string
 	ExpectedVersion int64
 	Model           string
+	Mode            string
 }
 
 type Result struct {
@@ -45,7 +47,7 @@ type SetupResolver interface {
 }
 
 type Gateway interface {
-	TestAccount(ctx context.Context, gatewayBaseURL string, managementKey string, account proaccountgateway.AccountReference, modelName string) (proaccountgateway.ConnectivityResult, error)
+	TestAccountWithMode(ctx context.Context, gatewayBaseURL string, managementKey string, account proaccountgateway.AccountReference, modelName string, mode string) (proaccountgateway.ConnectivityResult, error)
 }
 
 type OperationService interface {
@@ -71,9 +73,13 @@ func (s *Service) Test(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	mode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if mode == "" {
+		mode = proaccountgateway.ConnectivityModeDefault
+	}
 	operation, created, err := s.operations.Start(ctx, proaccountoperation.StartInput{
 		OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey,
-		OperationType: "test", ProAccountID: account.ID, Context: map[string]any{"model": input.Model},
+		OperationType: "test", ProAccountID: account.ID, Context: map[string]any{"model": input.Model, "mode": mode},
 	})
 	if err != nil {
 		return Result{}, err
@@ -88,21 +94,31 @@ func (s *Service) Test(ctx context.Context, input Input) (Result, error) {
 		operation = s.fail(ctx, operation, "version_conflict")
 		return Result{Operation: operation}, ErrResourceVersionConflict
 	}
+	if mode != proaccountgateway.ConnectivityModeDefault && mode != proaccountgateway.ConnectivityModeCompact {
+		operation = s.fail(ctx, operation, "invalid_test_mode")
+		return Result{Operation: operation}, ErrInvalidTestMode
+	}
 	if account.Binding == nil || account.Binding.AuthIndex == "" || account.Binding.SourceLocator == "" {
 		operation = s.fail(ctx, operation, "binding_missing")
 		return Result{Operation: operation}, ErrAccountBindingMissing
+	}
+	// Compact 仅 Responses(codex)账号支持,提前拦截避免对 Chat Completions 账号发出无效的 compact 请求
+	if mode == proaccountgateway.ConnectivityModeCompact &&
+		(!strings.EqualFold(account.Platform, "openai") || account.Binding.SourceType != proaccountgateway.SourceCodexAPIKey) {
+		operation = s.fail(ctx, operation, "invalid_test_mode")
+		return Result{Operation: operation}, ErrInvalidTestMode
 	}
 	rules, err := proaccountgateway.NormalizeModelRules(proaccountgateway.ModelRules{AllowedModels: account.AllowedModels, ModelMapping: account.ModelMapping})
 	if err != nil {
 		operation = s.fail(ctx, operation, "invalid_model_rules")
 		return Result{Operation: operation}, err
 	}
-	modelName := strings.TrimSpace(input.Model)
-	if !proaccountgateway.ModelAllowed(modelName, rules) {
+	clientModel := strings.TrimSpace(input.Model)
+	if !proaccountgateway.ModelAllowed(clientModel, rules) {
 		operation = s.fail(ctx, operation, "model_not_allowed")
 		return Result{Operation: operation}, ErrModelNotAllowed
 	}
-	modelName = proaccountgateway.ResolveMappedModel(modelName, rules)
+	mappedModel := proaccountgateway.ResolveMappedModel(clientModel, rules)
 	setup, _, ok, err := s.setup.ResolveSetupWithSource(ctx)
 	if err != nil || !ok {
 		operation = s.fail(ctx, operation, "gateway_connection_required")
@@ -111,10 +127,15 @@ func (s *Service) Test(ctx context.Context, input Input) (Result, error) {
 		}
 		return Result{Operation: operation}, err
 	}
-	connectivity, err := s.gateway.TestAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.AccountReference{
+	connectivity, err := s.gateway.TestAccountWithMode(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.AccountReference{
 		Platform: account.Platform, AuthType: account.AuthType, SourceType: account.Binding.SourceType,
 		SourceLocator: account.Binding.SourceLocator, AuthIndex: account.Binding.AuthIndex,
-	}, modelName)
+	}, mappedModel, mode)
+	connectivity.Model = clientModel
+	connectivity.MappedModel = mappedModel
+	if connectivity.UpstreamModel == "" {
+		connectivity.UpstreamModel = mappedModel
+	}
 	if err != nil {
 		operation = s.fail(ctx, operation, "connectivity_request_failed")
 		_, _ = s.repository.RecordTestResult(ctx, account.ID, false, "connectivity_request_failed", s.now().UnixMilli())
