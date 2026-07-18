@@ -176,6 +176,185 @@ func TestRunXAIUsesBillingEndpointsInsteadOfCodexUsage(t *testing.T) {
 	}
 }
 
+func TestRunXAIFallsBackToOfficialAPIIdentityHealth(t *testing.T) {
+	requestedURLs := make([]string, 0, 3)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"paid-xai.json","auth_index":"xai-paid-1","provider":"xai","account":"paid@example.com","disabled":true}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			var payload struct {
+				Method string            `json:"method"`
+				URL    string            `json:"url"`
+				Header map[string]string `json:"header"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode api-call payload: %v", err)
+			}
+			requestedURLs = append(requestedURLs, payload.URL)
+			if payload.Method != http.MethodGet {
+				t.Fatalf("xAI health method = %q, want GET", payload.Method)
+			}
+			if payload.URL == xaiOfficialAPIMeURL {
+				if payload.Header["Authorization"] != "Bearer $TOKEN$" || payload.Header["x-grok-client-version"] != "" {
+					t.Fatalf("xAI official API headers = %#v", payload.Header)
+				}
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"user_id":"user-1","team_id":"team-1","team_blocked":false}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status_code":403,"body":{"error":"Access denied"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
+	if len(requestedURLs) != 3 || requestedURLs[2] != xaiOfficialAPIMeURL {
+		t.Fatalf("requested URLs = %#v, want two billing requests followed by /me", requestedURLs)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("xAI result = %#v", result.Results)
+	}
+	item := result.Results[0]
+	if item.Action != "keep" || item.ErrorKind != "official_api_healthy" || item.StatusCode == nil || *item.StatusCode != http.StatusOK {
+		t.Fatalf("xAI official API result = %#v", item)
+	}
+	if item.ActionReason != "monitoring.xai_inspection_reason_official_api_manual_disable" {
+		t.Fatalf("xAI official API action reason = %q", item.ActionReason)
+	}
+	if item.UsedPercent != nil || len(item.QuotaWindows) != 0 || item.AutoRecoverEligible {
+		t.Fatalf("xAI official API synthesized quota or recovery = %#v", item)
+	}
+}
+
+func TestRunXAIDoesNotFallbackToOfficialAPIForExplicitBillingDenials(t *testing.T) {
+	tests := []struct {
+		name           string
+		apiCallBody    string
+		classification string
+	}{
+		{name: "entitlement denied", apiCallBody: `{"status_code":403,"body":{"error":"Need a Grok subscription"}}`, classification: "entitlement_denied"},
+		{name: "payment required", apiCallBody: `{"status_code":402,"body":{"error":"Payment required"}}`, classification: "quota_or_entitlement_unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requestedURLs := make([]string, 0, 2)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"files":[{"name":"paid-xai.json","auth_index":"xai-paid-1","provider":"xai","account":"paid@example.com"}]}`))
+				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+					var payload struct {
+						URL string `json:"url"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode api-call payload: %v", err)
+					}
+					requestedURLs = append(requestedURLs, payload.URL)
+					_, _ = w.Write([]byte(tc.apiCallBody))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			db := newCodexInspectionTestStore(t)
+			managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+			managerCfg.CodexInspection.TargetType = "xai"
+			managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+			if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+				t.Fatalf("save manager config: %v", err)
+			}
+
+			result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+			if err != nil {
+				t.Fatalf("run xAI inspection: %v", err)
+			}
+			if len(requestedURLs) != 2 {
+				t.Fatalf("requested URLs = %#v, want only two billing requests", requestedURLs)
+			}
+			for _, requestedURL := range requestedURLs {
+				if requestedURL == xaiOfficialAPIMeURL {
+					t.Fatalf("explicit billing denial called official API fallback: %#v", requestedURLs)
+				}
+			}
+			if len(result.Results) != 1 || result.Results[0].ErrorKind != tc.classification {
+				t.Fatalf("xAI result = %#v, want %q", result.Results, tc.classification)
+			}
+		})
+	}
+}
+
+func TestRunXAIRejectsInvalidOfficialAPIIdentityPayload(t *testing.T) {
+	tests := []struct {
+		name        string
+		apiCallBody string
+	}{
+		{name: "null team blocked", apiCallBody: `{"status_code":200,"body":{"user_id":"","team_id":"","team_blocked":null}}`},
+		{name: "invalid team blocked", apiCallBody: `{"status_code":200,"body":{"user_id":" ","team_id":"","team_blocked":"unknown"}}`},
+		{name: "numeric team blocked", apiCallBody: `{"status_code":200,"body":{"user_id":"","team_id":"","team_blocked":0}}`},
+		{name: "non-string identity", apiCallBody: `{"status_code":200,"body":{"user_id":false,"team_id":"","team_blocked":null}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requestedURLs := make([]string, 0, 3)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"files":[{"name":"paid-xai.json","auth_index":"xai-paid-1","provider":"xai","account":"paid@example.com"}]}`))
+				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+					var payload struct {
+						URL string `json:"url"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode api-call payload: %v", err)
+					}
+					requestedURLs = append(requestedURLs, payload.URL)
+					if payload.URL == xaiOfficialAPIMeURL {
+						_, _ = w.Write([]byte(tc.apiCallBody))
+						return
+					}
+					_, _ = w.Write([]byte(`{"status_code":403,"body":{"error":"Access denied"}}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			db := newCodexInspectionTestStore(t)
+			managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+			managerCfg.CodexInspection.TargetType = "xai"
+			managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+			if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+				t.Fatalf("save manager config: %v", err)
+			}
+
+			result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+			if err != nil {
+				t.Fatalf("run xAI inspection: %v", err)
+			}
+			if len(requestedURLs) != 3 || requestedURLs[2] != xaiOfficialAPIMeURL {
+				t.Fatalf("requested URLs = %#v, want billing requests followed by /me", requestedURLs)
+			}
+			if len(result.Results) != 1 || result.Results[0].ErrorKind == "official_api_healthy" {
+				t.Fatalf("invalid official API payload reported healthy: %#v", result.Results)
+			}
+		})
+	}
+}
+
 func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -236,12 +415,38 @@ func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *te
 }
 
 func TestXAIRelevantFailureUsesFrontendPriority(t *testing.T) {
-	failure, ok := xaiRelevantFailure([]xaiProbeDecision{
-		*xaiDecision(http.StatusForbidden, "permission_unknown", "forbidden"),
-		*xaiDecision(http.StatusUnauthorized, "auth_invalid", "expired"),
-	}, true)
-	if !ok || failure.Classification != "auth_invalid" || failure.Action != "reauth" {
-		t.Fatalf("selected failure = %#v, ok=%v", failure, ok)
+	tests := []struct {
+		name       string
+		failures   []xaiProbeDecision
+		wantClass  string
+		wantAction string
+	}{
+		{
+			name: "auth invalid over generic forbidden",
+			failures: []xaiProbeDecision{
+				*xaiDecision(http.StatusForbidden, "permission_unknown", "forbidden"),
+				*xaiDecision(http.StatusUnauthorized, "auth_invalid", "expired"),
+			},
+			wantClass:  "auth_invalid",
+			wantAction: "reauth",
+		},
+		{
+			name: "entitlement denial over earlier generic forbidden",
+			failures: []xaiProbeDecision{
+				*xaiDecision(http.StatusForbidden, "permission_unknown", "forbidden"),
+				*xaiDecision(http.StatusForbidden, "entitlement_denied", "subscription required"),
+			},
+			wantClass:  "entitlement_denied",
+			wantAction: "disable",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			failure, ok := xaiRelevantFailure(tc.failures, true)
+			if !ok || failure.Classification != tc.wantClass || failure.Action != tc.wantAction {
+				t.Fatalf("selected failure = %#v, ok=%v", failure, ok)
+			}
+		})
 	}
 }
 

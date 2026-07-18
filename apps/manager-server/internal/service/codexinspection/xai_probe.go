@@ -18,6 +18,7 @@ import (
 const (
 	xaiBillingWeeklyURL  = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 	xaiBillingMonthlyURL = "https://cli-chat-proxy.grok.com/v1/billing"
+	xaiOfficialAPIMeURL  = "https://api.x.ai/v1/me"
 	xaiGrokVersion       = "0.2.101"
 	xaiGrokUserAgent     = "grok-pager/0.2.101 grok-shell/0.2.101 (macos; aarch64)"
 )
@@ -51,10 +52,11 @@ type xaiProductUsage struct {
 }
 
 type xaiBillingProbe struct {
-	Summary  *xaiBillingSummary
-	Failures []xaiProbeDecision
-	Partial  bool
-	Healthy  bool
+	Summary            *xaiBillingSummary
+	Failures           []xaiProbeDecision
+	Partial            bool
+	Healthy            bool
+	OfficialAPIHealthy bool
 }
 
 type XAIUsageError struct {
@@ -139,6 +141,22 @@ func (s *Service) inspectSingleXAIAccount(
 		base.Error = truncate(err.Error(), maxStoredBodyText)
 		base.ErrorKind = "request_error"
 		base.ErrorDetail = truncate(err.Error(), maxStoredBodyText)
+		return base
+	}
+	if probe.OfficialAPIHealthy {
+		base.Action = "keep"
+		base.ActionReason = "monitoring.xai_inspection_reason_official_api_healthy"
+		base.StatusCode = intPointer(http.StatusOK)
+		base.ErrorKind = "official_api_healthy"
+		base.PlanType = "xai"
+		if base.Disabled && !item.AutoRecoverOwned {
+			base.ActionReason = "monitoring.xai_inspection_reason_official_api_manual_disable"
+		}
+		logger.info(ctx, "monitoring.xai_inspection_log_server_complete", map[string]any{
+			"fileName": item.FileName,
+			"partial":  false,
+			"action":   base.Action,
+		})
 		return base
 	}
 
@@ -227,6 +245,17 @@ func (s *Service) requestXAIBilling(
 		}
 	}
 	if probe.Summary == nil {
+		if xaiOfficialAPIFallbackEligible(probe.Failures) {
+			healthy, failure, healthErr := s.requestXAIOfficialAPIHealth(ctx, setup, settings, item)
+			if healthErr != nil {
+				probe.Failures = append(probe.Failures, *xaiDecision(0, "upstream_error", healthErr.Error()))
+			} else if failure != nil {
+				probe.Failures = append(probe.Failures, *failure)
+			} else if healthy {
+				probe.OfficialAPIHealthy = true
+				return probe, nil
+			}
+		}
 		if len(probe.Failures) > 0 {
 			return probe, nil
 		}
@@ -234,6 +263,106 @@ func (s *Service) requestXAIBilling(
 	}
 	probe.Partial = probe.Partial || len(probe.Failures) > 0
 	return probe, nil
+}
+
+func xaiOfficialAPIFallbackEligible(failures []xaiProbeDecision) bool {
+	if len(failures) == 0 {
+		return false
+	}
+	for _, failure := range failures {
+		if failure.Classification != "permission_unknown" {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) requestXAIOfficialAPIHealth(
+	ctx context.Context,
+	setup store.Setup,
+	settings model.ManagerCodexInspectionConfig,
+	item account,
+) (bool, *xaiProbeDecision, error) {
+	header := map[string]string{
+		"Authorization": "Bearer $TOKEN$",
+		"Accept":        "application/json",
+	}
+	response, _, err := s.requestProviderBillingAt(ctx, setup, settings, item, xaiOfficialAPIMeURL, header)
+	if err != nil {
+		return false, nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return false, xaiDecision(
+			response.StatusCode,
+			xaiClassification(response.StatusCode, response.Body),
+			fmt.Sprint(response.Body),
+		), nil
+	}
+
+	payload := parseRecord(response.Body)
+	if payload == nil {
+		payload = parseRecord(response.BodyText)
+	}
+	if payload == nil {
+		return false, xaiDecision(response.StatusCode, "protocol_changed", "xAI official API identity response schema changed"), nil
+	}
+	blocked, hasTeamBlocked := readXAIBoolPtr(payload, "team_blocked", "teamBlocked")
+	if hasTeamBlocked && blocked != nil && *blocked {
+		return false, xaiDecision(http.StatusForbidden, "spending_limit", "xAI official API team is blocked"), nil
+	}
+	userID := readXAIIdentityID(payload, "user_id", "userId")
+	teamID := readXAIIdentityID(payload, "team_id", "teamId")
+	if userID == "" && teamID == "" && !hasTeamBlocked {
+		return false, xaiDecision(response.StatusCode, "protocol_changed", "xAI official API identity response schema changed"), nil
+	}
+	return true, nil, nil
+}
+
+func readXAIIdentityID(record map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := record[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if normalized := strings.TrimSpace(typed); normalized != "" {
+				return normalized
+			}
+		case float64:
+			if !math.IsNaN(typed) && !math.IsInf(typed, 0) {
+				return fmt.Sprint(typed)
+			}
+		case int:
+			return fmt.Sprint(typed)
+		case int64:
+			return fmt.Sprint(typed)
+		}
+	}
+	return ""
+}
+
+func readXAIBoolPtr(record map[string]any, keys ...string) (*bool, bool) {
+	for _, key := range keys {
+		value, ok := record[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return &typed, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(typed)) {
+			case "true":
+				result := true
+				return &result, true
+			case "false":
+				result := false
+				return &result, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func mergeXAIBillingSummary(primary, fallback *xaiBillingSummary) *xaiBillingSummary {
@@ -526,9 +655,11 @@ func xaiFailurePriority(classification string) int {
 		return 100
 	case "free_quota_exhausted", "spending_limit":
 		return 90
+	case "entitlement_denied":
+		return 85
 	case "client_outdated":
 		return 80
-	case "entitlement_denied", "permission_unknown", "quota_or_entitlement_unknown":
+	case "permission_unknown", "quota_or_entitlement_unknown":
 		return 70
 	case "policy_denied":
 		return 60

@@ -18,6 +18,7 @@ import type {
   XaiBillingPeriod,
   XaiBillingPeriodType,
   XaiBillingSummary,
+  XaiOfficialApiHealth,
   XaiProductUsageSummary,
 } from '@/types';
 import { apiCallApi, getApiCallErrorMessage } from '@/services/api/apiCall';
@@ -41,6 +42,7 @@ import {
   KIMI_USAGE_URL,
   XAI_BILLING_MONTHLY_URL,
   XAI_BILLING_WEEKLY_URL,
+  XAI_OFFICIAL_API_ME_URL,
   XAI_REQUEST_HEADERS,
 } from './constants';
 import { buildAntigravityQuotaGroups, buildKimiQuotaRows } from './builders';
@@ -1047,6 +1049,15 @@ const toXaiRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
+const normalizeXaiBoolean = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return null;
+};
+
 const resolveXaiUserId = (file: AuthFileItem): string | null => {
   const metadata = toXaiRecord(file.metadata);
   const attributes = toXaiRecord(file.attributes);
@@ -1116,25 +1127,90 @@ const requestXaiBilling = async (
     throw new XaiProbeError(getApiCallErrorMessage(result), envelope, decision);
   }
 
-	const payload = parseXaiBillingPayload(result.body ?? result.bodyText);
-	const summary = buildXaiBillingSummary(payload?.config);
-	if (!summary) {
-		const envelope = parseXaiErrorEnvelope({
-			statusCode: result.hasStatusCode ? result.statusCode : null,
-			body: result.body,
-			bodyText: result.bodyText,
-			headers: result.header,
-		});
-		const decision = classifyXaiProbe({ surface: 'billing', envelope, hasPayload: false });
-		throw new XaiProbeError('xAI billing response schema changed', envelope, decision);
-	}
-	return summary;
+  const payload = parseXaiBillingPayload(result.body ?? result.bodyText);
+  const summary = buildXaiBillingSummary(payload?.config);
+  if (!summary) {
+    const envelope = parseXaiErrorEnvelope({
+      statusCode: result.hasStatusCode ? result.statusCode : null,
+      body: result.body,
+      bodyText: result.bodyText,
+      headers: result.header,
+    });
+    const decision = classifyXaiProbe({ surface: 'billing', envelope, hasPayload: false });
+    throw new XaiProbeError('xAI billing response schema changed', envelope, decision);
+  }
+  return summary;
+};
+
+const requestXaiOfficialApiHealth = async (
+  authIndex: string,
+  requestConfig?: AxiosRequestConfig
+): Promise<XaiOfficialApiHealth> => {
+  const result = await apiCallApi.request(
+    {
+      authIndex,
+      method: 'GET',
+      url: XAI_OFFICIAL_API_ME_URL,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        accept: 'application/json',
+      },
+    },
+    requestConfig
+  );
+  const payload = toXaiRecord(result.body);
+
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    const envelope = parseXaiErrorEnvelope({
+      statusCode: result.hasStatusCode ? result.statusCode : null,
+      body: result.body,
+      bodyText: result.bodyText,
+      headers: result.header,
+    });
+    const decision = classifyXaiProbe({ surface: 'oauth', envelope });
+    throw new XaiProbeError(getApiCallErrorMessage(result), envelope, decision);
+  }
+
+  const userId = normalizeStringValue(payload?.user_id ?? payload?.userId);
+  const teamId = normalizeStringValue(payload?.team_id ?? payload?.teamId);
+  const teamBlocked = normalizeXaiBoolean(payload?.team_blocked ?? payload?.teamBlocked);
+  if (!userId && !teamId && teamBlocked === null) {
+    const envelope = parseXaiErrorEnvelope({
+      statusCode: result.hasStatusCode ? result.statusCode : null,
+      body: result.body,
+      bodyText: result.bodyText,
+      headers: result.header,
+    });
+    const decision = classifyXaiProbe({ surface: 'oauth', envelope, hasPayload: false });
+    throw new XaiProbeError(
+      'xAI official API identity response schema changed',
+      envelope,
+      decision
+    );
+  }
+  if (teamBlocked === true) {
+    const body = { ...payload, code: 'personal-team-blocked:spending-limit' };
+    const envelope = parseXaiErrorEnvelope({ statusCode: 403, body });
+    const decision = classifyXaiProbe({ surface: 'oauth', envelope });
+    throw new XaiProbeError('xAI official API team is blocked', envelope, decision);
+  }
+
+  return {
+    source: 'api.x.ai/v1/me',
+    userId,
+    teamId,
+    teamBlocked,
+  };
 };
 
 export interface XaiBillingProbeResult {
   summary: XaiBillingSummary;
   failures: unknown[];
   partial: boolean;
+}
+
+export interface XaiQuotaProbeResult extends XaiBillingProbeResult {
+  source: 'billing' | 'official-api';
 }
 
 const xaiFailurePriority = (failure: unknown) => {
@@ -1145,9 +1221,10 @@ const xaiFailurePriority = (failure: unknown) => {
     case 'free_quota_exhausted':
     case 'spending_limit':
       return 90;
+    case 'entitlement_denied':
+      return 85;
     case 'client_outdated':
       return 80;
-    case 'entitlement_denied':
     case 'permission_unknown':
     case 'quota_or_entitlement_unknown':
       return 70;
@@ -1171,17 +1248,24 @@ const selectXaiBillingFailure = (failures: unknown[]) =>
     failures[0]
   );
 
-export const probeXaiBilling = async (
-  file: AuthFileItem,
-  t: TFunction,
-  requestConfig?: AxiosRequestConfig
-): Promise<XaiBillingProbeResult> => {
+const isXaiOfficialApiFallbackFailure = (failure: unknown): boolean =>
+  failure instanceof XaiProbeError && failure.decision.classification === 'permission_unknown';
+
+const resolveXaiProbeAuthIndex = (file: AuthFileItem, t: TFunction): string => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
   if (!authIndex) {
     throw new Error(t('xai_quota.missing_auth_index'));
   }
+  return authIndex;
+};
 
+const requestXaiBillingProbe = async (
+  file: AuthFileItem,
+  t: TFunction,
+  requestConfig?: AxiosRequestConfig
+) => {
+  const authIndex = resolveXaiProbeAuthIndex(file, t);
   const requestHeader = buildXaiRequestHeaders(file);
   const [weeklyResult, monthlyResult] = await Promise.allSettled([
     requestXaiBilling(authIndex, XAI_BILLING_WEEKLY_URL, requestHeader, requestConfig),
@@ -1192,7 +1276,26 @@ export const probeXaiBilling = async (
   const failures = [weeklyResult, monthlyResult].flatMap((result) =>
     result.status === 'rejected' ? [result.reason] : []
   );
-  const summary = mergeXaiBillingSummaries(weeklySummary, monthlySummary);
+
+  return {
+    authIndex,
+    weeklySummary,
+    monthlySummary,
+    failures,
+    summary: mergeXaiBillingSummaries(weeklySummary, monthlySummary),
+  };
+};
+
+export const probeXaiBilling = async (
+  file: AuthFileItem,
+  t: TFunction,
+  requestConfig?: AxiosRequestConfig
+): Promise<XaiBillingProbeResult> => {
+  const { failures, monthlySummary, summary, weeklySummary } = await requestXaiBillingProbe(
+    file,
+    t,
+    requestConfig
+  );
   if (!summary) {
     if (failures.length > 0) throw selectXaiBillingFailure(failures);
     throw new Error(t('xai_quota.empty_data'));
@@ -1205,8 +1308,43 @@ export const probeXaiBilling = async (
   };
 };
 
+export const probeXaiQuota = async (
+  file: AuthFileItem,
+  t: TFunction,
+  requestConfig?: AxiosRequestConfig
+): Promise<XaiQuotaProbeResult> => {
+  const { authIndex, failures, monthlySummary, summary, weeklySummary } =
+    await requestXaiBillingProbe(file, t, requestConfig);
+  if (summary) {
+    return {
+      summary,
+      failures,
+      partial: failures.length > 0 || weeklySummary === null || monthlySummary === null,
+      source: 'billing',
+    };
+  }
+  if (failures.length === 0) {
+    throw new Error(t('xai_quota.empty_data'));
+  }
+  if (!failures.every(isXaiOfficialApiFallbackFailure)) {
+    throw selectXaiBillingFailure(failures);
+  }
+
+  try {
+    const officialApiHealth = await requestXaiOfficialApiHealth(authIndex, requestConfig);
+    return {
+      summary: { ...emptyXaiBillingSummary(), officialApiHealth },
+      failures: [],
+      partial: false,
+      source: 'official-api',
+    };
+  } catch (error) {
+    throw selectXaiBillingFailure([...failures, error]);
+  }
+};
+
 export const fetchXaiQuota = async (file: AuthFileItem, t: TFunction): Promise<XaiBillingSummary> =>
-  probeXaiBilling(file, t).then(({ summary, partial, failures }) => ({
+  probeXaiQuota(file, t).then(({ summary, partial, failures }) => ({
     ...summary,
     partial,
     diagnostics: failures.map((failure): XaiBillingDiagnostic => {

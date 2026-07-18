@@ -394,6 +394,7 @@ export function useMonitoringData({
         geminiApiKeys: config?.geminiApiKeys || [],
         claudeApiKeys: config?.claudeApiKeys || [],
         codexApiKeys: config?.codexApiKeys || [],
+        xaiApiKeys: config?.xaiApiKeys || [],
         vertexApiKeys: config?.vertexApiKeys || [],
         openaiCompatibility: config?.openaiCompatibility || [],
       }),

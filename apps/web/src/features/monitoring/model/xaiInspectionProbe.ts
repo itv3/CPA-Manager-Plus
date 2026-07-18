@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { XaiBillingSummary } from '@/types';
-import { probeXaiBilling } from '@/utils/quota/providerRequests';
+import { probeXaiQuota } from '@/utils/quota/providerRequests';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import { XaiProbeError, classifyXaiProbe, parseXaiErrorEnvelope } from '@/utils/quota/xaiErrors';
 import { formatXaiProbeIssue } from '@/utils/quota/xaiPresentation';
@@ -189,12 +189,39 @@ export const inspectSingleXaiAccount = async (
 
   try {
     const probe = await withRetry(settings.retries, () =>
-      probeXaiBilling(
+      probeXaiQuota(
         account.raw,
         t,
         settings.timeout > 0 ? { timeout: settings.timeout } : undefined
       )
     );
+    if (probe.source === 'official-api') {
+      const actionReason =
+        account.disabled && !account.autoRecoverOwned
+          ? t('monitoring.xai_inspection_reason_official_api_manual_disable')
+          : t('monitoring.xai_inspection_reason_official_api_healthy');
+      onLog?.(
+        'info',
+        t('monitoring.xai_inspection_log_official_api', {
+          account: account.displayAccount,
+          action: formatXaiInspectionAction('keep', t),
+        })
+      );
+      return {
+        ...account,
+        action: 'keep',
+        actionReason,
+        statusCode: 200,
+        usedPercent: null,
+        isQuota: false,
+        autoRecoverEligible: false,
+        error: '',
+        planType: 'xai',
+        quotaWindows: [],
+        errorKind: 'official_api_healthy',
+        errorDetail: '',
+      };
+    }
     const blockingFailure = probe.failures.find(
       (failure) =>
         failure instanceof XaiProbeError &&
@@ -272,8 +299,7 @@ export const inspectSingleXaiAccount = async (
           account: account.displayAccount,
           action: formatXaiInspectionAction(action, t),
           reason:
-            formatXaiProbeIssue(decision.classification, t) ??
-            t('xai_quota.diagnostic_unknown'),
+            formatXaiProbeIssue(decision.classification, t) ?? t('xai_quota.diagnostic_unknown'),
         })
       );
       return {

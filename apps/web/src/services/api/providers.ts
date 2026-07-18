@@ -50,6 +50,7 @@ const COOLING_PROVIDER_KEY_FIELDS = [
   ...DISABLE_COOLING_FIELDS,
 ] as const;
 const CODEX_KEY_FIELDS = [...COOLING_PROVIDER_KEY_FIELDS, 'websockets'] as const;
+const XAI_KEY_FIELDS = CODEX_KEY_FIELDS;
 const CLAUDE_KEY_FIELDS = [
   ...COOLING_PROVIDER_KEY_FIELDS,
   'cloak',
@@ -138,12 +139,9 @@ const CLOAK_FIELDS = [
 
 const RAW_SECTION_ALIASES: Record<string, readonly string[]> = {
   'gemini-api-key': ['gemini-api-key', 'geminiApiKey', 'geminiApiKeys'],
-  'interactions-api-key': [
-    'interactions-api-key',
-    'interactionsApiKey',
-    'interactionsApiKeys',
-  ],
+  'interactions-api-key': ['interactions-api-key', 'interactionsApiKey', 'interactionsApiKeys'],
   'codex-api-key': ['codex-api-key', 'codexApiKey', 'codexApiKeys'],
+  'xai-api-key': ['xai-api-key', 'xaiApiKey', 'xaiApiKeys'],
   'claude-api-key': ['claude-api-key', 'claudeApiKey', 'claudeApiKeys'],
   'vertex-api-key': ['vertex-api-key', 'vertexApiKey', 'vertexApiKeys'],
   'openai-compatibility': ['openai-compatibility', 'openaiCompatibility', 'openAICompatibility'],
@@ -780,6 +778,46 @@ export const providersApi = {
   deleteCodexConfig: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/codex-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
+  async getXAIConfigs(): Promise<ProviderKeyConfig[]> {
+    const data = await apiClient.get('/xai-api-key');
+    const list = extractArrayPayload(data, 'xai-api-key');
+    return list
+      .map((item) => normalizeProviderKeyConfig(item))
+      .filter(Boolean) as ProviderKeyConfig[];
+  },
+
+  saveXAIConfigs: async (configs: ProviderKeyConfig[]) =>
+    apiClient.put(
+      '/xai-api-key',
+      await buildPreservedList(
+        'xai-api-key',
+        configs,
+        serializeProviderKey,
+        (raw, payload) => mergeProviderKeyPayload(raw, payload, XAI_KEY_FIELDS),
+        providerKeyIdentity
+      )
+    ),
+
+  createXAIConfig: (config: ProviderKeyConfig) =>
+    mutateLatestProviderList('xai-api-key', (latestItems) =>
+      appendLatestProviderRecord(latestItems, serializeProviderKey(config), (raw, payload) =>
+        mergeProviderKeyPayload(raw, payload, XAI_KEY_FIELDS)
+      )
+    ),
+
+  updateXAIConfig: (original: ProviderKeyConfig, value: ProviderKeyConfig) =>
+    mutateLatestProviderList('xai-api-key', (latestItems) =>
+      replaceLatestProviderRecord(
+        latestItems,
+        (record) => matchesProviderConfig(record, original),
+        serializeProviderKey(value),
+        (raw, payload) => mergeProviderKeyPayload(raw, payload, XAI_KEY_FIELDS)
+      )
+    ),
+
+  deleteXAIConfig: (apiKey: string, baseUrl?: string) =>
+    apiClient.delete(`/xai-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
+
   async getClaudeConfigs(): Promise<ProviderKeyConfig[]> {
     const data = await apiClient.get('/claude-api-key');
     const list = extractArrayPayload(data, 'claude-api-key');
@@ -883,7 +921,11 @@ export const providersApi = {
 
   createOpenAIProvider: (provider: OpenAIProviderConfig) =>
     mutateLatestProviderList('openai-compatibility', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeOpenAIProvider(provider), mergeOpenAIProviderPayload)
+      appendLatestProviderRecord(
+        latestItems,
+        serializeOpenAIProvider(provider),
+        mergeOpenAIProviderPayload
+      )
     ),
 
   updateOpenAIProvider: (

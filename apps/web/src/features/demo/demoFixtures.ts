@@ -197,6 +197,17 @@ const initialRawConfig: Record<string, unknown> = {
       models: [{ name: 'gpt-5-codex', alias: 'Codex Team' }],
     },
   ],
+  'xai-api-key': [
+    {
+      'api-key': 'xai-demo-team-key',
+      'auth-index': 'xai-api-team-01',
+      prefix: 'xai-team',
+      'base-url': 'https://api.x.ai/v1',
+      priority: 9,
+      websockets: true,
+      models: [{ name: 'grok-4.5', alias: 'Grok Team' }],
+    },
+  ],
   'claude-api-key': [
     {
       'api-key': 'claude-demo-team-key',

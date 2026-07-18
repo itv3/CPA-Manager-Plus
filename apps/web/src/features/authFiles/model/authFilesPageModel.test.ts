@@ -488,6 +488,14 @@ describe('auth file Codex status helpers', () => {
       isQuota: false,
       errorKind: 'billing_partial',
     });
+    const officialApiStatus = getAuthFileCodexStatus(file, undefined, {
+      fileName: file.name,
+      provider: 'xai',
+      authIndex: file.authIndex,
+      action: 'keep',
+      isQuota: false,
+      errorKind: 'official_api_healthy',
+    });
 
     expect(quotaStatus).toMatchObject({
       isCodex: false,
@@ -503,6 +511,7 @@ describe('auth file Codex status helpers', () => {
       titleKey: 'xai_quota.diagnostic_billing_partial',
       defaultTitle: 'The latest xAI inspection found an issue. Review the inspection details.',
     });
+    expect(officialApiStatus.badges.map((badge) => badge.kind)).not.toContain('observed_error');
     expect(authFileMatchesCodexStatusFilter(quotaStatus, 'quota_limited')).toBe(false);
   });
 

@@ -886,13 +886,7 @@ const renderCodexItems = (
       const windowLabel = window.labelKey
         ? t(window.labelKey, window.labelParams as Record<string, string | number>)
         : window.label;
-      const infoIcon = renderCodexWindowInfo(
-        quota,
-        window,
-        windowLabel,
-        t,
-        styleMap
-      );
+      const infoIcon = renderCodexWindowInfo(quota, window, windowLabel, t, styleMap);
 
       return h(
         'div',
@@ -1250,6 +1244,20 @@ const renderXaiItems = (
 
   if (!billing) {
     return h('div', { className: styleMap.quotaMessage }, t('xai_quota.empty_data'));
+  }
+
+  if (billing.officialApiHealth) {
+    return h(
+      React.Fragment,
+      null,
+      h(
+        'div',
+        { className: styleMap.codexPlan },
+        h('span', { className: styleMap.codexPlanLabel }, t('xai_quota.plan_label')),
+        h('span', { className: styleMap.codexPlanValue }, t('xai_quota.official_api_plan'))
+      ),
+      h('div', { className: styleMap.quotaMessage }, t('xai_quota.official_api_health'))
+    );
   }
 
   const clampedUsed =

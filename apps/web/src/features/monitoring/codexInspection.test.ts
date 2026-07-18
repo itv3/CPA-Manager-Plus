@@ -287,18 +287,21 @@ describe('Codex inspection error summaries', () => {
     return messages[key] ?? key;
   }) as never;
 
-  it('does not present a healthy xAI billing classification as an error', () => {
-    expect(
-      summarizeInspectionError(
-        createResultItem('keep', {
-          provider: 'xai',
-          errorKind: 'billing_healthy',
-          statusCode: 200,
-        }),
-        t
-      )
-    ).toBe('');
-  });
+  it.each(['billing_healthy', 'official_api_healthy'])(
+    'does not present a healthy xAI classification %s as an error',
+    (errorKind) => {
+      expect(
+        summarizeInspectionError(
+          createResultItem('keep', {
+            provider: 'xai',
+            errorKind,
+            statusCode: 200,
+          }),
+          t
+        )
+      ).toBe('');
+    }
+  );
 
   it('translates xAI diagnostic classifications into user-facing explanations', () => {
     const summary = summarizeInspectionError(

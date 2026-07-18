@@ -32,6 +32,7 @@ import {
   CODEX_USAGE_URL,
   XAI_BILLING_MONTHLY_URL,
   XAI_BILLING_WEEKLY_URL,
+  XAI_OFFICIAL_API_ME_URL,
 } from './constants';
 import { formatQuotaResetTime } from './formatters';
 import {
@@ -1724,9 +1725,174 @@ describe('fetchXaiQuota', () => {
       usedCents: 5000,
       usedPercent: 25,
       partial: true,
-      diagnostics: [
-        expect.objectContaining({ classification: 'upstream_error', statusCode: 500 }),
-      ],
+      diagnostics: [expect.objectContaining({ classification: 'upstream_error', statusCode: 500 })],
+    });
+  });
+
+  it('falls back to official API identity health when both CLI billing endpoints deny access', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { user_id: 'user-1', team_id: 'team-1', team_blocked: false },
+      });
+
+    const result = await fetchXaiQuota(
+      { name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' },
+      t
+    );
+
+    expect(mocks.request).toHaveBeenCalledTimes(3);
+    expect(mocks.request.mock.calls[2][0]).toEqual({
+      authIndex: 'xai-paid-1',
+      method: 'GET',
+      url: XAI_OFFICIAL_API_ME_URL,
+      header: {
+        Authorization: 'Bearer $TOKEN$',
+        accept: 'application/json',
+      },
+    });
+    expect(result).toMatchObject({
+      periodType: 'unknown',
+      usagePercent: null,
+      productUsage: [],
+      officialApiHealth: {
+        source: 'api.x.ai/v1/me',
+        userId: 'user-1',
+        teamId: 'team-1',
+        teamBlocked: false,
+      },
+      partial: false,
+      diagnostics: [],
+    });
+  });
+
+  it.each([
+    {
+      name: 'an explicit entitlement denial',
+      statusCode: 403,
+      body: { error: 'Need a Grok subscription' },
+      classification: 'entitlement_denied',
+    },
+    {
+      name: 'an ambiguous payment-required response',
+      statusCode: 402,
+      body: { error: 'Payment required' },
+      classification: 'quota_or_entitlement_unknown',
+    },
+  ])(
+    'does not call the official API fallback for $name',
+    async ({ body, classification, statusCode }) => {
+      mocks.request.mockResolvedValue({
+        statusCode,
+        hasStatusCode: true,
+        header: {},
+        bodyText: JSON.stringify(body),
+        body,
+      });
+
+      await expect(
+        fetchXaiQuota({ name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' }, t)
+      ).rejects.toMatchObject({
+        decision: { classification },
+      });
+
+      expect(mocks.request).toHaveBeenCalledTimes(2);
+      expect(mocks.request.mock.calls.map(([request]) => request.url)).not.toContain(
+        XAI_OFFICIAL_API_ME_URL
+      );
+    }
+  );
+
+  it.each([
+    { name: 'null team_blocked', body: { user_id: '', team_id: '', team_blocked: null } },
+    {
+      name: 'an invalid team_blocked value',
+      body: { user_id: ' ', team_id: '', team_blocked: 'unknown' },
+    },
+    {
+      name: 'a numeric team_blocked value',
+      body: { user_id: '', team_id: '', team_blocked: 0 },
+    },
+    {
+      name: 'a non-string identity value',
+      body: { user_id: false, team_id: '', team_blocked: null },
+    },
+  ])('rejects official API identity payloads with empty IDs and $name', async ({ body }) => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: JSON.stringify(body),
+        body,
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' }, t)
+    ).rejects.toBeInstanceOf(XaiProbeError);
+
+    expect(mocks.request).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not hide a blocked official API team behind the health fallback', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"Access denied"}',
+        body: { error: 'Access denied' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: { user_id: 'user-1', team_id: 'team-1', team_blocked: true },
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'paid-xai.json', type: 'xai', authIndex: 'xai-paid-1' }, t)
+    ).rejects.toMatchObject({
+      decision: { classification: 'spending_limit', suggestedAction: 'disable' },
     });
   });
 
@@ -1802,6 +1968,31 @@ describe('fetchXaiQuota', () => {
     ).rejects.toMatchObject({
       decision: { classification: 'auth_invalid', suggestedAction: 'reauth' },
     });
+  });
+
+  it('prefers an explicit entitlement denial over an earlier generic forbidden failure', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'forbidden',
+        body: { error: 'forbidden' },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: 'Need a Grok subscription',
+        body: { error: 'Need a Grok subscription' },
+      });
+
+    await expect(
+      fetchXaiQuota({ name: 'xai.json', type: 'xai', authIndex: 'xai-1' }, t)
+    ).rejects.toMatchObject({
+      decision: { classification: 'entitlement_denied', suggestedAction: 'disable' },
+    });
+    expect(mocks.request).toHaveBeenCalledTimes(2);
   });
 
   it('throws the upstream error when weekly and monthly billing both fail', async () => {

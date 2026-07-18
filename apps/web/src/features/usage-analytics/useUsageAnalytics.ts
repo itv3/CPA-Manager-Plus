@@ -175,6 +175,7 @@ export function useUsageAnalytics() {
         geminiApiKeys: config?.geminiApiKeys || [],
         claudeApiKeys: config?.claudeApiKeys || [],
         codexApiKeys: config?.codexApiKeys || [],
+        xaiApiKeys: config?.xaiApiKeys || [],
         vertexApiKeys: config?.vertexApiKeys || [],
         openaiCompatibility: config?.openaiCompatibility || [],
       }),
@@ -499,8 +500,7 @@ export function useUsageAnalytics() {
   const selectedCredentialTimelineAnalytics = useMonitoringAnalytics({
     fromMs:
       activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.fromMs : undefined,
-    toMs:
-      activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.toMs : undefined,
+    toMs: activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.toMs : undefined,
     nowMs,
     dataScopeKey: selectedCredentialTimelineDataScopeKey,
     searchQuery: debouncedSearchQuery,
@@ -513,10 +513,10 @@ export function useUsageAnalytics() {
     : selectedCredentialTimelineAnalytics.data;
   const credentialTrendLoading = Boolean(
     activeTabState === 'credentials' &&
-      selectedCredentialFilterID &&
-      (selectedCredentialTimelineAnalytics.loading ||
-        selectedCredentialTimelineAnalytics.dataStale ||
-        (!selectedCredentialTimelineAnalytics.data && !selectedCredentialTimelineAnalytics.error))
+    selectedCredentialFilterID &&
+    (selectedCredentialTimelineAnalytics.loading ||
+      selectedCredentialTimelineAnalytics.dataStale ||
+      (!selectedCredentialTimelineAnalytics.data && !selectedCredentialTimelineAnalytics.error))
   );
   const credentialTrendError =
     activeTabState === 'credentials' && selectedCredentialFilterID

@@ -398,7 +398,11 @@ export const summarizeInspectionError = (
   if (item.action === 'reauth' || item.statusCode === 401) {
     return t('monitoring.codex_inspection_error_summary_reauth');
   }
-  if (item.errorKind === 'billing_healthy' || item.errorKind === 'inference_healthy') {
+  if (
+    item.errorKind === 'billing_healthy' ||
+    item.errorKind === 'inference_healthy' ||
+    item.errorKind === 'official_api_healthy'
+  ) {
     return '';
   }
   if (item.errorKind) {
