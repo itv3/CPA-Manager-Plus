@@ -102,8 +102,49 @@ func TestCreditsReturnsSupportedOnlyForValidPayload(t *testing.T) {
 	if result.Capability != CapabilitySupported || result.AvailableCount == nil || *result.AvailableCount != 2 || len(result.Credits) != 1 {
 		t.Fatalf("查询结果 = %#v", result)
 	}
-	if len(gateway.calls) != 1 || gateway.calls[0].Headers["Chatgpt-Account-Id"] != "chatgpt-account-1" || gateway.calls[0].Headers["Authorization"] != "Bearer $TOKEN$" {
+	if len(gateway.calls) != 1 || gateway.calls[0].Headers["Chatgpt-Account-Id"] != "chatgpt-account-1" || gateway.calls[0].Headers["Authorization"] != "Bearer $TOKEN$" || gateway.calls[0].Headers["OpenAI-Beta"] != "codex-1" || gateway.calls[0].Headers["OAI-Language"] != "zh-CN" || gateway.calls[0].Headers["Sec-Fetch-Mode"] != "no-cors" {
 		t.Fatalf("Gateway 请求 = %#v", gateway.calls)
+	}
+}
+
+func TestParseCreditsAcceptsUpstreamPayloadVariants(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		expectedCount int
+		expectedDates int
+	}{
+		{
+			name: "直接数组",
+			body: `[
+				{"reset_type":"codex_rate_limits","status":"available","expires_at":"2026-08-01T00:00:00Z"},
+				{"resetType":"codex_rate_limits","status":"available"},
+				{"reset_type":"other","status":"available"}
+			]`,
+			expectedCount: 2,
+			expectedDates: 1,
+		},
+		{
+			name:          "驼峰次数与 items 列表",
+			body:          `{"availableCount":"3","items":[{"expiresAt":"2026-08-02T00:00:00Z"}]}`,
+			expectedCount: 3,
+			expectedDates: 1,
+		},
+		{
+			name:          "rate_limit_reset_credits 列表",
+			body:          `{"rate_limit_reset_credits":[{"reset_type":"codex_rate_limits","status":"available","expires_at":"2026-08-03T00:00:00Z"}]}`,
+			expectedCount: 1,
+			expectedDates: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, ok := parseCredits(test.body)
+			if !ok || result.AvailableCount == nil || *result.AvailableCount != test.expectedCount || len(result.Credits) != test.expectedDates {
+				t.Fatalf("解析结果=%#v ok=%v", result, ok)
+			}
+		})
 	}
 }
 
@@ -148,7 +189,7 @@ func TestResetRequiresConfirmationAndIsIdempotent(t *testing.T) {
 	for _, call := range gateway.calls {
 		if call.URL == resetConsumeURL {
 			consumeCalls++
-			if call.Method != http.MethodPost || call.Body.(map[string]string)["redeem_request_id"] != "reset-operation" {
+			if call.Method != http.MethodPost || call.Body.(map[string]string)["redeem_request_id"] != "reset-operation" || call.Headers["OpenAI-Beta"] != "codex-1" || call.Headers["Sec-Fetch-Dest"] != "empty" {
 				t.Fatalf("消费请求 = %#v", call)
 			}
 		}

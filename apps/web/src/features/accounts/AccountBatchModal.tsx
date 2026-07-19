@@ -16,6 +16,7 @@ interface AccountBatchModalProps {
   open: boolean;
   action: ProAccountBatchAction | null;
   accounts: ProAccount[];
+  providerAccounts: ProAccount[];
   managerBase: string;
   managementKey: string;
   onClose: () => void;
@@ -33,6 +34,7 @@ export function AccountBatchModal({
   open,
   action,
   accounts,
+  providerAccounts,
   managerBase,
   managementKey,
   onClose,
@@ -64,8 +66,10 @@ export function AccountBatchModal({
     [targetAccounts]
   );
   const sharedProviderCount = useMemo(
-    () => targetAccounts.filter(usesSharedProviderSwitch).length,
-    [targetAccounts]
+    () =>
+      targetAccounts.filter((account) => usesSharedProviderSwitch(account, providerAccounts))
+        .length,
+    [providerAccounts, targetAccounts]
   );
 
   const execute = async () => {

@@ -32,7 +32,6 @@ import {
   type ProAccountBatchAction,
   type ProAccountBindingReviewItem,
   type ProAccountCapabilitiesResponse,
-  type ProAccountResetCreditsResult,
   type ProAccountUsageResponse,
 } from '@/services/api/proAccounts';
 import { AccountBatchModal } from './AccountBatchModal';
@@ -43,6 +42,7 @@ import { AccountReauthorizeModal } from './AccountReauthorizeModal';
 import { AccountScheduledTestsModal } from './AccountScheduledTestsModal';
 import { AccountTestModal } from './AccountTestModal';
 import { AccountWizardModal } from './AccountWizardModal';
+import { OpenAIQuotaResetControls } from './OpenAIQuotaResetControls';
 import { createAccountLoadSequence, loadAllAccountPages } from './loadAllAccountPages';
 import {
   accountReconcileContextKey,
@@ -202,11 +202,8 @@ function UsageCell({
   usageCacheRevision: number;
   onPlanTypeDiscovered: (accountId: string, planType: string) => void;
 }) {
-  const { showConfirmation } = useNotificationStore();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inFlightRef = useRef(false);
-  const resetBusyRef = useRef(false);
-  const resetRequestSequenceRef = useRef(0);
   const attemptedRef = useRef(false);
   const lastRefreshTokenRef = useRef(passiveRefreshToken);
   const cached = usageCache.get(usageCacheKey(managerBase, account.id));
@@ -216,9 +213,6 @@ function UsageCell({
   const [loading, setLoading] = useState(false);
   const [visible, setVisible] = useState(false);
   const [error, setError] = useState('');
-  const [resetCredits, setResetCredits] = useState<ProAccountResetCreditsResult | null>(null);
-  const [resetLoading, setResetLoading] = useState(false);
-  const [resetMessage, setResetMessage] = useState('');
   const resetEligible = account.platform === 'openai' && account.authType === 'oauth';
   const usageWindows = usage ? buildAccountUsageWindowRows(account, usage) : [];
 
@@ -308,78 +302,6 @@ function UsageCell({
     if (next && Date.now() - next.updatedAtMs < USAGE_CACHE_TTL_MS) setUsage(next.value);
   }, [account.id, managerBase, usageCacheRevision]);
 
-  const queryResetCredits = async () => {
-    if (!resetEligible || resetBusyRef.current) return;
-    const requestSequence = ++resetRequestSequenceRef.current;
-    resetBusyRef.current = true;
-    setResetLoading(true);
-    setResetCredits(null);
-    setResetMessage('');
-    try {
-      const result = await proAccountsApi.resetCredits(managerBase, managementKey, account.id);
-      if (requestSequence !== resetRequestSequenceRef.current) return;
-      setResetCredits(result);
-    } catch (resetError) {
-      if (requestSequence !== resetRequestSequenceRef.current) return;
-      setResetCredits(null);
-      setResetMessage(resetError instanceof Error ? resetError.message : String(resetError));
-    } finally {
-      if (requestSequence === resetRequestSequenceRef.current) {
-        resetBusyRef.current = false;
-        setResetLoading(false);
-      }
-    }
-  };
-
-  const resetOpenAI = async () => {
-    const count = resetCredits?.availableCount;
-    if (
-      resetBusyRef.current ||
-      resetCredits?.capability !== 'supported' ||
-      count === undefined ||
-      count <= 0
-    ) {
-      return;
-    }
-    resetRequestSequenceRef.current += 1;
-    resetBusyRef.current = true;
-    setResetLoading(true);
-    setResetMessage('');
-    try {
-      const identity = createRequestIdentity('account-openai-reset');
-      const result = await proAccountsApi.resetOpenAI(
-        managerBase,
-        managementKey,
-        account,
-        identity.operationId,
-        identity.idempotencyKey
-      );
-      setResetCredits(result.credits);
-      setResetMessage('官方配额已重置');
-      await load('manual-active', true);
-    } catch (resetError) {
-      setResetCredits(null);
-      setResetMessage(resetError instanceof Error ? resetError.message : String(resetError));
-    } finally {
-      resetBusyRef.current = false;
-      setResetLoading(false);
-    }
-  };
-
-  const confirmOpenAIReset = () => {
-    const count = resetCredits?.availableCount;
-    if (resetCredits?.capability !== 'supported' || count === undefined || count <= 0) return;
-    const name = account.name || account.email || account.id;
-    showConfirmation({
-      title: '重置官方配额',
-      message: `将为“${name}”消耗 1 次官方 reset credit，当前可用 ${count} 次。`,
-      confirmText: '确认重置',
-      cancelText: '取消',
-      variant: 'danger',
-      onConfirm: resetOpenAI,
-    });
-  };
-
   return (
     <div className={styles.usageCell} ref={rootRef} aria-busy={loading}>
       {usage && (usage.local.requests > 0 || usage.local.totalTokens > 0) ? (
@@ -448,35 +370,27 @@ function UsageCell({
           {error}
         </div>
       ) : null}
-      <div className={styles.usageActions}>
-        {usage?.source === 'passive' ? <span className={styles.passiveUsage}>被动采样</span> : null}
-        <button
-          type="button"
-          onClick={() => {
-            void load('manual-active', true);
-            if (resetEligible) void queryResetCredits();
-          }}
-          disabled={loading || resetLoading}
-        >
-          <IconRefreshCw size={11} />
-          查询
-        </button>
-        {resetCredits?.capability === 'supported' ? (
-          <span>次数 {resetCredits.availableCount ?? '-'}</span>
-        ) : null}
-        {resetCredits?.capability === 'supported' && (resetCredits.availableCount ?? 0) > 0 ? (
-          <button
-            type="button"
-            className={styles.resetUsageAction}
-            onClick={confirmOpenAIReset}
-            disabled={resetLoading}
-          >
+      {resetEligible ? (
+        <OpenAIQuotaResetControls
+          account={account}
+          managerBase={managerBase}
+          managementKey={managementKey}
+          usageSource={usage?.source}
+          usageLoading={loading}
+          onQueryUsage={() => load('manual-active', true)}
+          onResetCompleted={() => load('manual-active', true)}
+        />
+      ) : (
+        <div className={styles.usageActions}>
+          {usage?.source === 'passive' ? (
+            <span className={styles.passiveUsage}>被动采样</span>
+          ) : null}
+          <button type="button" onClick={() => void load('manual-active', true)} disabled={loading}>
             <IconRefreshCw size={11} />
-            重置
+            查询
           </button>
-        ) : null}
-      </div>
-      {resetMessage ? <div className={styles.resetMessage}>{resetMessage}</div> : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -881,7 +795,7 @@ export function AccountsPage() {
         identity.operationId,
         identity.idempotencyKey
       );
-      if (usesSharedProviderSwitch(account)) {
+      if (usesSharedProviderSwitch(account, items)) {
         try {
           const syncResult = await proAccountsApi.sync(managerBase, managementKey);
           await Promise.all([loadAccounts(), loadBindingReviews()]);
@@ -980,7 +894,7 @@ export function AccountsPage() {
   };
 
   const requestToggleAccount = (account: ProAccount, nextEnabled: boolean) => {
-    if (!usesSharedProviderSwitch(account)) {
+    if (!usesSharedProviderSwitch(account, items)) {
       void toggleAccount(account, nextEnabled);
       return;
     }
@@ -1477,6 +1391,7 @@ export function AccountsPage() {
         open={batchAction !== null}
         action={batchAction}
         accounts={selectedAccounts}
+        providerAccounts={items}
         managerBase={managerBase}
         managementKey={managementKey}
         onClose={() => {
@@ -1486,7 +1401,7 @@ export function AccountsPage() {
         onCompleted={async (result) => {
           const sharedProviderBatch =
             (batchAction === 'enable' || batchAction === 'disable') &&
-            selectedAccounts.some(usesSharedProviderSwitch);
+            selectedAccounts.some((account) => usesSharedProviderSwitch(account, items));
           let syncFailed = false;
           if (sharedProviderBatch) {
             try {

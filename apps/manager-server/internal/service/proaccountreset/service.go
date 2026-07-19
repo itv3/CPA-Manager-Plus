@@ -104,7 +104,7 @@ func (s *Service) Reset(ctx context.Context, input ResetInput) (ResetResult, err
 	}
 	call, err := s.gateway.APICall(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.APICallRequest{
 		AuthIndex: reference.authIndex, Method: http.MethodPost, URL: resetConsumeURL,
-		Headers: usageHeaders(reference.accountID), Body: map[string]string{"redeem_request_id": operation.OperationID},
+		Headers: resetCreditsHeaders(reference.accountID), Body: map[string]string{"redeem_request_id": operation.OperationID},
 	})
 	if err != nil || call.StatusCode < 200 || call.StatusCode >= 300 {
 		operation = s.fail(ctx, operation, "reset_request_failed", "官方重置请求失败")
@@ -242,49 +242,91 @@ func resetCreditsHeaders(accountID string) map[string]string {
 	result := usageHeaders(accountID)
 	result["Accept"] = "application/json"
 	result["OpenAI-Beta"] = "codex-1"
+	result["OAI-Language"] = "zh-CN"
 	result["Originator"] = "Codex Desktop"
+	result["Sec-Fetch-Site"] = "none"
+	result["Sec-Fetch-Mode"] = "no-cors"
+	result["Sec-Fetch-Dest"] = "empty"
+	result["Priority"] = "u=4, i"
 	return result
 }
 
 func parseCredits(raw string) (CreditsResult, bool) {
 	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
 	decoder.UseNumber()
-	payload := map[string]any{}
+	var payload any
 	if err := decoder.Decode(&payload); err != nil {
 		return CreditsResult{}, false
 	}
-	rawCount, hasCount := firstValue(payload, "available_count", "availableCount")
-	rawCredits, hasCredits := payload["credits"]
+
+	var rawCount any
+	var hasCount bool
+	var rawCredits []any
+	var hasCredits bool
+	switch typed := payload.(type) {
+	case []any:
+		rawCredits = typed
+		hasCredits = true
+	case map[string]any:
+		rawCount, hasCount = firstValue(typed, "available_count", "availableCount")
+		rawCredits, hasCredits = firstCreditsList(typed, "credits", "rate_limit_reset_credits", "items", "data")
+	default:
+		return CreditsResult{}, false
+	}
 	if !hasCount && !hasCredits {
 		return CreditsResult{}, false
 	}
 	credits := make([]Credit, 0)
-	if items, ok := rawCredits.([]any); ok {
-		for _, rawItem := range items {
-			item, ok := rawItem.(map[string]any)
-			if !ok || stringValue(item, "reset_type", "resetType") != "codex_rate_limits" || stringValue(item, "status") != "available" {
-				continue
-			}
-			expiresAt := parseTimeMS(first(item, "expires_at", "expiresAt"))
-			if expiresAt <= 0 {
-				continue
-			}
-			credits = append(credits, Credit{ID: stringValue(item, "id"), ExpiresAtMS: expiresAt})
+	availableCreditCount := 0
+	for _, rawItem := range rawCredits {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
 		}
+		resetType := stringValue(item, "reset_type", "resetType")
+		if resetType != "" && !strings.EqualFold(resetType, "codex_rate_limits") {
+			continue
+		}
+		status := stringValue(item, "status")
+		if status != "" && !strings.EqualFold(status, "available") {
+			continue
+		}
+		availableCreditCount++
+		expiresAt := parseTimeMS(first(item, "expires_at", "expiresAt"))
+		if expiresAt <= 0 {
+			continue
+		}
+		credits = append(credits, Credit{ID: stringValue(item, "id"), ExpiresAtMS: expiresAt})
 	}
 	var count *int
 	if hasCount && rawCount != nil {
 		parsed, ok := intValue(rawCount)
-		if !ok || parsed < 0 {
+		if ok && parsed >= 0 {
+			count = &parsed
+		} else if !hasCredits {
 			return CreditsResult{}, false
 		}
-		count = &parsed
 	}
 	if count == nil && hasCredits {
-		creditCount := len(credits)
+		creditCount := availableCreditCount
 		count = &creditCount
 	}
 	return CreditsResult{Capability: CapabilitySupported, AvailableCount: count, Credits: credits}, true
+}
+
+func firstCreditsList(value map[string]any, keys ...string) ([]any, bool) {
+	for _, key := range keys {
+		item, ok := value[key]
+		if !ok || item == nil {
+			continue
+		}
+		items, ok := item.([]any)
+		if !ok {
+			continue
+		}
+		return items, true
+	}
+	return nil, false
 }
 
 func firstValue(value map[string]any, keys ...string) (any, bool) {
@@ -316,6 +358,9 @@ func intValue(value any) (int, bool) {
 		return int(typed), typed == float64(int(typed))
 	case int:
 		return typed, true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed, err == nil
 	default:
 		return 0, false
 	}

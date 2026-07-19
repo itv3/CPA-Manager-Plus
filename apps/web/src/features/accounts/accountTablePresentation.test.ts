@@ -63,16 +63,47 @@ describe('accountTablePresentation', () => {
     expect(resolveUsageUsedPercent({ usedPercent: 120 })).toBe(100);
   });
 
-  it('识别会联动同一 Provider 的兼容配置开关', () => {
-    expect(
-      usesSharedProviderSwitch({
+  it('仅将同一 Provider 下的多个 Key 识别为共享开关', () => {
+    const openCode = {
+      sourceType: 'config_openai_compatibility',
+      binding: {
         sourceType: 'config_openai_compatibility',
-      })
-    ).toBe(true);
+        sourceLocator: 'provider:0:key:0',
+      },
+    };
+    const nvidia = {
+      sourceType: 'config_openai_compatibility',
+      binding: {
+        sourceType: 'config_openai_compatibility',
+        sourceLocator: 'provider:1:key:0',
+      },
+    };
+    const openCodeSecondKey = {
+      sourceType: 'config_openai_compatibility',
+      binding: {
+        sourceType: 'config_openai_compatibility',
+        sourceLocator: 'provider:0:key:1',
+      },
+    };
+
+    expect(usesSharedProviderSwitch(openCode, [openCode, nvidia])).toBe(false);
+    expect(usesSharedProviderSwitch(nvidia, [openCode, nvidia])).toBe(false);
+    expect(usesSharedProviderSwitch(openCode, [openCode, openCodeSecondKey, nvidia])).toBe(true);
     expect(
-      usesSharedProviderSwitch({
-        sourceType: 'auth_file',
-      })
+      usesSharedProviderSwitch(
+        {
+          sourceType: 'config_openai_compatibility',
+        },
+        []
+      )
+    ).toBe(false);
+    expect(
+      usesSharedProviderSwitch(
+        {
+          sourceType: 'auth_file',
+        },
+        []
+      )
     ).toBe(false);
   });
 

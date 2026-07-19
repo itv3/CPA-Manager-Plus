@@ -4,10 +4,22 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 24px;
   width: 100%;
   min-width: 0;
   padding-bottom: calc(env(safe-area-inset-bottom) + #{$spacing-lg});
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'Roboto',
+    'Helvetica Neue',
+    'Arial',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    sans-serif;
 }
 
 .header {
@@ -19,7 +31,8 @@
 .title {
   margin: 0;
   color: var(--text-primary);
-  font-size: 22px;
+  font-size: 18px;
+  font-weight: 600;
   letter-spacing: 0;
 }
 
@@ -27,13 +40,13 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-primary) 92%, transparent);
-  box-shadow: 0 8px 24px -22px rgba(15, 23, 42, 0.45);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .filterGroup,
@@ -80,9 +93,10 @@
   position: relative;
   display: flex;
   align-items: center;
-  flex: 1 1 250px;
+  flex: 0 1 256px;
+  width: 256px;
   min-width: 220px;
-  max-width: 340px;
+  max-width: 256px;
   height: 40px;
   padding: 0 12px;
   border: 1px solid var(--app-input-border);
@@ -124,13 +138,13 @@
 
 .filterSelect,
 .filterSelectWide {
-  flex: 0 0 144px;
-  width: 144px;
+  flex: 0 0 160px;
+  width: 160px;
 }
 
 .filterSelectWide {
-  flex-basis: 164px;
-  width: 164px;
+  flex-basis: 160px;
+  width: 160px;
 }
 
 .autoRefreshControl {
@@ -157,7 +171,7 @@
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--surface-primary);
   box-shadow: 0 12px 30px -26px rgba(15, 23, 42, 0.5);
 }
@@ -201,7 +215,7 @@
   min-width: 1420px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .table th:nth-child(1),
@@ -251,7 +265,7 @@
 
 .table th,
 .table td {
-  padding: 11px 12px;
+  padding: 16px 12px;
   border-bottom: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: top;
@@ -261,8 +275,8 @@
   background: color-mix(in srgb, var(--surface-subtle) 84%, var(--surface-primary));
   color: var(--text-secondary);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-weight: 500;
+  letter-spacing: 0.025em;
   white-space: nowrap;
 }
 
@@ -291,6 +305,10 @@
 .usageCell {
   width: 224px;
   min-height: 0;
+}
+
+.openAIResetControls {
+  min-width: 0;
 }
 
 .usageWindows {
@@ -429,6 +447,7 @@
 .usageActions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 2px;
   color: var(--text-secondary);
@@ -465,6 +484,73 @@
   color: #d97706;
 }
 
+.spinningIcon {
+  animation: account-usage-spin 0.8s linear infinite;
+}
+
+@keyframes account-usage-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.resetCreditExpiries {
+  margin-top: 4px;
+}
+
+.resetCreditExpiryRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.resetCreditExpiryBadge,
+.resetCreditExpiryToggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface-subtle) 88%, var(--surface-primary));
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.resetCreditExpiryToggle {
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.resetCreditExpiryToggle:hover {
+  background: color-mix(in srgb, var(--surface-subtle) 65%, var(--text-tertiary));
+}
+
+.resetCreditExpiryDetails {
+  display: inline-grid;
+  gap: 2px;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--surface-primary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.resetCreditExpiryDetails span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .resetMessage {
   max-width: 236px;
   margin-top: 3px;
@@ -489,7 +575,8 @@
 .accountName {
   overflow: hidden;
   color: var(--text-primary);
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -643,7 +730,7 @@
   padding: 3px 8px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -739,16 +826,16 @@
   justify-content: center;
   flex-direction: column;
   gap: 2px;
-  width: 36px;
-  min-width: 36px;
-  min-height: 40px;
-  padding: 5px 3px;
+  width: 40px;
+  min-width: 40px;
+  min-height: 44px;
+  padding: 6px 3px;
   border: 0;
   border-radius: 7px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   line-height: 1.1;
 }

@@ -14,9 +14,33 @@ export interface AccountStatusPresentation {
   tone: AccountStatusTone;
 }
 
-export const usesSharedProviderSwitch = (account: Pick<ProAccount, 'sourceType' | 'binding'>) =>
-  (account.binding?.sourceType || account.sourceType).trim().toLowerCase() ===
-  'config_openai_compatibility';
+type ProviderSwitchAccount = {
+  sourceType: ProAccount['sourceType'];
+  binding?: Pick<NonNullable<ProAccount['binding']>, 'sourceType' | 'sourceLocator'>;
+};
+
+const openAICompatibilityLocator = (account: ProviderSwitchAccount) => {
+  const sourceType = (account.binding?.sourceType || account.sourceType).trim().toLowerCase();
+  if (sourceType !== 'config_openai_compatibility') return null;
+
+  const sourceLocator = account.binding?.sourceLocator?.trim() || '';
+  const match = /^provider:(\d+):key:(\d+|none)$/.exec(sourceLocator);
+  if (!match) return null;
+  return { provider: `provider:${match[1]}`, key: match[2] };
+};
+
+export const usesSharedProviderSwitch = (
+  account: ProviderSwitchAccount,
+  accounts: readonly ProviderSwitchAccount[]
+) => {
+  const locator = openAICompatibilityLocator(account);
+  if (!locator) return false;
+
+  return accounts.some((candidate) => {
+    const candidateLocator = openAICompatibilityLocator(candidate);
+    return candidateLocator?.provider === locator.provider && candidateLocator.key !== locator.key;
+  });
+};
 
 export const accountStatusPresentation = (
   account: Pick<ProAccount, 'enabled' | 'healthStatus'>
