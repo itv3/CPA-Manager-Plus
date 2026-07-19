@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -36,6 +37,62 @@ func newProbeTestClient(handler probeRoundTripFunc) *http.Client {
 
 func (s builtInStub) BuiltIn(context.Context, string, string) ([]string, error) {
 	return s.models, s.err
+}
+
+func TestOpenAIChatCompletionsEndpointAcceptsFullAndVersionedBaseURL(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "完整端点保持不变",
+			baseURL: "https://opencode.ai/zen/go/v1/chat/completions",
+			want:    "https://opencode.ai/zen/go/v1/chat/completions",
+		},
+		{
+			name:    "v1 基础地址追加相对端点",
+			baseURL: "https://opencode.ai/zen/go/v1",
+			want:    "https://opencode.ai/zen/go/v1/chat/completions",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			base, err := url.Parse(testCase.baseURL)
+			if err != nil {
+				t.Fatalf("解析测试地址：%v", err)
+			}
+			if got := endpoint(base, "/v1/chat/completions"); got != testCase.want {
+				t.Fatalf("Chat Completions 地址 = %q，期望 %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestOpenAIProbeAcceptsFullChatCompletionsEndpoint(t *testing.T) {
+	var chatCalls atomic.Int64
+	client := newProbeTestClient(func(r *http.Request) (int, string) {
+		if r.URL.Path == "/zen/go/v1/chat/completions" {
+			chatCalls.Add(1)
+			return http.StatusOK, `{"choices":[{"message":{"content":"OK"}}]}`
+		}
+		// 完整 Chat 端点无法推导模型列表和 Responses 兄弟端点，自动探测应继续回退到 Chat。
+		return http.StatusNotFound, ""
+	})
+
+	result, err := New(client).ProbeCandidate(context.Background(), Input{
+		Platform: "openai", AuthType: "api",
+		BaseURL: "https://opencode.ai/zen/go/v1/chat/completions", APIKey: "candidate-secret",
+		Model: "glm-5.2", AllowedModels: []string{"glm-5.2"},
+	})
+	if err != nil {
+		t.Fatalf("探测完整 Chat Completions 端点：%v", err)
+	}
+	if result.SelectedProtocol != "chat_completions" || result.SourceType != proaccountgateway.SourceOpenAICompatibility {
+		t.Fatalf("协议选择 = %#v", result)
+	}
+	if result.ChatCompletions.Status != CapabilitySupported || chatCalls.Load() != 1 {
+		t.Fatalf("Chat Completions 探测结果 = %#v，调用次数 = %d", result.ChatCompletions, chatCalls.Load())
+	}
 }
 
 func TestOpenAIProbePrefersResponsesAndRequiresFunctionCall(t *testing.T) {

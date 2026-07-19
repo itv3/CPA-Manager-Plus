@@ -37,6 +37,27 @@ interface TerminalLine {
 
 const TEST_PROMPT = 'hi';
 
+const TEST_ENDPOINTS: Record<string, string> = {
+  chat_completions: '/v1/chat/completions',
+  responses: '/v1/responses',
+  responses_compact: '/v1/responses/compact',
+};
+
+const protocolEndpointPath = (protocol?: string) =>
+  TEST_ENDPOINTS[(protocol || '').trim().toLowerCase()] ?? '';
+
+const expectedTestProtocol = (
+  platform?: string,
+  sourceType?: string,
+  mode?: ProAccountTestMode
+) => {
+  if (mode === 'compact') return 'responses_compact';
+  const normalizedPlatform = (platform || '').trim().toLowerCase();
+  if (normalizedPlatform === 'xai') return 'chat_completions';
+  if (normalizedPlatform !== 'openai') return '';
+  return sourceType === 'config_openai_compatibility' ? 'chat_completions' : 'responses';
+};
+
 const ERROR_MESSAGES: Record<string, string> = {
   authentication_failed: '认证失败，请检查账号凭证',
   model_not_allowed: '测试模型不在账号有效白名单内',
@@ -92,6 +113,9 @@ export function AccountTestModal({
   const isOpenAIAccount = account?.platform === 'openai';
   // Compact 仅供 Responses 账号使用，Chat Completions 账号仍展示常规测试模式。
   const supportsCompact = isOpenAIAccount && sourceType === 'config_codex_api_key';
+  const pendingEndpointPath = protocolEndpointPath(
+    expectedTestProtocol(account?.platform, sourceType, mode)
+  );
   const upstreamModel = useMemo(
     () => resolveMappedModel(model, account?.modelMapping ?? {}),
     [account?.modelMapping, model]
@@ -195,9 +219,16 @@ export function AccountTestModal({
       );
       const connectivity = response.connectivity;
       const resolvedModel = connectivity.mappedModel || upstreamModel || model.trim();
+      const verifiedEndpointPath = protocolEndpointPath(connectivity.protocol);
       const nextLines: TerminalLine[] = [
         ...startingLines,
-        { text: '已连接到 API', tone: 'green' },
+        {
+          text:
+            connectivity.success && verifiedEndpointPath
+              ? `已通过 ${verifiedEndpointPath} 验证`
+              : '已连接到 API',
+          tone: 'green',
+        },
         { text: `使用模型: ${resolvedModel}`, tone: 'cyan' },
         { text: `发送测试消息: "${TEST_PROMPT}"`, tone: 'muted' },
         { text: '', tone: 'default' },
@@ -373,7 +404,11 @@ export function AccountTestModal({
             {status === 'connecting' ? (
               <div className={styles.testConnecting}>
                 <IconRefreshCw size={15} />
-                <span>正在连接到 API...</span>
+                <span>
+                  {pendingEndpointPath
+                    ? `正在通过 ${pendingEndpointPath} 测试连接`
+                    : '正在连接到 API...'}
+                </span>
               </div>
             ) : null}
 

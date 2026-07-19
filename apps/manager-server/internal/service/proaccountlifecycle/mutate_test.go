@@ -112,6 +112,7 @@ type migrationGateway struct {
 	Gateway
 	accounts       map[string]proaccountgateway.AccountSnapshot
 	replacement    proaccountgateway.AccountSnapshot
+	createInput    proaccountgateway.CreateAPIInput
 	createErr      error
 	failEnableAuth string
 	deleteErrors   map[string]error
@@ -122,7 +123,12 @@ func (g *migrationGateway) EditableAccount(context.Context, string, string, stri
 	return proaccountgateway.EditableAccount{BaseURL: "https://old.example/v1", Headers: map[string]string{}}, nil
 }
 
-func (g *migrationGateway) CreateDisabledAPI(context.Context, string, string, proaccountgateway.CreateAPIInput) (proaccountgateway.AccountSnapshot, error) {
+func (g *migrationGateway) Capabilities(context.Context, string, string) (proaccountgateway.Capabilities, error) {
+	return proaccountgateway.Capabilities{AllowedModels: true}, nil
+}
+
+func (g *migrationGateway) CreateDisabledAPI(_ context.Context, _ string, _ string, input proaccountgateway.CreateAPIInput) (proaccountgateway.AccountSnapshot, error) {
+	g.createInput = input
 	g.accounts[g.replacement.AuthIndex] = g.replacement
 	g.calls = append(g.calls, "create:"+g.replacement.AuthIndex)
 	return g.replacement, g.createErr
@@ -215,6 +221,55 @@ func TestMigrateAPISwitchesWithoutDeletingOldCredentialEarly(t *testing.T) {
 	joined := strings.Join(gateway.calls, ",")
 	if !strings.Contains(joined, wantOrder) {
 		t.Fatalf("切换调用顺序 = %s，期望包含 %s", joined, wantOrder)
+	}
+}
+
+func TestCreateAPINormalizesFullChatEndpointBeforeCompatibilitySave(t *testing.T) {
+	stopErr := errors.New("停止在凭证保存阶段")
+	gateway := &migrationGateway{
+		accounts: map[string]proaccountgateway.AccountSnapshot{},
+		replacement: proaccountgateway.AccountSnapshot{
+			Platform: "openai", AuthType: "api", SourceType: proaccountgateway.SourceOpenAICompatibility,
+			SourceLocator: "provider:0:key:0", AuthIndex: "auth-new", Enabled: false,
+		},
+		createErr: stopErr, deleteErrors: map[string]error{},
+	}
+	service := New(nil, nil, recoverySetupStub{}, gateway,
+		migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}, &migrationOperations{})
+
+	_, err := service.CreateAPI(context.Background(), CreateAPIInput{
+		OperationID: "create-normalized", IdempotencyKey: "create-normalized-key",
+		Platform: "openai", BaseURL: "https://opencode.ai/zen/go/v1/chat/completions",
+		APIKey: "test-key", ProtocolMode: "chat_completions", TestModel: "glm-5.2",
+	})
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("创建流程错误 = %v，期望停在凭证保存阶段", err)
+	}
+	if gateway.createInput.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("创建保存地址 = %q", gateway.createInput.BaseURL)
+	}
+}
+
+func TestMigrateAPINormalizesFullChatEndpointBeforeCompatibilitySave(t *testing.T) {
+	service, _, gateway, _ := newMigrationService()
+	service.probe = migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}
+	gateway.replacement = proaccountgateway.AccountSnapshot{
+		Platform: "openai", AuthType: "api", SourceType: proaccountgateway.SourceOpenAICompatibility,
+		SourceLocator: "provider:1:key:0", AuthIndex: "auth-new", Enabled: false,
+	}
+	stopErr := errors.New("停止在替换凭证保存阶段")
+	gateway.createErr = stopErr
+	fullEndpoint := "https://opencode.ai/zen/go/v1/chat/completions"
+	input := migrationUpdateInput()
+	input.BaseURL = &fullEndpoint
+	input.ProtocolMode = "chat_completions"
+
+	_, err := service.Update(context.Background(), input)
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("编辑迁移错误 = %v，期望停在替换凭证保存阶段", err)
+	}
+	if gateway.createInput.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("编辑保存地址 = %q", gateway.createInput.BaseURL)
 	}
 }
 

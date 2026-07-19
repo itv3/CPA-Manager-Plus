@@ -242,9 +242,10 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	if err != nil {
 		return Result{Account: account, Operation: operation, Probe: &probe}, err
 	}
+	savedBaseURL := normalizeAPIBaseURLForSource(probe.SourceType, baseURL)
 	newSnapshot, err := s.gateway.CreateDisabledAPI(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.CreateAPIInput{
 		Platform: account.Platform, SourceType: probe.SourceType, Name: account.Name,
-		BaseURL: baseURL, APIKey: input.APIKey, ProxyURL: proxyURL, Headers: headers, AllowedModels: allowed, ModelMapping: mapping, CatalogModels: probe.Models,
+		BaseURL: savedBaseURL, APIKey: input.APIKey, ProxyURL: proxyURL, Headers: headers, AllowedModels: allowed, ModelMapping: mapping, CatalogModels: probe.Models,
 	})
 	if err != nil {
 		if newSnapshot.SourceType != "" && newSnapshot.SourceLocator != "" {

@@ -533,6 +533,12 @@ func validateBaseURL(raw string) (*url.URL, error) {
 func endpoint(base *url.URL, suffix string) string {
 	copyURL := *base
 	basePath := strings.TrimRight(copyURL.Path, "/")
+	// OpenAI 兼容账号允许直接填写完整 Chat Completions 地址。
+	// 此处仅对同一协议端点保持幂等，其他协议仍按原有 base URL 规则探测。
+	if suffix == "/v1/chat/completions" && strings.HasSuffix(basePath, "/chat/completions") {
+		copyURL.Path = basePath
+		return copyURL.String()
+	}
 	if strings.HasSuffix(basePath, "/v1") && strings.HasPrefix(suffix, "/v1/") {
 		suffix = strings.TrimPrefix(suffix, "/v1")
 	}

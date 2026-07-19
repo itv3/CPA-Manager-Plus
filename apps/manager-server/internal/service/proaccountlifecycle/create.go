@@ -64,9 +64,10 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 	if err != nil || !capabilities.AllowedModels {
 		return Result{Operation: operation, Probe: &probe}, ErrGatewayCapability
 	}
+	savedBaseURL := normalizeAPIBaseURLForSource(probe.SourceType, input.BaseURL)
 	snapshot, err := s.gateway.CreateDisabledAPI(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.CreateAPIInput{
 		Platform: input.Platform, SourceType: probe.SourceType, Name: input.Name,
-		BaseURL: input.BaseURL, APIKey: input.APIKey, ProxyURL: input.ProxyURL, Headers: input.Headers,
+		BaseURL: savedBaseURL, APIKey: input.APIKey, ProxyURL: input.ProxyURL, Headers: input.Headers,
 		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping, CatalogModels: probe.Models,
 	})
 	if err != nil {

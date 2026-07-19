@@ -74,6 +74,43 @@ const buttonByText = (renderer: ReactTestRenderer, text: string) => {
   return button;
 };
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
+const successfulConnectivity = (protocol: string) => ({
+  connectivity: {
+    success: true,
+    statusCode: 200,
+    protocol,
+    model: 'upstream-model',
+    responsePreview: 'OK',
+    retryable: false,
+  },
+});
+
+const renderModal = async (testAccount: ProAccount = account) => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <AccountTestModal
+        open
+        account={testAccount}
+        managerBase="https://manager.example"
+        managementKey="manager-key"
+        onClose={vi.fn()}
+        onTested={vi.fn()}
+      />
+    );
+    await Promise.resolve();
+  });
+  return renderer;
+};
+
 describe('账号连通性测试弹窗', () => {
   beforeEach(() => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
@@ -169,6 +206,7 @@ describe('账号连通性测试弹窗', () => {
     expect(treeText(renderer.root)).toContain('响应:');
     expect(treeText(renderer.root)).toContain('当前上游请求过于频繁');
     expect(treeText(renderer.root)).toContain('{"error":"rate limit"}');
+    expect(treeText(renderer.root)).not.toContain('已通过 ');
     expect(treeText(renderer.root)).toContain('重试');
     expect(onTested).toHaveBeenCalledTimes(1);
   });
@@ -200,6 +238,73 @@ describe('账号连通性测试弹窗', () => {
       await Promise.resolve();
     });
     expect(apiMocks.testAccount.mock.calls[0][4]).toBe('default');
+  });
+
+  it('Chat Completions 请求中显示测试路径，成功后显示已验证路径', async () => {
+    const pending = deferred<ReturnType<typeof successfulConnectivity>>();
+    apiMocks.testAccount.mockReturnValue(pending.promise);
+    const renderer = await renderModal();
+
+    await act(async () => {
+      buttonByText(renderer, '开始测试').props.onClick();
+      await Promise.resolve();
+    });
+    expect(treeText(renderer.root)).toContain('正在通过 /v1/chat/completions 测试连接');
+
+    await act(async () => {
+      pending.resolve(successfulConnectivity('chat_completions'));
+      await pending.promise;
+    });
+    expect(treeText(renderer.root)).toContain('已通过 /v1/chat/completions 验证');
+  });
+
+  it.each([
+    ['responses', 'default', '/v1/responses'],
+    ['responses_compact', 'compact', '/v1/responses/compact'],
+  ] as const)('%s 成功时显示对应验证路径', async (protocol, testMode, endpointPath) => {
+    apiMocks.testAccount.mockResolvedValue(successfulConnectivity(protocol));
+    const responsesAccount: ProAccount = {
+      ...account,
+      sourceType: 'config_codex_api_key',
+    };
+    const renderer = await renderModal(responsesAccount);
+    if (testMode === 'compact') {
+      act(() =>
+        renderer.root
+          .findByProps({ 'aria-label': '连通性测试模式' })
+          .props.onChange({ target: { value: 'compact' } })
+      );
+    }
+
+    await act(async () => {
+      buttonByText(renderer, '开始测试').props.onClick();
+      await Promise.resolve();
+    });
+    expect(treeText(renderer.root)).toContain(`已通过 ${endpointPath} 验证`);
+  });
+
+  it('未知来源和未知响应协议回退为通用连接文案', async () => {
+    const pending = deferred<ReturnType<typeof successfulConnectivity>>();
+    apiMocks.testAccount.mockReturnValue(pending.promise);
+    const unknownAccount: ProAccount = {
+      ...account,
+      platform: 'future-platform',
+      sourceType: 'future-source',
+    };
+    const renderer = await renderModal(unknownAccount);
+
+    await act(async () => {
+      buttonByText(renderer, '开始测试').props.onClick();
+      await Promise.resolve();
+    });
+    expect(treeText(renderer.root)).toContain('正在连接到 API...');
+
+    await act(async () => {
+      pending.resolve(successfulConnectivity('future_protocol'));
+      await pending.promise;
+    });
+    expect(treeText(renderer.root)).toContain('已连接到 API');
+    expect(treeText(renderer.root)).not.toContain('已通过 ');
   });
 
   it('成功时显示实际响应和完成状态', async () => {
