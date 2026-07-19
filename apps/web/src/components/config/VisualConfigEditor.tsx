@@ -30,6 +30,10 @@ import {
 } from '@/components/ui/icons';
 import { ConfigSection } from '@/components/config/ConfigSection';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import {
+  OfficialClientCompatibilityPanel,
+  type OfficialClientCompatibilityPanelProps,
+} from './OfficialClientCompatibilityPanel';
 import type {
   PayloadFilterRule,
   PayloadParamValidationErrorCode,
@@ -72,6 +76,7 @@ interface VisualConfigEditorProps {
   validationErrors?: VisualConfigValidationErrors;
   hasPayloadValidationErrors?: boolean;
   disabled?: boolean;
+  officialClientCompatibility?: OfficialClientCompatibilityPanelProps;
   onChange: (values: Partial<VisualConfigValues>) => void;
 }
 
@@ -179,6 +184,7 @@ export function VisualConfigEditor({
   validationErrors,
   hasPayloadValidationErrors = false,
   disabled = false,
+  officialClientCompatibility,
   onChange,
 }: VisualConfigEditorProps) {
   const { t } = useTranslation();
@@ -1500,6 +1506,12 @@ export function VisualConfigEditor({
                 onChange={(protocolModelListEnabled) => onChange({ protocolModelListEnabled })}
               />
             </SectionGrid>
+            {officialClientCompatibility ? (
+              <>
+                <Divider />
+                <OfficialClientCompatibilityPanel {...officialClientCompatibility} />
+              </>
+            ) : null}
           </ConfigSection>
         </div>
       </div>

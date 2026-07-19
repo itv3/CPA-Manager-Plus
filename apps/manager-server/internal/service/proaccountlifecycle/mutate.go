@@ -232,6 +232,28 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 		}
 		return Result{Account: account, Operation: operation, Probe: &probe}, err
 	}
+	compatibility := cloneOfficialClientCompatibility(editable.OfficialClientCompatibility)
+	if input.OfficialClientCompatibility != nil {
+		compatibility = cloneOfficialClientCompatibility(input.OfficialClientCompatibility)
+	}
+	if compatibility != nil {
+		capabilities, capabilityErr := s.gateway.Capabilities(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
+		if capabilityErr != nil {
+			return Result{Account: account, Operation: operation, Probe: &probe}, capabilityErr
+		}
+		if !capabilities.OfficialClientCompatibility {
+			operation = s.fail(ctx, operation, "official_client_compatibility_unsupported", "当前 Gateway 不支持 API Key 官方客户端兼容")
+			return Result{Account: account, Operation: operation, Probe: &probe}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
+		}
+		if !proaccountgateway.SupportsOfficialClientCompatibility(probe.SourceType) {
+			if compatibility.Enabled {
+				operation = s.fail(ctx, operation, "official_client_compatibility_unsupported", "目标协议不支持已启用的 API Key 官方客户端兼容")
+				return Result{Account: account, Operation: operation, Probe: &probe}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
+			}
+			// Chat Completions 等目标不接收兼容字段；显式关闭或旧关闭态可以安全省略。
+			compatibility = nil
+		}
+	}
 	contextValue := operation.Context
 	contextValue["newSourceType"] = probe.SourceType
 	contextValue["oldSourceType"] = oldSourceType
@@ -246,6 +268,7 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	newSnapshot, err := s.gateway.CreateDisabledAPI(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.CreateAPIInput{
 		Platform: account.Platform, SourceType: probe.SourceType, Name: account.Name,
 		BaseURL: savedBaseURL, APIKey: input.APIKey, ProxyURL: proxyURL, Headers: headers, AllowedModels: allowed, ModelMapping: mapping, CatalogModels: probe.Models,
+		OfficialClientCompatibility: compatibility,
 	})
 	if err != nil {
 		if newSnapshot.SourceType != "" && newSnapshot.SourceLocator != "" {
@@ -352,11 +375,34 @@ func (s *Service) updateRulesAndName(ctx context.Context, input UpdateInput, ope
 		operation = s.fail(ctx, operation, "gateway_credential_missing", "Gateway 侧凭证已不存在,请同步存量或删除该账号")
 		return Result{Account: account, Operation: operation}, ErrInvalidRequest
 	}
+	compatibilityApplied := false
+	previousCompatibility := proaccountgateway.OfficialClientCompatibility{}
+	restoreCompatibility := func(cause error) error {
+		if !compatibilityApplied {
+			return cause
+		}
+		compatibilityApplied = false
+		if restoreErr := s.gateway.RestoreOfficialClientCompatibility(ctx, setup.CPAUpstreamURL, setup.ManagementKey, sourceType, sourceLocator, previousCompatibility); restoreErr != nil {
+			return errors.Join(proaccountgateway.ErrOfficialClientCompatibilityStateUncertain, cause, restoreErr)
+		}
+		return cause
+	}
+	if input.OfficialClientCompatibility != nil {
+		previous, _, compatibilityErr := s.gateway.WriteAndVerifyOfficialClientCompatibility(
+			ctx, setup.CPAUpstreamURL, setup.ManagementKey, sourceType, sourceLocator, *input.OfficialClientCompatibility,
+		)
+		if compatibilityErr != nil {
+			operation = s.fail(ctx, operation, "official_client_compatibility_update_failed", "API Key 官方客户端兼容更新失败")
+			return Result{Account: account, Operation: operation}, compatibilityErr
+		}
+		previousCompatibility = previous
+		compatibilityApplied = true
+	}
 	// 仅代理变更走热更新:不重建凭证,auth_index 与绑定不漂移
 	if input.ProxyURL != nil {
 		if err := s.gateway.UpdateAccountProxy(ctx, setup.CPAUpstreamURL, setup.ManagementKey, sourceType, sourceLocator, *input.ProxyURL); err != nil {
 			operation = s.fail(ctx, operation, "proxy_update_failed", "账号代理更新失败")
-			return Result{Account: account, Operation: operation}, err
+			return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 		}
 	}
 	allowed := input.AllowedModels
@@ -372,18 +418,18 @@ func (s *Service) updateRulesAndName(ctx context.Context, input UpdateInput, ope
 	})
 	if err != nil {
 		operation = s.fail(ctx, operation, "model_rules_failed", "模型规则更新失败")
-		return Result{Account: account, Operation: operation}, err
+		return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 	}
 	updated, err := s.repository.UpdateModelRules(ctx, account.ID, input.ExpectedVersion, applied.AllowedModels, applied.ModelMapping, applied.ModelRuleVersion, s.now().UnixMilli())
 	if err != nil {
 		_ = s.gateway.RestoreModelRules(ctx, setup.CPAUpstreamURL, setup.ManagementKey, sourceType, sourceLocator, previous)
 		operation = s.fail(ctx, operation, "manager_rule_commit_failed", "Manager 提交失败，已恢复 Gateway 规则")
-		return Result{Account: account, Operation: operation}, err
+		return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 	}
 	account = updated
 	operation, err = s.transition(ctx, operation, model.ProOperationStateModelsConfigured, account.ID, operation.Context, "", "", "restore_model_rules")
 	if err != nil {
-		return Result{Account: account, Operation: operation}, err
+		return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 	}
 	if input.Name != nil && strings.TrimSpace(*input.Name) != account.Name {
 		discovery := model.ProAccountDiscovery{
@@ -396,11 +442,22 @@ func (s *Service) updateRulesAndName(ctx context.Context, input UpdateInput, ope
 		}
 		account, err = s.repository.RebindManaged(ctx, account.ID, account.Version, discovery, s.now().UnixMilli())
 		if err != nil {
-			return Result{Account: account, Operation: operation}, err
+			return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 		}
 	}
 	operation, err = s.transition(ctx, operation, model.ProOperationStateEnabled, account.ID, operation.Context, "", "", "")
-	return Result{Account: account, Operation: operation}, err
+	if err != nil {
+		return Result{Account: account, Operation: operation}, restoreCompatibility(err)
+	}
+	return Result{Account: account, Operation: operation}, nil
+}
+
+func cloneOfficialClientCompatibility(value *proaccountgateway.OfficialClientCompatibility) *proaccountgateway.OfficialClientCompatibility {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func (s *Service) Details(ctx context.Context, accountID string) (model.ProAccount, proaccountgateway.EditableAccount, error) {

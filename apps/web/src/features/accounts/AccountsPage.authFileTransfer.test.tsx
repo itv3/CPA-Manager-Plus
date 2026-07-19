@@ -316,6 +316,16 @@ describe('统一账号页 CPA 认证文件导入导出', () => {
     expect(String(confirmation.message)).toContain('当前筛选或勾选范围外账号的凭据');
   });
 
+  it('勾选账号后在更多操作中显示批量删除入口', async () => {
+    const page = await renderPage();
+    const selectAll = page.root.findByProps({ 'aria-label': '选择当前页全部账号' });
+
+    act(() => selectAll.props.onChange({ target: { checked: true } }));
+
+    const deleteButton = page.root.findByProps({ 'data-menu-key': 'delete-selected-accounts' });
+    expect(deleteButton.props.children).toBe('批量删除所选账号 (3)');
+  });
+
   it('上传返回异常状态但已有成功文件时以警告呈现状态', async () => {
     const page = await renderPage();
     authFileMocks.uploadFiles.mockResolvedValue({

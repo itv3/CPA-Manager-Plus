@@ -10,6 +10,7 @@ import {
 } from '@/services/api/proAccounts';
 import { createRequestIdentity, suggestedTestModel } from './accountFormUtils';
 import { usesSharedProviderSwitch } from './accountTablePresentation';
+import { executeAccountBatchChunks } from './accountBatchExecution';
 import styles from './AccountModals.module.scss';
 
 interface AccountBatchModalProps {
@@ -92,15 +93,17 @@ export function AccountBatchModal({
     setRunning(true);
     setError('');
     try {
-      const identity = createRequestIdentity(`account-batch-${action}`);
-      const response = await proAccountsApi.batch(
-        managerBase,
-        managementKey,
-        action,
-        items,
-        identity.operationId,
-        identity.idempotencyKey
-      );
+      const response = await executeAccountBatchChunks(action, items, async (chunk, chunkIndex) => {
+        const identity = createRequestIdentity(`account-batch-${action}-${chunkIndex}`);
+        return proAccountsApi.batch(
+          managerBase,
+          managementKey,
+          action,
+          chunk,
+          identity.operationId,
+          identity.idempotencyKey
+        );
+      });
       setResult(response);
       await onCompleted(response);
     } catch (batchError) {

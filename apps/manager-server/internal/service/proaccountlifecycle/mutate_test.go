@@ -30,8 +30,9 @@ func (r migrationAccountReader) Get(_ context.Context, id string) (model.ProAcco
 
 type migrationRepository struct {
 	AccountRepository
-	state     *migrationAccountState
-	rebindErr error
+	state          *migrationAccountState
+	rebindErr      error
+	updateRulesErr error
 }
 
 // Sync 在删除/替换后被 syncBindingsAfterMutation 调用,测试中无需刷新绑定
@@ -62,6 +63,21 @@ func (r *migrationRepository) RebindManaged(_ context.Context, accountID string,
 	}
 	r.state.account = updated
 	return updated, nil
+}
+
+func (r *migrationRepository) UpdateModelRules(_ context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error) {
+	if r.updateRulesErr != nil {
+		return model.ProAccount{}, r.updateRulesErr
+	}
+	if r.state.account.ID != accountID || r.state.account.Version != expectedVersion {
+		return model.ProAccount{}, ErrResourceVersionConflict
+	}
+	r.state.account.AllowedModels = append([]string(nil), allowedModels...)
+	r.state.account.ModelMapping = cloneMap(modelMapping)
+	r.state.account.ModelRuleVersion = modelRuleVersion
+	r.state.account.UpdatedAtMS = nowMS
+	r.state.account.Version++
+	return r.state.account, nil
 }
 
 type migrationProbe struct {
@@ -117,14 +133,53 @@ type migrationGateway struct {
 	failEnableAuth string
 	deleteErrors   map[string]error
 	calls          []string
+	editable       proaccountgateway.EditableAccount
+	capabilities   proaccountgateway.Capabilities
+	compatibility  proaccountgateway.OfficialClientCompatibility
+	restored       []proaccountgateway.OfficialClientCompatibility
+	proxyErr       error
 }
 
 func (g *migrationGateway) EditableAccount(context.Context, string, string, string, string) (proaccountgateway.EditableAccount, error) {
+	if g.editable.BaseURL != "" || g.editable.OfficialClientCompatibility != nil {
+		return g.editable, nil
+	}
 	return proaccountgateway.EditableAccount{BaseURL: "https://old.example/v1", Headers: map[string]string{}}, nil
 }
 
 func (g *migrationGateway) Capabilities(context.Context, string, string) (proaccountgateway.Capabilities, error) {
-	return proaccountgateway.Capabilities{AllowedModels: true}, nil
+	result := g.capabilities
+	result.AllowedModels = true
+	return result, nil
+}
+
+func (g *migrationGateway) WriteAndVerifyOfficialClientCompatibility(_ context.Context, _ string, _ string, _ string, _ string, desired proaccountgateway.OfficialClientCompatibility) (proaccountgateway.OfficialClientCompatibility, proaccountgateway.OfficialClientCompatibility, error) {
+	previous := g.compatibility
+	g.compatibility = desired
+	g.calls = append(g.calls, "compatibility:write")
+	return previous, desired, nil
+}
+
+func (g *migrationGateway) RestoreOfficialClientCompatibility(_ context.Context, _ string, _ string, _ string, _ string, previous proaccountgateway.OfficialClientCompatibility) error {
+	g.compatibility = previous
+	g.restored = append(g.restored, previous)
+	g.calls = append(g.calls, "compatibility:restore")
+	return nil
+}
+
+func (g *migrationGateway) UpdateAccountProxy(context.Context, string, string, string, string, string) error {
+	g.calls = append(g.calls, "proxy:update")
+	return g.proxyErr
+}
+
+func (g *migrationGateway) WriteAndVerifyModelRules(_ context.Context, _ string, _ string, _ string, _ string, desired proaccountgateway.ModelRules) (proaccountgateway.ModelRules, proaccountgateway.ModelRules, error) {
+	previous := proaccountgateway.ModelRules{AllowedModels: []string{}, ModelMapping: map[string]string{}, ModelRuleVersion: "rule-old"}
+	desired.ModelRuleVersion = "rule-new"
+	return previous, desired, nil
+}
+
+func (g *migrationGateway) RestoreModelRules(context.Context, string, string, string, string, proaccountgateway.ModelRules) error {
+	return nil
 }
 
 func (g *migrationGateway) CreateDisabledAPI(_ context.Context, _ string, _ string, input proaccountgateway.CreateAPIInput) (proaccountgateway.AccountSnapshot, error) {
@@ -250,6 +305,43 @@ func TestCreateAPINormalizesFullChatEndpointBeforeCompatibilitySave(t *testing.T
 	}
 }
 
+func TestCreateAPIRequiresOfficialClientCompatibilityCapability(t *testing.T) {
+	gateway := &migrationGateway{
+		accounts: map[string]proaccountgateway.AccountSnapshot{},
+		replacement: proaccountgateway.AccountSnapshot{
+			Platform: "openai", AuthType: "api", SourceType: proaccountgateway.SourceCodexAPIKey,
+			SourceLocator: "index:0", AuthIndex: "auth-new", Enabled: false,
+		},
+		deleteErrors: map[string]error{},
+	}
+	service := New(nil, nil, recoverySetupStub{}, gateway,
+		migrationProbe{sourceType: proaccountgateway.SourceCodexAPIKey}, &migrationOperations{})
+	input := CreateAPIInput{
+		OperationID: "create-compatibility", IdempotencyKey: "create-compatibility-key",
+		Platform: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "test-key", ProtocolMode: "responses",
+		OfficialClientCompatibility: &proaccountgateway.OfficialClientCompatibility{Enabled: true},
+	}
+
+	_, err := service.CreateAPI(context.Background(), input)
+	if !errors.Is(err, proaccountgateway.ErrOfficialClientCompatibilityUnsupported) {
+		t.Fatalf("旧 Gateway 创建错误 = %v", err)
+	}
+	if gateway.createInput.SourceType != "" {
+		t.Fatalf("能力不足时仍写入了凭据：%#v", gateway.createInput)
+	}
+
+	stopErr := errors.New("停止在凭据保存阶段")
+	gateway.capabilities.OfficialClientCompatibility = true
+	gateway.createErr = stopErr
+	_, err = service.CreateAPI(context.Background(), input)
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("新 Gateway 创建错误 = %v", err)
+	}
+	if gateway.createInput.OfficialClientCompatibility == nil || !gateway.createInput.OfficialClientCompatibility.Enabled {
+		t.Fatalf("创建请求未携带兼容配置：%#v", gateway.createInput)
+	}
+}
+
 func TestMigrateAPINormalizesFullChatEndpointBeforeCompatibilitySave(t *testing.T) {
 	service, _, gateway, _ := newMigrationService()
 	service.probe = migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}
@@ -270,6 +362,77 @@ func TestMigrateAPINormalizesFullChatEndpointBeforeCompatibilitySave(t *testing.
 	}
 	if gateway.createInput.BaseURL != "https://opencode.ai/zen/go/v1" {
 		t.Fatalf("编辑保存地址 = %q", gateway.createInput.BaseURL)
+	}
+}
+
+func TestMigrateAPIInheritsOfficialClientCompatibility(t *testing.T) {
+	service, _, gateway, _ := newMigrationService()
+	want := &proaccountgateway.OfficialClientCompatibility{
+		Enabled: true, Profile: "codex-desktop-0.145.0-alpha.18-v1",
+	}
+	gateway.capabilities.OfficialClientCompatibility = true
+	gateway.editable = proaccountgateway.EditableAccount{
+		BaseURL: "https://old.example/v1", Headers: map[string]string{},
+		OfficialClientCompatibilitySupported: true, OfficialClientCompatibility: want,
+	}
+
+	if _, err := service.Update(context.Background(), migrationUpdateInput()); err != nil {
+		t.Fatalf("迁移继承兼容配置：%v", err)
+	}
+	if gateway.createInput.OfficialClientCompatibility == nil || *gateway.createInput.OfficialClientCompatibility != *want {
+		t.Fatalf("替换凭证未继承兼容配置：%#v", gateway.createInput.OfficialClientCompatibility)
+	}
+}
+
+func TestMigrateAPIRejectsEnabledCompatibilityForChatCompletions(t *testing.T) {
+	service, _, gateway, _ := newMigrationService()
+	gateway.capabilities.OfficialClientCompatibility = true
+	gateway.editable = proaccountgateway.EditableAccount{
+		BaseURL: "https://old.example/v1", Headers: map[string]string{},
+		OfficialClientCompatibilitySupported: true,
+		OfficialClientCompatibility: &proaccountgateway.OfficialClientCompatibility{
+			Enabled: true, Profile: "codex-desktop-0.145.0-alpha.18-v1",
+		},
+	}
+	service.probe = migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}
+	input := migrationUpdateInput()
+	input.ProtocolMode = "chat_completions"
+
+	_, err := service.Update(context.Background(), input)
+	if !errors.Is(err, proaccountgateway.ErrOfficialClientCompatibilityUnsupported) {
+		t.Fatalf("迁移到 Chat Completions 错误 = %v", err)
+	}
+	if gateway.createInput.SourceType != "" {
+		t.Fatalf("不支持的迁移仍创建了替换凭证：%#v", gateway.createInput)
+	}
+}
+
+func TestHotUpdateRestoresCompatibilityWhenLaterStepFails(t *testing.T) {
+	service, _, gateway, _ := newMigrationService()
+	gateway.compatibility = proaccountgateway.OfficialClientCompatibility{
+		Enabled: false, Profile: "codex-desktop-0.145.0-alpha.18-v1",
+	}
+	gateway.proxyErr = errors.New("代理更新失败")
+	proxyURL := "http://proxy.example:8080"
+	input := UpdateInput{
+		MutationInput: MutationInput{
+			AccountID: "account-1", OperationID: "hot-update", IdempotencyKey: "hot-update-key", ExpectedVersion: 1,
+		},
+		ProxyURL: &proxyURL,
+		OfficialClientCompatibility: &proaccountgateway.OfficialClientCompatibility{
+			Enabled: true, Profile: "codex-desktop-0.145.0-alpha.18-v1",
+		},
+	}
+
+	_, err := service.Update(context.Background(), input)
+	if err == nil {
+		t.Fatal("代理失败时应返回错误")
+	}
+	if len(gateway.restored) != 1 || gateway.compatibility.Enabled {
+		t.Fatalf("兼容配置未恢复：current=%#v restored=%#v", gateway.compatibility, gateway.restored)
+	}
+	if strings.Join(gateway.calls, ",") != "compatibility:write,proxy:update,compatibility:restore" {
+		t.Fatalf("混合更新顺序 = %v", gateway.calls)
 	}
 }
 

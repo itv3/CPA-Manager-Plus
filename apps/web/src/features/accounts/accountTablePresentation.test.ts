@@ -4,6 +4,7 @@ import {
   accountPlanLabel,
   accountStatusPresentation,
   buildAccountUsageWindowRows,
+  formatAccountExpiryLabel,
   formatRelativeDate,
   formatResetCountdown,
   resolveUsageUsedPercent,
@@ -120,6 +121,14 @@ describe('accountTablePresentation', () => {
     expect(accountPlanLabel('ultra-lite', 'antigravity')).toBe('Ultra Lite');
     expect(accountPlanLabel('unknown', 'openai')).toBe('');
     expect(accountPlanLabel()).toBe('');
+  });
+
+  it('仅为有有效到期时间的付费套餐生成到期标签', () => {
+    const expiresAt = new Date(2026, 7, 17).getTime();
+    expect(formatAccountExpiryLabel(expiresAt, 'pro')).toBe('到期 2026-08-17');
+    expect(formatAccountExpiryLabel(expiresAt, 'free')).toBe('');
+    expect(formatAccountExpiryLabel(expiresAt, 'basic')).toBe('');
+    expect(formatAccountExpiryLabel(undefined, 'pro')).toBe('');
   });
 
   it('按能力和账号认证方式显示更多操作', () => {

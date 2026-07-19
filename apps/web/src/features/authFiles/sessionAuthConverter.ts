@@ -887,6 +887,14 @@ const convertSub2ApiAccountToCpaAuthJson = (
     normalizeTimestamp(account.expires_at),
     normalizeTimestamp(account.expiresAt)
   );
+  const subscriptionExpiresAt = firstNonEmpty(
+    normalizeTimestamp(credentials.subscription_expires_at),
+    normalizeTimestamp(credentials.subscriptionExpiresAt),
+    normalizeTimestamp(extra?.subscription_expires_at),
+    normalizeTimestamp(extra?.subscriptionExpiresAt),
+    normalizeTimestamp(account.subscription_expires_at),
+    normalizeTimestamp(account.subscriptionExpiresAt)
+  );
   const lastRefresh = firstNonEmpty(
     normalizeTimestamp(exportedAt),
     normalizeTimestamp(account.exported_at),
@@ -915,6 +923,7 @@ const convertSub2ApiAccountToCpaAuthJson = (
     access_token: accessToken,
     refresh_token: firstNonEmptyString(credentials.refresh_token, credentials.refreshToken),
     client_id: firstNonEmptyString(credentials.client_id, credentials.clientId),
+    subscription_expires_at: subscriptionExpiresAt,
     last_refresh: lastRefresh,
     expired: expiresAt,
     disabled,

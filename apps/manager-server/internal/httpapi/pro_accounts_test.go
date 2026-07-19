@@ -626,6 +626,7 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 		case "/v0/management/auth-files":
 			w.Header().Set("X-CPA-SUPPORT-CREDENTIAL-DRAFT", "true")
 			w.Header().Set("X-CPA-SUPPORT-ALLOWED-MODELS", "true")
+			w.Header().Set("X-CPA-SUPPORT-OFFICIAL-CLIENT-COMPATIBILITY", "true")
 			_, _ = w.Write([]byte(`{"files":[]}`))
 		case "/v0/management/gemini-api-key":
 			_, _ = w.Write([]byte(`{"gemini-api-key":[{"api-key":"secret-not-persisted","base-url":"https://gemini.example/v1beta","auth-index":"auth-gemini","allowed-models":["gemini-test"],"model-rule-version":"rule-gemini"}]}`))
@@ -648,7 +649,7 @@ func TestProAccountCapabilitiesAndConfigAccountSync(t *testing.T) {
 
 	capabilitiesRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts/capabilities", "", testutil.AdminKey)
 	testutil.RequireStatus(t, capabilitiesRR, http.StatusOK)
-	if !strings.Contains(capabilitiesRR.Body.String(), `"credentialDraft":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"allowedModels":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"version":"1.0.5"`) {
+	if !strings.Contains(capabilitiesRR.Body.String(), `"credentialDraft":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"allowedModels":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"officialClientCompatibility":true`) || !strings.Contains(capabilitiesRR.Body.String(), `"version":"1.0.5"`) {
 		t.Fatalf("capabilities body = %s", capabilitiesRR.Body.String())
 	}
 	syncRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/sync", `{}`, testutil.AdminKey)
@@ -784,6 +785,8 @@ func TestProAccountModelRulesAndConnectivityUseSameAllowlist(t *testing.T) {
 }
 
 func TestProAccountsSyncAndList(t *testing.T) {
+	var authFilesMu sync.Mutex
+	authFilesPresent := true
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v0/management/auth-files" {
 			http.NotFound(w, r)
@@ -794,7 +797,14 @@ func TestProAccountsSyncAndList(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"files":[{"name":"codex-alpha.json","auth_index":"auth-alpha","provider":"codex","account":"alpha@example.com","account_id":"account-alpha","status":"active"}]}`))
+		authFilesMu.Lock()
+		present := authFilesPresent
+		authFilesMu.Unlock()
+		if present {
+			_, _ = w.Write([]byte(`{"files":[{"name":"codex-alpha.json","auth_index":"auth-alpha","provider":"codex","account":"alpha@example.com","account_id":"account-alpha","status":"active"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"files":[]}`))
 	}))
 	t.Cleanup(upstream.Close)
 	handler := newTestHandler(t, upstream.URL, true)
@@ -831,6 +841,28 @@ func TestProAccountsSyncAndList(t *testing.T) {
 	}
 	if listResult.Items[0].Binding == nil || listResult.Items[0].Binding.AttributionQuality != "exact" {
 		t.Fatalf("binding attribution = %#v", listResult.Items[0].Binding)
+	}
+
+	authFilesMu.Lock()
+	authFilesPresent = false
+	authFilesMu.Unlock()
+	removeRR := testutil.Request(t, handler, http.MethodPost, "/v0/pro/accounts/sync", `{}`, testutil.AdminKey)
+	testutil.RequireStatus(t, removeRR, http.StatusOK)
+	var removeResult struct {
+		Removed int `json:"removed"`
+	}
+	testutil.DecodeJSON(t, removeRR, &removeResult)
+	if removeResult.Removed != 1 {
+		t.Fatalf("remove result = %s", removeRR.Body.String())
+	}
+	listAfterRemoveRR := testutil.Request(t, handler, http.MethodGet, "/v0/pro/accounts", "", testutil.AdminKey)
+	testutil.RequireStatus(t, listAfterRemoveRR, http.StatusOK)
+	var listAfterRemove struct {
+		Total int64 `json:"total"`
+	}
+	testutil.DecodeJSON(t, listAfterRemoveRR, &listAfterRemove)
+	if listAfterRemove.Total != 0 {
+		t.Fatalf("missing auth file account was not removed: %s", listAfterRemoveRR.Body.String())
 	}
 }
 

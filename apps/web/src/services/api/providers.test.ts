@@ -192,6 +192,51 @@ describe('providersApi auth-index preservation', () => {
     ]);
   });
 
+  it('preserves unknown official client compatibility blocks in legacy full-table saves', async () => {
+    const compatibility = {
+      enabled: true,
+      profile: 'future-profile-v2',
+      'tls-profile': '',
+      future: { mode: 'keep' },
+    };
+    mocks.get.mockResolvedValueOnce({
+      'codex-api-key': [
+        {
+          'auth-index': 'codex-auth',
+          'base-url': 'https://api.openai.com/v1',
+          'official-client-compatibility': compatibility,
+        },
+      ],
+    });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveCodexConfigs([
+      { apiKey: '', authIndex: 'codex-auth', baseUrl: 'https://api.openai.com/v1' },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/codex-api-key', [
+      expect.objectContaining({ 'official-client-compatibility': compatibility }),
+    ]);
+
+    mocks.get.mockResolvedValueOnce({
+      'claude-api-key': [
+        {
+          'auth-index': 'claude-auth',
+          'base-url': 'https://api.anthropic.com',
+          'official-client-compatibility': compatibility,
+        },
+      ],
+    });
+
+    await providersApi.saveClaudeConfigs([
+      { apiKey: '', authIndex: 'claude-auth', baseUrl: 'https://api.anthropic.com' },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/claude-api-key', [
+      expect.objectContaining({ 'official-client-compatibility': compatibility }),
+    ]);
+  });
+
   it('serializes OpenAI auth-index entries and preserves raw provider fields', async () => {
     mocks.get.mockResolvedValue({
       'openai-compatibility': [

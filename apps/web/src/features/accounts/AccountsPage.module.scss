@@ -69,7 +69,9 @@
 
 .toolbarMoreTrigger {
   min-width: 122px;
-  border-radius: var(--app-radius-md) !important;
+  border-radius: 12px !important;
+  font-size: 14px;
+  font-weight: 500;
   transform: none !important;
 }
 
@@ -97,12 +99,14 @@
   width: 256px;
   min-width: 220px;
   max-width: 256px;
-  height: 40px;
-  padding: 0 12px;
+  height: 42px;
+  padding: 0 16px;
   border: 1px solid var(--app-input-border);
-  border-radius: var(--app-radius-sm);
+  border-radius: 12px;
   background: var(--app-input-bg);
   color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
   transition:
     border-color $transition-fast,
     box-shadow $transition-fast,
@@ -130,6 +134,9 @@
   background: transparent;
   color: var(--text-primary);
   font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
 }
 
 .searchField input::placeholder {
@@ -147,13 +154,23 @@
   width: 160px;
 }
 
+.filterSelect > button,
+.filterSelectWide > button {
+  height: 42px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
 .autoRefreshControl {
   display: flex;
   align-items: center;
-  height: 40px;
+  height: 42px;
   padding: 0 12px;
   border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
+  border-radius: 12px;
   background: var(--app-surface-muted);
   white-space: nowrap;
 }
@@ -164,7 +181,7 @@
 
 .autoRefreshControl :global(label > span:last-child) {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .panel {
@@ -182,9 +199,10 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 52px;
-  padding: 9px 12px;
+  padding: 12px;
   border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--surface-subtle) 72%, var(--surface-primary));
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, #14b8a6 10%, var(--app-surface));
 }
 
 .bulkSummary {
@@ -196,7 +214,9 @@
 
 .bulkSummary strong {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .bulkSummary span {
@@ -220,7 +240,7 @@
 
 .table th:nth-child(1),
 .table td:nth-child(1) {
-  width: 42px;
+  width: 52px;
 }
 
 .table th:nth-child(2),
@@ -265,7 +285,7 @@
 
 .table th,
 .table td {
-  padding: 16px 12px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: top;
@@ -274,9 +294,10 @@
 .table th {
   background: color-mix(in srgb, var(--surface-subtle) 84%, var(--surface-primary));
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
-  letter-spacing: 0.025em;
+  letter-spacing: 0.05em;
+  line-height: 20px;
   white-space: nowrap;
 }
 
@@ -290,7 +311,7 @@
 
 .selectionColumn {
   padding-right: 4px !important;
-  padding-left: 12px !important;
+  padding-left: 20px !important;
   text-align: center !important;
   vertical-align: middle !important;
 }
@@ -440,7 +461,7 @@
 .localUsage > span {
   padding: 2px 6px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--surface-subtle) 86%, var(--surface-primary));
+  background: var(--surface-subtle-strong);
   white-space: nowrap;
 }
 
@@ -720,17 +741,28 @@
 .sourceTypeLabel {
   padding-left: 3px;
   color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.subscriptionExpiry {
+  padding-left: 3px;
+  color: var(--text-tertiary);
   font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
 }
 
 .statusBadge {
   display: inline-flex;
   align-items: center;
-  min-height: 23px;
-  padding: 3px 8px;
+  min-height: 24px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
   white-space: nowrap;
 }
 
@@ -807,7 +839,8 @@
 .activityLine {
   margin-bottom: 4px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 20px;
   white-space: nowrap;
 }
 
@@ -828,16 +861,16 @@
   gap: 2px;
   width: 40px;
   min-width: 40px;
-  min-height: 44px;
-  padding: 6px 3px;
+  min-height: 46px;
+  padding: 4px 3px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.1;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
 }
 
 .rowActionButton:hover,
@@ -848,7 +881,7 @@
 
 .moreActionTrigger {
   border: 0 !important;
-  border-radius: 7px !important;
+  border-radius: 8px !important;
   background: transparent !important;
 }
 

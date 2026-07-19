@@ -18,17 +18,21 @@ const (
 )
 
 var (
-	ErrUnsupportedSource    = errors.New("unsupported gateway account source")
-	ErrInvalidSourceLocator = errors.New("invalid gateway account source locator")
-	ErrInvalidModelRule     = errors.New("invalid account model rule")
-	ErrRuleReadbackMismatch = errors.New("gateway model rule readback mismatch")
+	ErrUnsupportedSource                           = errors.New("unsupported gateway account source")
+	ErrInvalidSourceLocator                        = errors.New("invalid gateway account source locator")
+	ErrInvalidModelRule                            = errors.New("invalid account model rule")
+	ErrRuleReadbackMismatch                        = errors.New("gateway model rule readback mismatch")
+	ErrOfficialClientCompatibilityUnsupported      = errors.New("official client compatibility is unsupported")
+	ErrOfficialClientCompatibilityReadbackMismatch = errors.New("gateway official client compatibility readback mismatch")
+	ErrOfficialClientCompatibilityStateUncertain   = errors.New("gateway official client compatibility state is uncertain")
 )
 
 type Capabilities struct {
-	CredentialDraft         bool `json:"credentialDraft"`
-	CredentialRefresh       bool `json:"credentialRefresh"`
-	TargetedReauthorization bool `json:"targetedReauthorization"`
-	AllowedModels           bool `json:"allowedModels"`
+	CredentialDraft             bool `json:"credentialDraft"`
+	CredentialRefresh           bool `json:"credentialRefresh"`
+	TargetedReauthorization     bool `json:"targetedReauthorization"`
+	AllowedModels               bool `json:"allowedModels"`
+	OfficialClientCompatibility bool `json:"officialClientCompatibility"`
 }
 
 type AuthCapability struct {
@@ -127,16 +131,17 @@ type ConnectivityResult struct {
 }
 
 type CreateAPIInput struct {
-	Platform      string
-	SourceType    string
-	Name          string
-	BaseURL       string
-	APIKey        string
-	ProxyURL      string
-	Headers       map[string]string
-	AllowedModels []string
-	ModelMapping  map[string]string
-	CatalogModels []string
+	Platform                    string
+	SourceType                  string
+	Name                        string
+	BaseURL                     string
+	APIKey                      string
+	ProxyURL                    string
+	Headers                     map[string]string
+	AllowedModels               []string
+	ModelMapping                map[string]string
+	CatalogModels               []string
+	OfficialClientCompatibility *OfficialClientCompatibility
 }
 
 type UpdateAPIInput struct {
@@ -147,10 +152,20 @@ type UpdateAPIInput struct {
 }
 
 type EditableAccount struct {
-	BaseURL        string            `json:"baseUrl,omitempty"`
-	ProxyURL       string            `json:"proxyUrl,omitempty"`
-	Headers        map[string]string `json:"headers"`
-	SharedProvider bool              `json:"sharedProvider"`
+	BaseURL                              string                       `json:"baseUrl,omitempty"`
+	ProxyURL                             string                       `json:"proxyUrl,omitempty"`
+	Headers                              map[string]string            `json:"headers"`
+	SharedProvider                       bool                         `json:"sharedProvider"`
+	OfficialClientCompatibilitySupported bool                         `json:"officialClientCompatibilitySupported"`
+	OfficialClientCompatibility          *OfficialClientCompatibility `json:"officialClientCompatibility,omitempty"`
+}
+
+// OfficialClientCompatibility 是 Manager 对 Gateway 实时兼容配置的公开投影。
+// 该结构不会写入 Manager 数据库，Profile 和 TLS 策略始终以 Gateway 回读结果为准。
+type OfficialClientCompatibility struct {
+	Enabled    bool   `json:"enabled"`
+	Profile    string `json:"profile"`
+	TLSProfile string `json:"tlsProfile"`
 }
 
 type OAuthStartResult struct {

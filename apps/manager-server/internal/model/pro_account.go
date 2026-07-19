@@ -161,6 +161,7 @@ type ProAccountSyncResult struct {
 	Discovered   int                    `json:"discovered"`
 	Created      int                    `json:"created"`
 	Updated      int                    `json:"updated"`
+	Removed      int                    `json:"removed"`
 	Pending      int                    `json:"pending"`
 	Conflicts    int                    `json:"conflicts"`
 	Items        []ProAccountSyncItem   `json:"items"`

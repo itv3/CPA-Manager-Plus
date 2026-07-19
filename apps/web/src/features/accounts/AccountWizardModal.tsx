@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
+import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
   IconBot,
   IconCheck,
@@ -135,6 +136,8 @@ export function AccountWizardModal({
   const [catalogModels, setCatalogModels] = useState<string[]>([]);
   const [mappingLines, setMappingLines] = useState('');
   const [saveDisabled, setSaveDisabled] = useState(false);
+  const [officialClientCompatibilityEnabled, setOfficialClientCompatibilityEnabled] =
+    useState(false);
   const [probeResult, setProbeResult] = useState<ProAccountProbeResult | null>(null);
   const [oauthOperationId, setOAuthOperationId] = useState('');
   const [oauthWaiting, setOAuthWaiting] = useState(false);
@@ -176,6 +179,7 @@ export function AccountWizardModal({
     setLocation('us-central1');
     resetModelState();
     setSaveDisabled(false);
+    setOfficialClientCompatibilityEnabled(false);
     setProbeResult(null);
     setOAuthOperationId('');
     setOAuthWaiting(false);
@@ -224,6 +228,19 @@ export function AccountWizardModal({
     resetModelState();
     setError('');
   }, [resetModelState]);
+
+  const officialClientCompatibilityEligible =
+    authType === 'api' &&
+    (platform === 'anthropic' ||
+      (platform === 'openai' &&
+        (protocolMode === 'responses' || probeResult?.sourceType === 'config_codex_api_key')));
+  const officialClientCompatibilitySupported = Boolean(capabilities?.officialClientCompatibility);
+
+  useEffect(() => {
+    if (!officialClientCompatibilityEligible) {
+      setOfficialClientCompatibilityEnabled(false);
+    }
+  }, [officialClientCompatibilityEligible]);
 
   const selectPlatform = (value: AccountPlatform) => {
     if (configurationLocked) return;
@@ -743,6 +760,9 @@ export function AccountWizardModal({
           headers,
           ...resolvedRules,
           saveDisabledOnTestFailure: true,
+          officialClientCompatibility: officialClientCompatibilityEnabled
+            ? { enabled: true, profile: '', tlsProfile: '' }
+            : undefined,
           // 与 sub2api 一致:保存即启用,连通性由列表中的"测试"入口单独验证
           skipTest: true,
         });
@@ -1083,6 +1103,34 @@ export function AccountWizardModal({
                           </label>
                         </div>
                       </details>
+                    ) : null}
+                    {officialClientCompatibilityEligible ? (
+                      <div
+                        className={`${styles.compatibilitySection} ${styles.fieldFull}`}
+                        data-testid="official-client-compatibility"
+                      >
+                        <div className={styles.compatibilityHeader}>
+                          <div>
+                            <span className={styles.fieldLabel}>官方客户端兼容</span>
+                            <span className={styles.fieldHint}>
+                              兼容 Profile 由 Gateway 自动选择并保存。
+                            </span>
+                          </div>
+                          <ToggleSwitch
+                            checked={officialClientCompatibilityEnabled}
+                            onChange={setOfficialClientCompatibilityEnabled}
+                            ariaLabel="官方客户端兼容"
+                            disabled={
+                              busy || syncingModels || !officialClientCompatibilitySupported
+                            }
+                          />
+                        </div>
+                        {!officialClientCompatibilitySupported ? (
+                          <span className={styles.fieldHint}>
+                            当前 Gateway 不支持 API Key 官方客户端兼容。
+                          </span>
+                        ) : null}
+                      </div>
                     ) : null}
                   </>
                 ) : null}

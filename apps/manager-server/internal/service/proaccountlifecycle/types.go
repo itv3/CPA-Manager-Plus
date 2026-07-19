@@ -12,20 +12,21 @@ import (
 )
 
 type CreateAPIInput struct {
-	OperationID    string
-	IdempotencyKey string
-	Platform       string
-	Name           string
-	BaseURL        string
-	APIKey         string
-	ProxyURL       string
-	ProtocolMode   string
-	Headers        map[string]string
-	AllowedModels  []string
-	ModelMapping   map[string]string
-	TestModel      string
-	SaveDisabled   bool
-	DraftOnly      bool
+	OperationID                 string
+	IdempotencyKey              string
+	Platform                    string
+	Name                        string
+	BaseURL                     string
+	APIKey                      string
+	ProxyURL                    string
+	ProtocolMode                string
+	Headers                     map[string]string
+	AllowedModels               []string
+	ModelMapping                map[string]string
+	TestModel                   string
+	SaveDisabled                bool
+	DraftOnly                   bool
+	OfficialClientCompatibility *proaccountgateway.OfficialClientCompatibility
 	// SkipTest 为 true 时保存后直接启用,不执行连通性测试(与 sub2api 创建行为一致)
 	SkipTest bool
 }
@@ -62,15 +63,16 @@ type MutationInput struct {
 
 type UpdateInput struct {
 	MutationInput
-	Name          *string
-	BaseURL       *string
-	APIKey        string
-	ProxyURL      *string
-	ProtocolMode  string
-	Headers       *map[string]string
-	AllowedModels []string
-	ModelMapping  map[string]string
-	TestModel     string
+	Name                        *string
+	BaseURL                     *string
+	APIKey                      string
+	ProxyURL                    *string
+	ProtocolMode                string
+	Headers                     *map[string]string
+	AllowedModels               []string
+	ModelMapping                map[string]string
+	TestModel                   string
+	OfficialClientCompatibility *proaccountgateway.OfficialClientCompatibility
 }
 
 type OAuthStartInput struct {
@@ -133,6 +135,8 @@ type Gateway interface {
 	FindAccountByAuthIndex(ctx context.Context, baseURL string, managementKey string, authIndex string) (proaccountgateway.AccountSnapshot, error)
 	WriteAndVerifyModelRules(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, desired proaccountgateway.ModelRules) (proaccountgateway.ModelRules, proaccountgateway.ModelRules, error)
 	RestoreModelRules(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, previous proaccountgateway.ModelRules) error
+	WriteAndVerifyOfficialClientCompatibility(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, desired proaccountgateway.OfficialClientCompatibility) (proaccountgateway.OfficialClientCompatibility, proaccountgateway.OfficialClientCompatibility, error)
+	RestoreOfficialClientCompatibility(ctx context.Context, baseURL string, managementKey string, sourceType string, sourceLocator string, previous proaccountgateway.OfficialClientCompatibility) error
 	TestAccount(ctx context.Context, gatewayBaseURL string, managementKey string, account proaccountgateway.AccountReference, modelName string) (proaccountgateway.ConnectivityResult, error)
 	StartOAuth(ctx context.Context, baseURL string, managementKey string, platform string) (proaccountgateway.OAuthStartResult, error)
 	OAuthStatus(ctx context.Context, baseURL string, managementKey string, state string) (proaccountgateway.OAuthStatusResult, error)

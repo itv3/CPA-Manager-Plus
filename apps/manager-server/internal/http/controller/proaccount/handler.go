@@ -318,9 +318,10 @@ func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response.JSON(w, http.StatusOK, map[string]any{
-		"credentialDraft": capabilities.CredentialDraft,
-		"allowedModels":   capabilities.AllowedModels,
-		"stores":          map[string]string{"file": "supported", "object": "supported", "postgresql": "supported", "git": "supported"},
+		"credentialDraft":             capabilities.CredentialDraft,
+		"allowedModels":               capabilities.AllowedModels,
+		"officialClientCompatibility": capabilities.OfficialClientCompatibility,
+		"stores":                      map[string]string{"file": "supported", "object": "supported", "postgresql": "supported", "git": "supported"},
 		"accountActions": map[string]any{
 			"refreshToken": refreshTokenCapability,
 			"reauthorize":  reauthorizeCapability,
@@ -768,22 +769,23 @@ func (h *Handler) handleGetItem(w http.ResponseWriter, r *http.Request, id strin
 
 func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		OperationID    string            `json:"operation_id"`
-		IdempotencyKey string            `json:"idempotency_key"`
-		Platform       string            `json:"platform"`
-		AuthType       string            `json:"auth_type"`
-		Name           string            `json:"name"`
-		BaseURL        string            `json:"base_url"`
-		APIKey         string            `json:"api_key"`
-		ProxyURL       string            `json:"proxy_url"`
-		ProtocolMode   string            `json:"protocol_mode"`
-		Headers        map[string]string `json:"headers"`
-		AllowedModels  []string          `json:"allowed_models"`
-		ModelMapping   map[string]string `json:"model_mapping"`
-		TestModel      string            `json:"test_model"`
-		SaveDisabled   bool              `json:"save_disabled_on_test_failure"`
-		DraftOnly      bool              `json:"draft_only"`
-		SkipTest       bool              `json:"skip_test"`
+		OperationID                 string                              `json:"operation_id"`
+		IdempotencyKey              string                              `json:"idempotency_key"`
+		Platform                    string                              `json:"platform"`
+		AuthType                    string                              `json:"auth_type"`
+		Name                        string                              `json:"name"`
+		BaseURL                     string                              `json:"base_url"`
+		APIKey                      string                              `json:"api_key"`
+		ProxyURL                    string                              `json:"proxy_url"`
+		ProtocolMode                string                              `json:"protocol_mode"`
+		Headers                     map[string]string                   `json:"headers"`
+		AllowedModels               []string                            `json:"allowed_models"`
+		ModelMapping                map[string]string                   `json:"model_mapping"`
+		TestModel                   string                              `json:"test_model"`
+		SaveDisabled                bool                                `json:"save_disabled_on_test_failure"`
+		DraftOnly                   bool                                `json:"draft_only"`
+		SkipTest                    bool                                `json:"skip_test"`
+		OfficialClientCompatibility *officialClientCompatibilityRequest `json:"official_client_compatibility"`
 	}
 	if err := decodeBody(w, r, &request); err != nil || (request.AuthType != "" && request.AuthType != "api") {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "API 账号添加请求无效", false, nil)
@@ -795,7 +797,7 @@ func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
 		ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Headers: request.Headers,
 		AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping,
 		TestModel: request.TestModel, SaveDisabled: request.SaveDisabled, DraftOnly: request.DraftOnly,
-		SkipTest: request.SkipTest,
+		SkipTest: request.SkipTest, OfficialClientCompatibility: request.OfficialClientCompatibility.gatewayValue(),
 	})
 	if err != nil {
 		h.writeLifecycleError(w, err, result)
@@ -856,19 +858,20 @@ func (h *Handler) handleCreateVertex(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accountID string) {
 	var request struct {
-		OperationID     string             `json:"operation_id"`
-		IdempotencyKey  string             `json:"idempotency_key"`
-		ExpectedVersion int64              `json:"expected_version"`
-		Enabled         *bool              `json:"enabled"`
-		Name            *string            `json:"name"`
-		BaseURL         *string            `json:"base_url"`
-		APIKey          string             `json:"api_key"`
-		ProxyURL        *string            `json:"proxy_url"`
-		ProtocolMode    string             `json:"protocol_mode"`
-		Headers         *map[string]string `json:"headers"`
-		AllowedModels   []string           `json:"allowed_models"`
-		ModelMapping    map[string]string  `json:"model_mapping"`
-		TestModel       string             `json:"test_model"`
+		OperationID                 string                              `json:"operation_id"`
+		IdempotencyKey              string                              `json:"idempotency_key"`
+		ExpectedVersion             int64                               `json:"expected_version"`
+		Enabled                     *bool                               `json:"enabled"`
+		Name                        *string                             `json:"name"`
+		BaseURL                     *string                             `json:"base_url"`
+		APIKey                      string                              `json:"api_key"`
+		ProxyURL                    *string                             `json:"proxy_url"`
+		ProtocolMode                string                              `json:"protocol_mode"`
+		Headers                     *map[string]string                  `json:"headers"`
+		AllowedModels               []string                            `json:"allowed_models"`
+		ModelMapping                map[string]string                   `json:"model_mapping"`
+		TestModel                   string                              `json:"test_model"`
+		OfficialClientCompatibility *officialClientCompatibilityRequest `json:"official_client_compatibility"`
 	}
 	if err := decodeBody(w, r, &request); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "账号更新请求无效", false, nil)
@@ -887,6 +890,7 @@ func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accou
 			MutationInput: mutation, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
 			ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Headers: request.Headers,
 			AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping, TestModel: request.TestModel,
+			OfficialClientCompatibility: request.OfficialClientCompatibility.gatewayValue(),
 		})
 	}
 	if err != nil {
@@ -1028,6 +1032,12 @@ func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result p
 		h.writeError(w, http.StatusBadRequest, "unsupported_account_type", "该平台不支持所选认证方式", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrGatewayCapability):
 		h.writeError(w, http.StatusPreconditionFailed, "gateway_capability_required", "当前 Gateway 不具备安全添加账号所需能力", false, details)
+	case errors.Is(err, proaccountgateway.ErrOfficialClientCompatibilityUnsupported):
+		h.writeError(w, http.StatusPreconditionFailed, "official_client_compatibility_unsupported", "当前 Gateway、账号类型或协议不支持 API Key 官方客户端兼容", false, details)
+	case errors.Is(err, proaccountgateway.ErrOfficialClientCompatibilityStateUncertain):
+		h.writeError(w, http.StatusBadGateway, "official_client_compatibility_state_uncertain", "API Key 官方客户端兼容恢复验证失败，请刷新 Gateway 配置后核对", true, details)
+	case errors.Is(err, proaccountgateway.ErrOfficialClientCompatibilityReadbackMismatch):
+		h.writeError(w, http.StatusBadGateway, "official_client_compatibility_update_failed", "API Key 官方客户端兼容写后回读不一致，已恢复旧配置", true, details)
 	case errors.Is(err, proaccountlifecycle.ErrInvalidRequest), errors.Is(err, proaccountprobe.ErrInvalidProbeRequest), errors.Is(err, proaccountgateway.ErrInvalidModelRule):
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "账号生命周期请求无效", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrOperationState), errors.Is(err, proaccountlifecycle.ErrOperationConflict):
@@ -1042,6 +1052,21 @@ func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result p
 		h.writeError(w, http.StatusGatewayTimeout, "credential_not_ready", "Gateway 尚未完成凭证重载", true, details)
 	default:
 		h.writeError(w, http.StatusBadGateway, "account_lifecycle_failed", "账号生命周期操作失败", true, details)
+	}
+}
+
+type officialClientCompatibilityRequest struct {
+	Enabled    bool   `json:"enabled"`
+	Profile    string `json:"profile"`
+	TLSProfile string `json:"tls_profile"`
+}
+
+func (r *officialClientCompatibilityRequest) gatewayValue() *proaccountgateway.OfficialClientCompatibility {
+	if r == nil {
+		return nil
+	}
+	return &proaccountgateway.OfficialClientCompatibility{
+		Enabled: r.Enabled, Profile: strings.TrimSpace(r.Profile), TLSProfile: strings.TrimSpace(r.TLSProfile),
 	}
 }
 

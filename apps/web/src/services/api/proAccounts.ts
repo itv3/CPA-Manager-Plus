@@ -60,9 +60,11 @@ export interface ProAccountSyncResponse {
   discovered: number;
   created: number;
   updated: number;
+  removed: number;
   pending: number;
   conflicts: number;
   items: ProAccountSyncItem[];
+  warnings?: string[];
 }
 
 export interface ProAccountListParams {
@@ -194,6 +196,14 @@ export interface ProAccountEditable {
   proxyUrl?: string;
   headers: Record<string, string>;
   sharedProvider: boolean;
+  officialClientCompatibilitySupported?: boolean;
+  officialClientCompatibility?: ProAccountOfficialClientCompatibility;
+}
+
+export interface ProAccountOfficialClientCompatibility {
+  enabled: boolean;
+  profile: string;
+  tlsProfile: string;
 }
 
 export interface ProAccountDetailsResponse {
@@ -204,6 +214,7 @@ export interface ProAccountDetailsResponse {
 export interface ProAccountCapabilitiesResponse {
   credentialDraft: boolean;
   allowedModels: boolean;
+  officialClientCompatibility?: boolean;
   stores: Record<string, 'supported' | 'unsupported' | 'unknown'>;
   platforms?: Record<string, Record<string, ProAccountAuthCapability | undefined> | undefined>;
   accountActions?: Partial<Record<ProAccountActionCapabilityName, ProAccountAuthCapability>>;
@@ -372,6 +383,7 @@ export interface ProAccountCreateAPIInput extends ProAccountProbeInput {
   saveDisabledOnTestFailure: boolean;
   draftOnly?: boolean;
   skipTest?: boolean;
+  officialClientCompatibility?: ProAccountOfficialClientCompatibility;
 }
 
 export interface ProAccountCreateVertexInput {
@@ -399,6 +411,7 @@ export interface ProAccountUpdateInput {
   allowedModels: string[];
   modelMapping: Record<string, string>;
   testModel?: string;
+  officialClientCompatibility?: ProAccountOfficialClientCompatibility;
 }
 
 export class ProAccountsApiError extends Error {
@@ -462,6 +475,15 @@ const mutationBody = (operationId: string, idempotencyKey: string, expectedVersi
   idempotency_key: idempotencyKey,
   expected_version: expectedVersion,
 });
+
+const officialClientCompatibilityBody = (value?: ProAccountOfficialClientCompatibility) =>
+  value
+    ? {
+        enabled: value.enabled,
+        profile: value.profile,
+        tls_profile: value.tlsProfile,
+      }
+    : undefined;
 
 export const proAccountsApi = {
   async list(base: string, managementKey: string, params: ProAccountListParams = {}) {
@@ -601,6 +623,9 @@ export const proAccountsApi = {
           save_disabled_on_test_failure: input.saveDisabledOnTestFailure,
           draft_only: Boolean(input.draftOnly),
           skip_test: Boolean(input.skipTest),
+          official_client_compatibility: officialClientCompatibilityBody(
+            input.officialClientCompatibility
+          ),
         },
         requestConfig(managementKey, input.idempotencyKey)
       );
@@ -1081,6 +1106,9 @@ export const proAccountsApi = {
           allowed_models: input.allowedModels,
           model_mapping: input.modelMapping,
           test_model: input.testModel,
+          official_client_compatibility: officialClientCompatibilityBody(
+            input.officialClientCompatibility
+          ),
         },
         requestConfig(managementKey, input.idempotencyKey)
       );

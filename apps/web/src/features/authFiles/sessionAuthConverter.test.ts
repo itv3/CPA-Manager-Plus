@@ -1282,6 +1282,33 @@ describe('convertAuthJsonInput', () => {
     });
   });
 
+  it('preserves sub2api subscription expiry separately from credential expiry', () => {
+    const result = convertAuthJsonInput(
+      JSON.stringify({
+        accounts: [
+          {
+            name: 'Paid OpenAI',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              access_token: 'sub-access-token',
+              expires_at: '2026-07-20T08:00:00Z',
+              subscription_expires_at: '2026-08-17T00:00:00Z',
+            },
+          },
+        ],
+        proxies: [],
+        exported_at: '2026-06-01T12:00:00.000Z',
+      }),
+      'sub2api'
+    );
+
+    expect(result).toMatchObject({
+      expired: '2026-07-20T08:00:00.000Z',
+      subscription_expires_at: '2026-08-17T00:00:00.000Z',
+    });
+  });
+
   it('omits unsafe sub2api id_token values instead of saving them', () => {
     const idToken = buildJwt({ sub: 'unsafe-user' });
     const result = convertAuthJsonInput(

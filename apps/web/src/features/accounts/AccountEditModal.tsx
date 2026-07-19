@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import type { ProAccount, ProAccountLifecycleResult } from '@/services/api/proAccounts';
+import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import type {
+  ProAccount,
+  ProAccountLifecycleResult,
+  ProAccountOfficialClientCompatibility,
+} from '@/services/api/proAccounts';
 import { proAccountsApi } from '@/services/api/proAccounts';
 import { AccountModelRulesEditor } from './AccountModelRulesEditor';
 import {
@@ -57,6 +62,12 @@ export function AccountEditModal({
   const [catalogModels, setCatalogModels] = useState<string[]>([]);
   const [mappingLines, setMappingLines] = useState('');
   const [sharedProvider, setSharedProvider] = useState(false);
+  const [compatibilitySupported, setCompatibilitySupported] = useState(false);
+  const [compatibility, setCompatibility] = useState<ProAccountOfficialClientCompatibility | null>(
+    null
+  );
+  const [originalCompatibility, setOriginalCompatibility] =
+    useState<ProAccountOfficialClientCompatibility | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncingBuiltIn, setSyncingBuiltIn] = useState(false);
@@ -88,6 +99,12 @@ export function AccountEditModal({
         setCatalogModels(catalog?.models ?? []);
         setMappingLines(formatMappingLines(result.item.modelMapping));
         setSharedProvider(result.editable.sharedProvider);
+        const liveCompatibility = result.editable.officialClientCompatibility
+          ? { ...result.editable.officialClientCompatibility }
+          : { enabled: false, profile: '', tlsProfile: '' };
+        setCompatibilitySupported(Boolean(result.editable.officialClientCompatibilitySupported));
+        setCompatibility(liveCompatibility);
+        setOriginalCompatibility({ ...liveCompatibility });
       })
       .catch((loadError) => {
         if (!cancelled)
@@ -113,6 +130,19 @@ export function AccountEditModal({
     () => proxyUrl.trim() !== originalProxyUrl.trim(),
     [proxyUrl, originalProxyUrl]
   );
+  const compatibilityChanged = useMemo(
+    () =>
+      compatibility !== null &&
+      originalCompatibility !== null &&
+      (compatibility.enabled !== originalCompatibility.enabled ||
+        compatibility.profile !== originalCompatibility.profile ||
+        compatibility.tlsProfile !== originalCompatibility.tlsProfile),
+    [compatibility, originalCompatibility]
+  );
+  const compatibilityEligible =
+    current?.authType === 'api' &&
+    (current.sourceType === 'config_claude_api_key' ||
+      current.sourceType === 'config_codex_api_key');
 
   const syncBuiltInModels = async () => {
     if (!current) return;
@@ -188,6 +218,8 @@ export function AccountEditModal({
         allowedModels: resolved.allowedModels,
         modelMapping: resolved.modelMapping,
         testModel: credentialsChanged ? resolved.testModel : undefined,
+        officialClientCompatibility:
+          compatibilityChanged && compatibility ? compatibility : undefined,
       });
       setApiKey('');
       onSaved(result);
@@ -310,6 +342,44 @@ export function AccountEditModal({
                     <div className={`${styles.sharedWarning} ${styles.fieldFull}`}>
                       Base URL、Headers 和模型目录由同一 Provider 的多个 Key 共享；代理 URL
                       仅作用于当前 Key。
+                    </div>
+                  ) : null}
+                  {compatibilityEligible && compatibility ? (
+                    <div
+                      className={`${styles.compatibilitySection} ${styles.fieldFull}`}
+                      data-testid="official-client-compatibility"
+                    >
+                      <div className={styles.compatibilityHeader}>
+                        <div>
+                          <span className={styles.fieldLabel}>官方客户端兼容</span>
+                          <span className={styles.fieldHint}>
+                            配置从 Gateway 实时读取，切换开关无需重新填写 API Key。
+                          </span>
+                        </div>
+                        <ToggleSwitch
+                          checked={compatibility.enabled}
+                          onChange={(enabled) =>
+                            setCompatibility((value) => (value ? { ...value, enabled } : value))
+                          }
+                          ariaLabel="官方客户端兼容"
+                          disabled={saving || !compatibilitySupported}
+                        />
+                      </div>
+                      <div className={styles.compatibilityDetails}>
+                        <div>
+                          <span>Profile ID</span>
+                          <code>{compatibility.profile || '启用后由 Gateway 分配'}</code>
+                        </div>
+                        <div>
+                          <span>TLS 策略</span>
+                          <code>{compatibility.tlsProfile || '默认 Transport'}</code>
+                        </div>
+                      </div>
+                      {!compatibilitySupported ? (
+                        <span className={styles.fieldHint}>
+                          当前 Gateway 不支持 API Key 官方客户端兼容。
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
                 </>

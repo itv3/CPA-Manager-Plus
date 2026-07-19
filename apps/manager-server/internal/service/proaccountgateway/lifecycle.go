@@ -27,6 +27,18 @@ func (c *Client) CreateDisabledAPI(ctx context.Context, baseURL string, manageme
 		return AccountSnapshot{}, err
 	}
 	models := modelListForRules(nil, rules, input.CatalogModels)
+	if input.OfficialClientCompatibility != nil {
+		if !SupportsOfficialClientCompatibility(input.SourceType) {
+			return AccountSnapshot{}, ErrOfficialClientCompatibilityUnsupported
+		}
+		capabilities, capabilityErr := c.Capabilities(ctx, baseURL, managementKey)
+		if capabilityErr != nil {
+			return AccountSnapshot{}, capabilityErr
+		}
+		if !capabilities.OfficialClientCompatibility {
+			return AccountSnapshot{}, ErrOfficialClientCompatibilityUnsupported
+		}
+	}
 	locator := ""
 	if input.SourceType == SourceOpenAICompatibility {
 		providers, err := c.loadConfigEntries(ctx, baseURL, managementKey, "/v0/management/openai-compatibility", "openai-compatibility")
@@ -68,11 +80,25 @@ func (c *Client) CreateDisabledAPI(ctx context.Context, baseURL string, manageme
 		if input.ProxyURL != "" {
 			entry["proxy-url"] = input.ProxyURL
 		}
+		if input.OfficialClientCompatibility != nil {
+			entry["official-client-compatibility"] = officialClientCompatibilityPayload(*input.OfficialClientCompatibility)
+		}
 		entries = append(entries, entry)
 		if _, _, err := c.requestJSON(ctx, baseURL, managementKey, http.MethodPut, endpoint.Path, stripReadOnlyList(entries)); err != nil {
 			return AccountSnapshot{}, err
 		}
 		locator = fmt.Sprintf("index:%d", index)
+	}
+	if input.OfficialClientCompatibility != nil {
+		applied, readbackErr := c.waitForOfficialClientCompatibility(ctx, baseURL, managementKey, input.SourceType, locator, *input.OfficialClientCompatibility)
+		if readbackErr != nil {
+			return AccountSnapshot{
+				Platform: input.Platform, AuthType: "api", SourceType: input.SourceType,
+				SourceLocator: locator, Name: strings.TrimSpace(input.Name), Enabled: false,
+				BaseURL: input.BaseURL,
+			}, readbackErr
+		}
+		input.OfficialClientCompatibility = &applied
 	}
 	snapshot, waitErr := c.waitForAccount(ctx, baseURL, managementKey, input.SourceType, locator, false)
 	if waitErr != nil && snapshot.SourceLocator == "" {
@@ -319,7 +345,24 @@ func (c *Client) EditableAccount(ctx context.Context, baseURL string, management
 	if err != nil {
 		return EditableAccount{}, err
 	}
-	return EditableAccount{BaseURL: runtime.BaseURL, ProxyURL: runtime.ProxyURL, Headers: editableHeaders(runtime.Headers), SharedProvider: sourceType == SourceOpenAICompatibility}, nil
+	result := EditableAccount{BaseURL: runtime.BaseURL, ProxyURL: runtime.ProxyURL, Headers: editableHeaders(runtime.Headers), SharedProvider: sourceType == SourceOpenAICompatibility}
+	if !SupportsOfficialClientCompatibility(sourceType) {
+		return result, nil
+	}
+	capabilities, err := c.Capabilities(ctx, baseURL, managementKey)
+	if err != nil {
+		return EditableAccount{}, err
+	}
+	result.OfficialClientCompatibilitySupported = capabilities.OfficialClientCompatibility
+	if !result.OfficialClientCompatibilitySupported {
+		return result, nil
+	}
+	compatibility, err := c.ReadOfficialClientCompatibility(ctx, baseURL, managementKey, sourceType, sourceLocator)
+	if err != nil {
+		return EditableAccount{}, err
+	}
+	result.OfficialClientCompatibility = &compatibility
+	return result, nil
 }
 
 func editableHeaders(headers map[string]string) map[string]string {

@@ -61,6 +61,7 @@ import {
   accountActionAvailable,
   accountPlanLabel,
   buildAccountUsageWindowRows,
+  formatAccountExpiryLabel,
   formatRelativeDate,
   formatResetCountdown,
   isLocalUsageWindowSource,
@@ -155,6 +156,7 @@ function PlatformTypeCell({ account }: { account: ProAccount }) {
     icon: '',
   };
   const planLabel = accountPlanLabel(account.planType, platformKey);
+  const expiresLabel = formatAccountExpiryLabel(account.expiresAtMs, account.planType);
   return (
     <div className={styles.platformTypeCell}>
       <div className={styles.platformTypeBadge} data-platform={platformKey}>
@@ -177,6 +179,11 @@ function PlatformTypeCell({ account }: { account: ProAccount }) {
             {planLabel}
           </span>
         </div>
+      ) : null}
+      {expiresLabel ? (
+        <span className={styles.subscriptionExpiry} title={formatDate(account.expiresAtMs)}>
+          {expiresLabel}
+        </span>
       ) : null}
       <span className={styles.sourceTypeLabel}>
         {accountSourceLabel(account.binding?.sourceType || account.sourceType)}
@@ -586,8 +593,10 @@ export function AccountsPage() {
     try {
       const result = await proAccountsApi.sync(managerBase, managementKey);
       showNotification(
-        `同步完成：新增 ${result.created}，更新 ${result.updated}，待确认 ${result.pending}，冲突 ${result.conflicts}`,
-        result.conflicts > 0 || result.pending > 0 ? 'warning' : 'success'
+        `同步完成：新增 ${result.created}，更新 ${result.updated}，移除 ${result.removed ?? 0}，待确认 ${result.pending}，冲突 ${result.conflicts}`,
+        result.conflicts > 0 || result.pending > 0 || (result.warnings?.length ?? 0) > 0
+          ? 'warning'
+          : 'success'
       );
       await loadAccounts();
       await loadBindingReviews();
@@ -1041,6 +1050,18 @@ export function AccountsPage() {
                 iconTone: 'indigo',
                 onClick: requestAuthFileExport,
               },
+              ...(selectedAccounts.length > 0
+                ? [
+                    {
+                      key: 'delete-selected-accounts',
+                      label: `批量删除所选账号 (${selectedAccounts.length})`,
+                      icon: <IconTrash2 size={16} />,
+                      tone: 'danger' as const,
+                      separatorBefore: true,
+                      onClick: () => setBatchAction('delete'),
+                    },
+                  ]
+                : []),
             ]}
           />
           <input
@@ -1054,10 +1075,10 @@ export function AccountsPage() {
           <Button
             variant="secondary"
             iconOnly
-            onClick={() => void reconcileAndLoadAccounts(false, true)}
-            loading={loading}
-            title="刷新账号列表"
-            aria-label="刷新账号列表"
+            onClick={() => void syncAccounts()}
+            loading={loading || syncing}
+            title="同步并刷新账号列表"
+            aria-label="同步并刷新账号列表"
           >
             <IconRefreshCw size={17} />
           </Button>
@@ -1075,10 +1096,6 @@ export function AccountsPage() {
               待确认绑定 {bindingReviews.length}
             </Button>
           ) : null}
-          <Button variant="secondary" onClick={syncAccounts} loading={syncing}>
-            <IconRefreshCw size={16} />
-            {t('accounts.sync', { defaultValue: '同步存量' })}
-          </Button>
           <Button variant="primary" onClick={() => setWizardOpen(true)}>
             <IconPlus size={16} />
             添加账号

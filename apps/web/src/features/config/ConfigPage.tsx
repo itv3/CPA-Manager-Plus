@@ -1,4 +1,13 @@
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import type { ReactCodeMirrorRef } from '@uiw/react-codemirror';
@@ -139,7 +148,10 @@ function parseManagerPositiveIntegerInput(value: string): number | null {
   return Math.floor(parsed);
 }
 
-function resolveManagerPositiveIntegerBaseline(value: number | undefined, fallback: number): number {
+function resolveManagerPositiveIntegerBaseline(
+  value: number | undefined,
+  fallback: number
+): number {
   return Number.isFinite(value) && value && value > 0 ? Math.floor(value) : fallback;
 }
 
@@ -471,25 +483,24 @@ export function ConfigPage() {
     [detectedPanelBase, panelHostedByUsageService, setUsageServiceConfig]
   );
 
-  const applyManagerConfigResponse = useCallback(
-    (response: ManagerConfigResponse) => {
-      const nextConfig = response.config;
-      const collector = nextConfig.collector ?? MANAGER_COLLECTOR_DEFAULT;
+  const applyManagerConfigResponse = useCallback((response: ManagerConfigResponse) => {
+    const nextConfig = response.config;
+    const collector = nextConfig.collector ?? MANAGER_COLLECTOR_DEFAULT;
 
-      setManagerConfig(nextConfig);
-      setManagerConfigSource(response.source || '');
-      setManagerCPAUsage(response.cpaUsage ?? null);
-      setManagerRequestMonitoringEnabled(collector.enabled !== false);
-      setManagerCPABaseInput(nextConfig.cpaConnection?.cpaBaseUrl || '');
-      setManagerCollectorMode(collector.collectorMode || MANAGER_COLLECTOR_DEFAULT.collectorMode);
-      setManagerPollIntervalMs(String(collector.pollIntervalMs || MANAGER_COLLECTOR_DEFAULT.pollIntervalMs));
-      setManagerBatchSize(String(collector.batchSize || MANAGER_COLLECTOR_DEFAULT.batchSize));
-      setManagerQueryLimit(String(collector.queryLimit || MANAGER_COLLECTOR_DEFAULT.queryLimit));
-      setManagerCPAManagementKeyInput('');
-      setManagerCPAManagementKeyVisible(false);
-    },
-    []
-  );
+    setManagerConfig(nextConfig);
+    setManagerConfigSource(response.source || '');
+    setManagerCPAUsage(response.cpaUsage ?? null);
+    setManagerRequestMonitoringEnabled(collector.enabled !== false);
+    setManagerCPABaseInput(nextConfig.cpaConnection?.cpaBaseUrl || '');
+    setManagerCollectorMode(collector.collectorMode || MANAGER_COLLECTOR_DEFAULT.collectorMode);
+    setManagerPollIntervalMs(
+      String(collector.pollIntervalMs || MANAGER_COLLECTOR_DEFAULT.pollIntervalMs)
+    );
+    setManagerBatchSize(String(collector.batchSize || MANAGER_COLLECTOR_DEFAULT.batchSize));
+    setManagerQueryLimit(String(collector.queryLimit || MANAGER_COLLECTOR_DEFAULT.queryLimit));
+    setManagerCPAManagementKeyInput('');
+    setManagerCPAManagementKeyVisible(false);
+  }, []);
 
   const loadManagerConfig = useCallback(async () => {
     const serviceBase = resolveManagerServiceBase();
@@ -517,12 +528,12 @@ export function ConfigPage() {
       syncEmbeddedManagerBootstrap(serviceBase);
     } catch (error: unknown) {
       const code = getUsageServiceErrorCode(error);
-      if (
-        isManagerAuthErrorCode(code)
-      ) {
+      if (isManagerAuthErrorCode(code)) {
         setManagerError(t('config_management.manager.admin_key_required'));
       } else {
-        setManagerError(getUsageServiceDisplayError(error, 'config_management.manager.load_failed'));
+        setManagerError(
+          getUsageServiceDisplayError(error, 'config_management.manager.load_failed')
+        );
       }
     } finally {
       setManagerLoading(false);
@@ -690,16 +701,10 @@ export function ConfigPage() {
           )
         : MANAGER_COLLECTOR_DEFAULT.pollIntervalMs;
       const batchSize = managerRequestMonitoringEnabled
-        ? readManagerPositiveInteger(
-            managerBatchSize,
-            t('config_management.manager.batch_size')
-          )
+        ? readManagerPositiveInteger(managerBatchSize, t('config_management.manager.batch_size'))
         : MANAGER_COLLECTOR_DEFAULT.batchSize;
       const queryLimit = managerRequestMonitoringEnabled
-        ? readManagerPositiveInteger(
-            managerQueryLimit,
-            t('config_management.manager.query_limit')
-          )
+        ? readManagerPositiveInteger(managerQueryLimit, t('config_management.manager.query_limit'))
         : MANAGER_COLLECTOR_DEFAULT.queryLimit;
       if (managerRequestMonitoringEnabled && pollIntervalMs > managerRetentionSeconds * 1000) {
         showNotification(t('config_management.manager.poll_interval_retention_error'), 'error');
@@ -734,7 +739,9 @@ export function ConfigPage() {
           serviceBase: '',
         },
       };
-      const savedCPABase = normalizeUsageServiceBase(managerConfig?.cpaConnection?.cpaBaseUrl || '');
+      const savedCPABase = normalizeUsageServiceBase(
+        managerConfig?.cpaConnection?.cpaBaseUrl || ''
+      );
       const nextCPABase = normalizeUsageServiceBase(cpaConnection.cpaBaseUrl || '');
       const cpaConnectionChanged =
         savedCPABase !== nextCPABase || managerCPAManagementKeyInput.trim() !== '';
@@ -745,7 +752,10 @@ export function ConfigPage() {
           await saveManagerConfigPayload(serviceBase, nextConfig, requestAuthKey);
         } catch (error: unknown) {
           if (notifyOnError) {
-            const message = getUsageServiceDisplayError(error, 'usage_service_errors.request_failed');
+            const message = getUsageServiceDisplayError(
+              error,
+              'usage_service_errors.request_failed'
+            );
             showNotification(
               `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
               'error'
@@ -776,10 +786,7 @@ export function ConfigPage() {
     } catch (error: unknown) {
       setManagerSaving(false);
       const message = getUsageServiceDisplayError(error, 'usage_service_errors.request_failed');
-      showNotification(
-        `${t('notification.save_failed')}${message ? `: ${message}` : ''}`,
-        'error'
-      );
+      showNotification(`${t('notification.save_failed')}${message ? `: ${message}` : ''}`, 'error');
     }
   };
 
@@ -1108,8 +1115,7 @@ export function ConfigPage() {
     if (error) return t('config_management.status_load_failed_short', { defaultValue: 'Failed' });
     if (hasVisualModeError)
       return t('config_management.visual_mode_unavailable_short', { defaultValue: 'YAML issue' });
-    if (hasVisualValidationErrors)
-      return t('config_management.visual.validation_blocked_short');
+    if (hasVisualValidationErrors) return t('config_management.visual.validation_blocked_short');
     if (saving) return t('config_management.status_saving_short', { defaultValue: 'Saving' });
     if (isDirty) return t('config_management.status_dirty_short', { defaultValue: 'Unsaved' });
     return t('config_management.status_loaded_short', { defaultValue: 'Loaded' });
@@ -1200,8 +1206,8 @@ export function ConfigPage() {
     panelHostedByUsageService === true &&
     Boolean(
       managerServiceTarget &&
-        managerCPABaseInput.trim() &&
-        (managerCPAManagementKeyInput.trim() || managerConfig?.cpaConnection?.managementKey)
+      managerCPABaseInput.trim() &&
+      (managerCPAManagementKeyInput.trim() || managerConfig?.cpaConnection?.managementKey)
     );
   const managerRuntimeModeLabel =
     panelHostedByUsageService === true
@@ -1247,9 +1253,7 @@ export function ConfigPage() {
 
         <div className={styles.content}>
           {!isManagerTab && error && <div className="error-box">{error}</div>}
-          {isManagerTab && managerError && (
-            <div className="error-box">{managerError}</div>
-          )}
+          {isManagerTab && managerError && <div className="error-box">{managerError}</div>}
           {!isManagerTab && !error && visualParseError && (
             <div className="error-box">
               {t('config_management.visual_mode_unavailable_detail', { message: visualParseError })}
@@ -1263,9 +1267,7 @@ export function ConfigPage() {
               panelHostedByUsageService={panelHostedByUsageService}
               detectedPanelBase={detectedPanelBase}
               managerRuntimeModeLabel={managerRuntimeModeLabel}
-              managerHasBoundCPAManagementKey={Boolean(
-                managerConfig?.cpaConnection?.managementKey
-              )}
+              managerHasBoundCPAManagementKey={Boolean(managerConfig?.cpaConnection?.managementKey)}
               managerCPABaseInput={managerCPABaseInput}
               managerCPAManagementKeyInput={managerCPAManagementKeyInput}
               managerCPAManagementKeyVisible={managerCPAManagementKeyVisible}
@@ -1317,6 +1319,15 @@ export function ConfigPage() {
               validationErrors={visualValidationErrors}
               hasPayloadValidationErrors={visualHasPayloadValidationErrors}
               disabled={disableControls || loading}
+              officialClientCompatibility={{
+                managerBase: managerServiceTarget,
+                managementKey,
+                available:
+                  panelHostedByUsageService === true &&
+                  Boolean(managerServiceTarget) &&
+                  Boolean(managementKey.trim()),
+                disabled: disableControls || loading,
+              }}
               onChange={setVisualValues}
             />
           ) : (

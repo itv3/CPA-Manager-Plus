@@ -22,7 +22,8 @@ func TestSnapshotIncludesConfigAccountsAndCapabilities(t *testing.T) {
 		case "/v0/management/auth-files":
 			w.Header().Set("X-CPA-SUPPORT-CREDENTIAL-DRAFT", "true")
 			w.Header().Set("X-CPA-SUPPORT-ALLOWED-MODELS", "true")
-			_, _ = w.Write([]byte(`{"files":[{"name":"codex.json","provider":"codex","auth_index":"auth-oauth","id_token":{"plan_type":"free"},"allowed_models":["gpt-oauth"],"model_rule_version":"rule-oauth"}]}`))
+			w.Header().Set("X-CPA-SUPPORT-OFFICIAL-CLIENT-COMPATIBILITY", "true")
+			_, _ = w.Write([]byte(`{"files":[{"name":"codex.json","provider":"codex","auth_index":"auth-oauth","id_token":{"plan_type":"free"},"subscription_expires_at":"2027-01-01T00:00:00Z","allowed_models":["gpt-oauth"],"model_rule_version":"rule-oauth"}]}`))
 		case "/v0/management/gemini-api-key":
 			_, _ = w.Write([]byte(`{"gemini-api-key":[{"api-key":"不得返回","base-url":"https://gemini.example/v1beta","auth-index":"auth-gemini","allowed-models":["gemini-test"],"model-rule-version":"rule-gemini"}]}`))
 		case "/v0/management/claude-api-key":
@@ -37,7 +38,7 @@ func TestSnapshotIncludesConfigAccountsAndCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取快照：%v", err)
 	}
-	if !result.Capabilities.CredentialDraft || !result.Capabilities.AllowedModels {
+	if !result.Capabilities.CredentialDraft || !result.Capabilities.AllowedModels || !result.Capabilities.OfficialClientCompatibility {
 		t.Fatalf("能力 = %#v", result.Capabilities)
 	}
 	if len(result.Accounts) != 2 {
@@ -45,6 +46,9 @@ func TestSnapshotIncludesConfigAccountsAndCapabilities(t *testing.T) {
 	}
 	if result.Accounts[0].PlanType != "free" {
 		t.Fatalf("套餐类型 = %q", result.Accounts[0].PlanType)
+	}
+	if result.Accounts[0].ExpiresAtMS != 1_798_761_600_000 {
+		t.Fatalf("订阅到期时间 = %d", result.Accounts[0].ExpiresAtMS)
 	}
 	if result.Accounts[1].SourceType != SourceGeminiAPIKey || result.Accounts[1].AuthIndex != "auth-gemini" {
 		t.Fatalf("配置账号 = %#v", result.Accounts[1])

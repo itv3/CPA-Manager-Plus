@@ -64,11 +64,18 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 	if err != nil || !capabilities.AllowedModels {
 		return Result{Operation: operation, Probe: &probe}, ErrGatewayCapability
 	}
+	if input.OfficialClientCompatibility != nil {
+		if !proaccountgateway.SupportsOfficialClientCompatibility(probe.SourceType) || !capabilities.OfficialClientCompatibility {
+			operation = s.fail(ctx, operation, "official_client_compatibility_unsupported", "当前 Gateway 或账号类型不支持 API Key 官方客户端兼容")
+			return Result{Operation: operation, Probe: &probe}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
+		}
+	}
 	savedBaseURL := normalizeAPIBaseURLForSource(probe.SourceType, input.BaseURL)
 	snapshot, err := s.gateway.CreateDisabledAPI(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.CreateAPIInput{
 		Platform: input.Platform, SourceType: probe.SourceType, Name: input.Name,
 		BaseURL: savedBaseURL, APIKey: input.APIKey, ProxyURL: input.ProxyURL, Headers: input.Headers,
 		AllowedModels: input.AllowedModels, ModelMapping: input.ModelMapping, CatalogModels: probe.Models,
+		OfficialClientCompatibility: cloneOfficialClientCompatibility(input.OfficialClientCompatibility),
 	})
 	if err != nil {
 		if snapshot.SourceType != "" && snapshot.SourceLocator != "" {

@@ -69,7 +69,7 @@ const inputBy = (renderer: ReactTestRenderer, predicate: (input: ReactTestInstan
   return input;
 };
 
-const renderAPIWizard = async () => {
+const renderAPIWizard = async (officialClientCompatibility = false) => {
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = create(
@@ -77,6 +77,12 @@ const renderAPIWizard = async () => {
         open
         managerBase="https://manager.example"
         managementKey="manager-key"
+        capabilities={{
+          credentialDraft: true,
+          allowedModels: true,
+          officialClientCompatibility,
+          stores: {},
+        }}
         onClose={vi.fn()}
         onSaved={vi.fn()}
       />
@@ -268,6 +274,48 @@ describe('API Key 账号添加向导', () => {
         testModel: 'gpt-test',
       })
     );
+  });
+
+  it('仅在 OpenAI Responses 下提交官方客户端兼容开关', async () => {
+    const renderer = await renderAPIWizard(true);
+    const protocol = renderer.root
+      .findAllByType('select')
+      .find((candidate) => candidate.props.value === 'auto');
+    if (!protocol) throw new Error('未找到协议模式');
+    act(() => protocol.props.onChange({ target: { value: 'responses' } }));
+
+    const compatibility = renderer.root.findByProps({ 'aria-label': '官方客户端兼容' });
+    expect(compatibility.props.disabled).toBe(false);
+    act(() => compatibility.props.onChange({ target: { checked: true } }));
+    act(() =>
+      inputBy(renderer, (input) => input.props.type === 'password').props.onChange({
+        target: { value: 'secret-key' },
+      })
+    );
+
+    await act(async () => {
+      buttonByText(renderer, '保存').props.onClick();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.createAPI.mock.calls[0][2]).toMatchObject({
+      protocolMode: 'responses',
+      officialClientCompatibility: { enabled: true, profile: '', tlsProfile: '' },
+    });
+  });
+
+  it('Chat Completions 隐藏兼容开关，旧 Gateway 下开关保持禁用', async () => {
+    const renderer = await renderAPIWizard(false);
+    const protocol = renderer.root
+      .findAllByType('select')
+      .find((candidate) => candidate.props.value === 'auto');
+    if (!protocol) throw new Error('未找到协议模式');
+
+    act(() => protocol.props.onChange({ target: { value: 'responses' } }));
+    expect(renderer.root.findByProps({ 'aria-label': '官方客户端兼容' }).props.disabled).toBe(true);
+
+    act(() => protocol.props.onChange({ target: { value: 'chat_completions' } }));
+    expect(renderer.root.findAllByProps({ 'aria-label': '官方客户端兼容' })).toHaveLength(0);
   });
 });
 

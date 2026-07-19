@@ -72,7 +72,8 @@ func (s *Service) Sync(ctx context.Context, dryRun bool) (model.ProAccountSyncRe
 	for _, account := range snapshot.Accounts {
 		discoveries = append(discoveries, discoveryFromSnapshot(account))
 	}
-	result, err := s.repository.Sync(ctx, discoveries, time.Now().UnixMilli(), dryRun)
+	nowMS := time.Now().UnixMilli()
+	result, err := s.repository.Sync(ctx, discoveries, nowMS, dryRun)
 	if err != nil {
 		return result, err
 	}
@@ -81,7 +82,77 @@ func (s *Service) Sync(ctx context.Context, dryRun bool) (model.ProAccountSyncRe
 		AllowedModels:   snapshot.Capabilities.AllowedModels,
 	}
 	result.Warnings = append([]string(nil), snapshot.Warnings...)
+	removed, warnings, err := s.retireMissingAuthFileAccounts(ctx, discoveries, result.Items, nowMS, dryRun)
+	if err != nil {
+		return result, err
+	}
+	result.Removed = removed
+	result.Warnings = append(result.Warnings, warnings...)
 	return result, nil
+}
+
+func (s *Service) retireMissingAuthFileAccounts(
+	ctx context.Context,
+	discoveries []model.ProAccountDiscovery,
+	syncItems []model.ProAccountSyncItem,
+	nowMS int64,
+	dryRun bool,
+) (int, []string, error) {
+	currentKeys := make(map[string]struct{}, len(discoveries))
+	for _, discovery := range discoveries {
+		if strings.TrimSpace(discovery.SourceType) != "auth_file" {
+			continue
+		}
+		currentKeys[authFileBindingKey(discovery.SourceLocator, discovery.AuthIndex)] = struct{}{}
+	}
+	protectedAccountIDs := make(map[string]struct{})
+	for _, item := range syncItems {
+		for _, accountID := range item.CandidateIDs {
+			protectedAccountIDs[strings.TrimSpace(accountID)] = struct{}{}
+		}
+	}
+
+	missing := make([]model.ProAccount, 0)
+	cursor := ""
+	for {
+		page, err := s.repository.List(ctx, model.ProAccountListFilter{Cursor: cursor, Limit: 200})
+		if err != nil {
+			return 0, nil, fmt.Errorf("list accounts for auth file reconciliation: %w", err)
+		}
+		for _, account := range page.Items {
+			if account.Binding == nil || !account.Binding.IsCurrent || strings.TrimSpace(account.Binding.SourceType) != "auth_file" {
+				continue
+			}
+			if _, protected := protectedAccountIDs[account.ID]; protected {
+				continue
+			}
+			if _, exists := currentKeys[authFileBindingKey(account.Binding.SourceLocator, account.Binding.AuthIndex)]; !exists {
+				missing = append(missing, account)
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if dryRun {
+		return len(missing), nil, nil
+	}
+
+	removed := 0
+	warnings := make([]string, 0)
+	for _, account := range missing {
+		if _, err := s.repository.SoftDelete(ctx, account.ID, account.Version, nowMS); err != nil {
+			warnings = append(warnings, fmt.Sprintf("认证文件账号 %s 清理失败: %v", account.ID, err))
+			continue
+		}
+		removed++
+	}
+	return removed, warnings, nil
+}
+
+func authFileBindingKey(sourceLocator string, authIndex string) string {
+	return strings.TrimSpace(sourceLocator) + "\x00" + strings.TrimSpace(authIndex)
 }
 
 func discoveryFromSnapshot(account proaccountgateway.AccountSnapshot) model.ProAccountDiscovery {
@@ -130,7 +201,11 @@ func discoveryFromAuthFile(file cpaauthfiles.File) (model.ProAccountDiscovery, b
 	}
 	allowedModels := rawStringSlice(file.Raw, "allowed_models", "allowedModels", "allowed-models")
 	modelMapping := rawStringMap(file.Raw, "model_mapping", "modelMapping")
-	expiresAtMS := rawTimeMS(file.Raw, "expires_at", "expiresAt", "expiry", "expired_at")
+	expiresAtMS := rawTimeMS(
+		file.Raw,
+		"subscription_expires_at", "subscriptionExpiresAt",
+		"expires_at", "expiresAt", "expiry", "expired_at",
+	)
 	fingerprint := identityFingerprint(platform, authType, email, file.AccountID, file.AccountSnapshot)
 	return model.ProAccountDiscovery{
 		Platform: platform, AuthType: authType, SourceType: "auth_file",

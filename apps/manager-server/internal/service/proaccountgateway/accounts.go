@@ -74,10 +74,11 @@ func (c *Client) Snapshot(ctx context.Context, baseURL string, managementKey str
 
 func capabilitiesFromHeaders(headers http.Header) Capabilities {
 	return Capabilities{
-		CredentialDraft:         strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-DRAFT")), "true"),
-		CredentialRefresh:       strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-REFRESH")), "true"),
-		TargetedReauthorization: strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-TARGETED-REAUTH")), "true"),
-		AllowedModels:           strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-ALLOWED-MODELS")), "true"),
+		CredentialDraft:             strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-DRAFT")), "true"),
+		CredentialRefresh:           strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-CREDENTIAL-REFRESH")), "true"),
+		TargetedReauthorization:     strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-TARGETED-REAUTH")), "true"),
+		AllowedModels:               strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-ALLOWED-MODELS")), "true"),
+		OfficialClientCompatibility: strings.EqualFold(strings.TrimSpace(headers.Get("X-CPA-SUPPORT-OFFICIAL-CLIENT-COMPATIBILITY")), "true"),
 	}
 }
 
@@ -105,7 +106,11 @@ func accountFromAuthFile(file cpaauthfiles.File) (AccountSnapshot, bool) {
 		AllowedModels:     mapStringSlice(file.Raw, "allowed_models", "allowedModels", "allowed-models"),
 		ModelMapping:      withoutIdentityModelMappings(mapStringMap(file.Raw, "model_mapping", "modelMapping")),
 		ModelRuleVersion:  mapString(file.Raw, "model_rule_version", "modelRuleVersion", "model-rule-version"),
-		ExpiresAtMS:       mapTimeMS(file.Raw, "expires_at", "expiresAt", "expired_at"),
+		ExpiresAtMS: mapTimeMS(
+			file.Raw,
+			"subscription_expires_at", "subscriptionExpiresAt",
+			"expires_at", "expiresAt", "expired_at",
+		),
 		BaseURL:           mapString(file.Raw, "base_url", "base-url", "baseUrl"),
 		Headers:           mapStringMap(file.Raw, "headers"),
 		CredentialDraft:   mapBool(file.Raw, "credential_draft", "credentialDraft", "pro_draft"),

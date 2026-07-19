@@ -100,6 +100,11 @@ describe('proAccountsApi', () => {
       allowedModels: ['client-model'],
       modelMapping: { 'client-model': 'upstream-model' },
       headers: { 'X-Tenant': 'tenant-a' },
+      officialClientCompatibility: {
+        enabled: true,
+        profile: 'codex-desktop-0.145.0-alpha.18-v1',
+        tlsProfile: '',
+      },
     };
 
     await proAccountsApi.probe('https://manager.example', 'admin-key', input);
@@ -126,8 +131,41 @@ describe('proAccountsApi', () => {
       test_model: 'client-model',
       save_disabled_on_test_failure: true,
       draft_only: true,
+      official_client_compatibility: {
+        enabled: true,
+        profile: 'codex-desktop-0.145.0-alpha.18-v1',
+        tls_profile: '',
+      },
     });
     expect(mocks.post.mock.calls[1][2].headers['Idempotency-Key']).toBe('idem-1');
+  });
+
+  it('编辑请求仅在显式变更时序列化官方客户端兼容结构', async () => {
+    mocks.put.mockResolvedValue({ data: { account } });
+
+    await proAccountsApi.update('https://manager.example', 'admin-key', account.id, {
+      operationId: 'edit-1',
+      idempotencyKey: 'edit-key',
+      expectedVersion: account.version,
+      allowedModels: account.allowedModels,
+      modelMapping: account.modelMapping,
+      officialClientCompatibility: {
+        enabled: false,
+        profile: 'codex-desktop-0.145.0-alpha.18-v1',
+        tlsProfile: '',
+      },
+    });
+
+    expect(mocks.put.mock.calls[0][1]).toMatchObject({
+      expected_version: 7,
+      api_key: undefined,
+      base_url: undefined,
+      official_client_compatibility: {
+        enabled: false,
+        profile: 'codex-desktop-0.145.0-alpha.18-v1',
+        tls_profile: '',
+      },
+    });
   });
 
   it('OAuth 分支启动、回调、轮询、完成和取消均使用 Manager 私有路由', async () => {

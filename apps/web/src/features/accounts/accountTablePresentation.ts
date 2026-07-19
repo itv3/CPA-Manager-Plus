@@ -176,6 +176,26 @@ export const accountPlanLabel = (planType?: string, platform?: string) => {
   return planType?.trim() || '';
 };
 
+export const formatAccountExpiryLabel = (expiresAtMs?: number, planType?: string) => {
+  const normalizedPlanType = normalizeCompactValue(planType);
+  if (
+    !expiresAtMs ||
+    !Number.isFinite(expiresAtMs) ||
+    !normalizedPlanType ||
+    normalizedPlanType === 'free' ||
+    normalizedPlanType === 'basic' ||
+    normalizedPlanType === 'planfree'
+  ) {
+    return '';
+  }
+  const date = new Date(expiresAtMs);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `到期 ${year}-${month}-${day}`;
+};
+
 export const accountActionAvailable = (
   account: Pick<ProAccount, 'platform' | 'authType' | 'sourceType'> & {
     binding?: Pick<ProAccountBinding, 'sourceType' | 'authIndex'>;
