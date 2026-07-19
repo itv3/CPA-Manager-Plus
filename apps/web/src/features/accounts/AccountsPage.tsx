@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -6,8 +6,11 @@ import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Select } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
+  IconArrowUpFromLine,
   IconChartLine,
+  IconChevronDown,
   IconCrosshair,
+  IconDownload,
   IconExternalLink,
   IconInfo,
   IconKey,
@@ -22,6 +25,7 @@ import {
 } from '@/components/ui/icons';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useAuthStore, useNotificationStore } from '@/stores';
+import { authFilesApi } from '@/services/api/authFiles';
 import {
   proAccountsApi,
   type ProAccount,
@@ -68,6 +72,11 @@ import {
   usesSharedProviderSwitch,
 } from './accountTablePresentation';
 import { mergeUsageCacheEntry, type AccountUsageCacheEntry } from './accountUsageCache';
+import { buildAccountAuthFileExportPlan } from './accountAuthFileExport';
+import { prepareAuthFilesForUpload } from '@/features/authFiles/authFileUpload';
+import { MAX_AUTH_FILE_SIZE } from '@/utils/constants';
+import { downloadBlob } from '@/utils/download';
+import { formatFileSize } from '@/utils/format';
 import styles from './AccountsPage.module.scss';
 import iconAntigravity from '@/assets/icons/antigravity.svg';
 import iconClaude from '@/assets/icons/claude.svg';
@@ -78,6 +87,10 @@ import iconOpenAI from '@/assets/icons/openai-light.svg';
 const AUTO_REFRESH_INTERVAL_MS = 60_000;
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
 const usageCache = new Map<string, AccountUsageCacheEntry>();
+const AUTH_FILE_UPLOAD_FAILURE_STATUSES = new Set(['error', 'failed', 'failure', 'partial']);
+
+const hasAuthFileUploadFailureStatus = (status: string): boolean =>
+  AUTH_FILE_UPLOAD_FAILURE_STATUSES.has(status.trim().toLowerCase());
 
 const PLATFORM_FILTER_OPTIONS = [
   { value: '', label: '全部平台' },
@@ -487,6 +500,8 @@ export function AccountsPage() {
   const [usageCacheRevision, setUsageCacheRevision] = useState(0);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [authFileImporting, setAuthFileImporting] = useState(false);
+  const [authFileExporting, setAuthFileExporting] = useState(false);
   const [rowActions, setRowActions] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -502,6 +517,7 @@ export function AccountsPage() {
   const loadSequenceRef = useRef(createAccountLoadSequence());
   const reconcileContextRef = useRef('');
   const reconcileInFlightRef = useRef(false);
+  const authFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const managerBase = featureAvailability.managerServiceBase;
 
@@ -667,6 +683,187 @@ export function AccountsPage() {
       setSyncing(false);
     }
   }, [loadAccounts, loadBindingReviews, managementKey, managerBase, showNotification]);
+
+  const handleAuthFileImport = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const input = event.currentTarget;
+      const selectedFiles = Array.from(input.files ?? []);
+      if (selectedFiles.length === 0) return;
+
+      const validFiles: File[] = [];
+      const invalidFileNames: string[] = [];
+      const oversizedFileNames: string[] = [];
+      selectedFiles.forEach((file) => {
+        if (!file.name.toLowerCase().endsWith('.json')) {
+          invalidFileNames.push(file.name);
+          return;
+        }
+        if (file.size > MAX_AUTH_FILE_SIZE) {
+          oversizedFileNames.push(file.name);
+          return;
+        }
+        validFiles.push(file);
+      });
+
+      if (invalidFileNames.length > 0) {
+        showNotification(`已忽略非 JSON 文件：${invalidFileNames.join('、')}`, 'warning');
+      }
+      if (oversizedFileNames.length > 0) {
+        showNotification(
+          `已忽略超过 ${formatFileSize(MAX_AUTH_FILE_SIZE)} 的文件：${oversizedFileNames.join('、')}`,
+          'warning'
+        );
+      }
+      if (validFiles.length === 0) {
+        input.value = '';
+        return;
+      }
+
+      setAuthFileImporting(true);
+      try {
+        const prepared = await prepareAuthFilesForUpload(validFiles);
+        const result =
+          prepared.files.length > 0
+            ? await authFilesApi.uploadFiles(prepared.files)
+            : { status: 'error', uploaded: 0, files: [], failed: [] };
+        const reportedFailures = [...prepared.failures, ...result.failed];
+        const uploadHasFailureStatus = hasAuthFileUploadFailureStatus(result.status);
+        const unreportedFailureCount = Math.max(
+          0,
+          prepared.files.length - result.uploaded - result.failed.length
+        );
+        const failureCount = reportedFailures.length + unreportedFailureCount;
+
+        if (result.uploaded <= 0) {
+          const failedNames = reportedFailures.map((item) => item.name).filter(Boolean);
+          showNotification(
+            failedNames.length > 0
+              ? `认证文件导入失败：${failedNames.join('、')}`
+              : '认证文件导入失败',
+            'error'
+          );
+          return;
+        }
+
+        try {
+          const syncResult = await proAccountsApi.sync(managerBase, managementKey);
+          await Promise.all([loadAccounts(), loadBindingReviews()]);
+          const convertedHint =
+            prepared.convertedSourceCount > 0
+              ? `，已转换 ${prepared.convertedSourceCount} 个 Sub2API 导出文件`
+              : '';
+          const uploadStatusHint = uploadHasFailureStatus
+            ? `，CPA 返回异常状态 ${result.status}`
+            : '';
+          showNotification(
+            `导入完成：认证文件 ${result.uploaded} 个，新增账号 ${syncResult.created}，更新 ${syncResult.updated}${convertedHint}${uploadStatusHint}`,
+            failureCount > 0 ||
+              uploadHasFailureStatus ||
+              syncResult.pending > 0 ||
+              syncResult.conflicts > 0
+              ? 'warning'
+              : 'success'
+          );
+        } catch (syncError) {
+          showNotification(
+            `已导入 ${result.uploaded} 个认证文件，但统一账号同步失败：${
+              syncError instanceof Error ? syncError.message : String(syncError)
+            }。请点击“同步存量”重试。`,
+            'warning'
+          );
+        }
+
+        if (failureCount > 0) {
+          const failedNames = reportedFailures.map((item) => item.name).filter(Boolean);
+          showNotification(
+            `另有 ${failureCount} 个文件导入失败${
+              failedNames.length > 0 ? `：${failedNames.join('、')}` : ''
+            }`,
+            'warning'
+          );
+        }
+      } catch (importError) {
+        showNotification(
+          `认证文件导入失败：${
+            importError instanceof Error ? importError.message : String(importError)
+          }`,
+          'error'
+        );
+      } finally {
+        setAuthFileImporting(false);
+        input.value = '';
+      }
+    },
+    [loadAccounts, loadBindingReviews, managementKey, managerBase, showNotification]
+  );
+
+  const exportAuthFiles = useCallback(
+    async (fileNames: string[], skippedAccountCount: number) => {
+      if (authFileExporting) return;
+      setAuthFileExporting(true);
+      const failedFileNames: string[] = [];
+      let successCount = 0;
+      try {
+        for (const fileName of fileNames) {
+          try {
+            const blob = await authFilesApi.downloadBlob(fileName);
+            downloadBlob({
+              filename: fileName,
+              blob,
+            });
+            successCount += 1;
+          } catch {
+            failedFileNames.push(fileName);
+          }
+        }
+
+        const skippedHint =
+          skippedAccountCount > 0 ? `，跳过 ${skippedAccountCount} 个非认证文件账号` : '';
+        if (failedFileNames.length === 0) {
+          showNotification(`已开始导出 ${successCount} 个认证文件${skippedHint}`, 'success');
+        } else {
+          showNotification(
+            `认证文件导出完成：成功 ${successCount}，失败 ${failedFileNames.length}${skippedHint}；失败文件：${failedFileNames.join('、')}`,
+            'warning'
+          );
+        }
+      } finally {
+        setAuthFileExporting(false);
+      }
+    },
+    [authFileExporting, showNotification]
+  );
+
+  const requestAuthFileExport = useCallback(() => {
+    const plan = buildAccountAuthFileExportPlan(items, selectedIDs);
+    if (plan.fileNames.length === 0) {
+      showNotification(
+        selectedIDs.size > 0
+          ? '所选账号没有可导出的 CPA 认证文件'
+          : '当前筛选结果没有可导出的 CPA 认证文件',
+        'warning'
+      );
+      return;
+    }
+
+    const scope = selectedIDs.size > 0 ? '所选账号' : '当前筛选结果';
+    const skippedHint =
+      plan.skippedAccountCount > 0
+        ? `其中 ${plan.skippedAccountCount} 个非认证文件账号将被跳过。`
+        : '';
+    const sharedHint =
+      plan.partialSharedFileNames.length > 0
+        ? `另有 ${plan.partialSharedFileNames.length} 个共享认证文件包含未选中的账号。`
+        : '';
+    showConfirmation({
+      title: '导出 CPA 认证文件',
+      message: `将从${scope}导出 ${plan.fileNames.length} 个完整 JSON 认证文件。文件包含未脱敏的 Token 等敏感凭证，请妥善保管。若认证文件由多个账号共享，内容可能包含当前筛选或勾选范围外账号的凭据。${skippedHint}${sharedHint}`,
+      confirmText: '确认导出',
+      cancelText: '取消',
+      variant: 'primary',
+      onConfirm: () => exportAuthFiles(plan.fileNames, plan.skippedAccountCount),
+    });
+  }, [exportAuthFiles, items, selectedIDs, showConfirmation, showNotification]);
 
   const toggleAccount = async (account: ProAccount, nextEnabled = !account.enabled) => {
     if (nextEnabled === account.enabled) return;
@@ -900,6 +1097,46 @@ export function AccountsPage() {
           />
         </div>
         <div className={styles.toolbarActions}>
+          <DropdownMenu
+            ariaLabel="账号管理更多操作"
+            disabled={authFileImporting || authFileExporting}
+            triggerClassName={`btn btn-secondary ${styles.toolbarMoreTrigger}`}
+            menuClassName={styles.toolbarMoreMenu}
+            triggerIcon={<IconMoreVertical size={17} />}
+            triggerLabel={
+              <>
+                <span>更多操作</span>
+                <IconChevronDown size={14} />
+              </>
+            }
+            items={[
+              {
+                key: 'import-auth-files',
+                label: '导入 CPA 认证文件',
+                icon: <IconArrowUpFromLine size={16} />,
+                iconTone: 'green',
+                onClick: () => authFileInputRef.current?.click(),
+              },
+              {
+                key: 'export-auth-files',
+                label:
+                  selectedAccounts.length > 0
+                    ? '导出选中的 CPA 认证文件'
+                    : '导出当前结果的 CPA 认证文件',
+                icon: <IconDownload size={16} />,
+                iconTone: 'indigo',
+                onClick: requestAuthFileExport,
+              },
+            ]}
+          />
+          <input
+            ref={authFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            multiple
+            hidden
+            onChange={handleAuthFileImport}
+          />
           <Button
             variant="secondary"
             iconOnly

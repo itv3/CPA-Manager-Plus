@@ -391,6 +391,20 @@ describe('authFilesApi save auth file upload contracts', () => {
   });
 });
 
+describe('authFilesApi download', () => {
+  it('returns the original response Blob without text re-encoding', async () => {
+    const blob = new Blob(['\ufeff{"access_token":"secret"}'], {
+      type: 'application/json',
+    });
+    mocks.getRaw.mockResolvedValue({ data: blob });
+
+    await expect(authFilesApi.downloadBlob('raw-auth.json')).resolves.toBe(blob);
+    expect(mocks.getRaw).toHaveBeenCalledWith('/auth-files/download?name=raw-auth.json', {
+      responseType: 'blob',
+    });
+  });
+});
+
 describe('authFilesApi patchFieldsForAuthIndexes', () => {
   const getUploadedFile = () => {
     const formData = mocks.postForm.mock.calls[0]?.[1];

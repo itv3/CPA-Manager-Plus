@@ -54,6 +54,28 @@
   justify-content: flex-end;
 }
 
+.toolbarMoreTrigger {
+  min-width: 122px;
+  border-radius: var(--app-radius-md) !important;
+  transform: none !important;
+}
+
+.toolbarMoreTrigger:hover,
+.toolbarMoreTrigger:focus-visible {
+  transform: none !important;
+}
+
+.toolbarMoreMenu {
+  width: 252px;
+  min-width: 252px;
+  max-width: 252px;
+  font-size: 14px;
+}
+
+.toolbarMoreMenu button {
+  padding: 10px 12px;
+}
+
 .searchField {
   position: relative;
   display: flex;
