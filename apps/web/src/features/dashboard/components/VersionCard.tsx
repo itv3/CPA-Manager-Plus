@@ -20,7 +20,12 @@ import { configApi, versionApi } from '@/services/api';
 import type { UsageServiceStatus } from '@/services/api/usageService';
 import type { ConnectionStatus } from '@/types';
 import { compareVersions, type VersionComparison } from '@/utils/version';
-import { readApiLatestVersion, readManagerLatestTag } from '@/features/system/versionChecks';
+import {
+  readApiLatestVersion,
+  readApiReleaseUrl,
+  readManagerLatestTag,
+  readManagerReleaseUrl,
+} from '@/features/system/versionChecks';
 import styles from './VersionCard.module.scss';
 
 interface VersionCardProps {
@@ -42,8 +47,12 @@ interface VersionCardProps {
 
 interface LatestVersions {
   latestApp: string;
+  latestAppUrl: string;
   latestApi: string;
+  latestApiUrl: string;
 }
+
+type VersionModalTarget = 'manager' | 'api';
 
 type HealthTone = 'ok' | 'warn' | 'error' | 'muted';
 
@@ -96,7 +105,13 @@ export function VersionCard({
   const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const clearCache = useConfigStore((state) => state.clearCache);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
-  const [latest, setLatest] = useState<LatestVersions>({ latestApp: '', latestApi: '' });
+  const [latest, setLatest] = useState<LatestVersions>({
+    latestApp: '',
+    latestAppUrl: '',
+    latestApi: '',
+    latestApiUrl: '',
+  });
+  const [versionModalTarget, setVersionModalTarget] = useState<VersionModalTarget | null>(null);
   const [checkingAppVersion, setCheckingAppVersion] = useState(false);
   const [checkingApiVersion, setCheckingApiVersion] = useState(false);
   const [requestLogModalOpen, setRequestLogModalOpen] = useState(false);
@@ -116,7 +131,10 @@ export function VersionCard({
     const tasks: Array<Promise<Partial<LatestVersions>>> = [
       versionApi
         .checkManagerLatest()
-        .then((data) => ({ latestApp: readManagerLatestTag(data) }))
+        .then((data) => ({
+          latestApp: readManagerLatestTag(data),
+          latestAppUrl: readManagerReleaseUrl(data),
+        }))
         .catch(() => ({})),
     ];
 
@@ -124,7 +142,10 @@ export function VersionCard({
       tasks.push(
         versionApi
           .checkLatest()
-          .then((data) => ({ latestApi: readApiLatestVersion(data) }))
+          .then((data) => ({
+            latestApi: readApiLatestVersion(data),
+            latestApiUrl: readApiReleaseUrl(data),
+          }))
           .catch(() => ({}))
       );
     }
@@ -134,9 +155,11 @@ export function VersionCard({
       const merged = results.reduce<LatestVersions>(
         (acc, partial) => ({
           latestApp: partial.latestApp ?? acc.latestApp,
+          latestAppUrl: partial.latestAppUrl ?? acc.latestAppUrl,
           latestApi: partial.latestApi ?? acc.latestApi,
+          latestApiUrl: partial.latestApiUrl ?? acc.latestApiUrl,
         }),
-        { latestApp: '', latestApi: '' }
+        { latestApp: '', latestAppUrl: '', latestApi: '', latestApiUrl: '' }
       );
       setLatest(merged);
     });
@@ -153,7 +176,8 @@ export function VersionCard({
 
     if (!config && connectionStatus === 'connected') {
       fetchConfig().catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+        const message =
+          error instanceof Error ? error.message : typeof error === 'string' ? error : '';
         showNotification(
           `${t('notification.update_failed')}${message ? `: ${message}` : ''}`,
           'error'
@@ -203,7 +227,8 @@ export function VersionCard({
       showNotification(t('notification.request_log_updated'), 'success');
       setRequestLogModalOpen(false);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+      const message =
+        error instanceof Error ? error.message : typeof error === 'string' ? error : '';
       updateConfigValue('request-log', previous);
       showNotification(
         `${t('notification.update_failed')}${message ? `: ${message}` : ''}`,
@@ -219,8 +244,9 @@ export function VersionCard({
     try {
       const data = await versionApi.checkManagerLatest();
       const latestApp = readManagerLatestTag(data);
+      const latestAppUrl = readManagerReleaseUrl(data);
       const comparison = compareVersions(latestApp, appVersion);
-      setLatest((prev) => ({ ...prev, latestApp }));
+      setLatest((prev) => ({ ...prev, latestApp, latestAppUrl }));
 
       if (!latestApp) {
         showNotification(t('system_info.manager_version_check_error'), 'error');
@@ -241,7 +267,8 @@ export function VersionCard({
         showNotification(t('system_info.manager_version_is_latest'), 'success');
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+      const message =
+        error instanceof Error ? error.message : typeof error === 'string' ? error : '';
       const suffix = message ? `: ${message}` : '';
       showNotification(`${t('system_info.manager_version_check_error')}${suffix}`, 'error');
     } finally {
@@ -254,8 +281,9 @@ export function VersionCard({
     try {
       const data = await versionApi.checkLatest();
       const latestApi = readApiLatestVersion(data);
+      const latestApiUrl = readApiReleaseUrl(data);
       const comparison = compareVersions(latestApi, apiVersion);
-      setLatest((prev) => ({ ...prev, latestApi }));
+      setLatest((prev) => ({ ...prev, latestApi, latestApiUrl }));
 
       if (!latestApi) {
         showNotification(t('system_info.version_check_error'), 'error');
@@ -268,12 +296,16 @@ export function VersionCard({
       }
 
       if (comparison > 0) {
-        showNotification(t('system_info.version_update_available', { version: latestApi }), 'warning');
+        showNotification(
+          t('system_info.version_update_available', { version: latestApi }),
+          'warning'
+        );
       } else {
         showNotification(t('system_info.version_is_latest'), 'success');
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+      const message =
+        error instanceof Error ? error.message : typeof error === 'string' ? error : '';
       const suffix = message ? `: ${message}` : '';
       showNotification(`${t('system_info.version_check_error')}${suffix}`, 'error');
     } finally {
@@ -303,6 +335,29 @@ export function VersionCard({
     () => renderBadge(compareVersions(latest.latestApi, apiVersion), latest.latestApi, t),
     [apiVersion, latest.latestApi, t]
   );
+
+  const versionDetails = useMemo(() => {
+    if (!versionModalTarget) return null;
+    if (versionModalTarget === 'manager') {
+      return {
+        current: appVersion,
+        latest: latest.latestApp,
+        releaseUrl: latest.latestAppUrl,
+        comparison: compareVersions(latest.latestApp, appVersion),
+      };
+    }
+    return {
+      current: apiVersion,
+      latest: latest.latestApi,
+      releaseUrl: latest.latestApiUrl,
+      comparison: compareVersions(latest.latestApi, apiVersion),
+    };
+  }, [apiVersion, appVersion, latest, versionModalTarget]);
+
+  const handleOpenReleaseNotes = useCallback(() => {
+    if (!versionDetails?.releaseUrl) return;
+    window.open(versionDetails.releaseUrl, '_blank', 'noopener,noreferrer');
+  }, [versionDetails]);
 
   const buildTimeDisplay = serverBuildDate
     ? new Date(serverBuildDate).toLocaleString(i18n.language)
@@ -354,7 +409,8 @@ export function VersionCard({
           }
         : {
             label: t('dashboard.collector_status_title'),
-            value: collectorLoading && !collectorStatus ? '...' : t('dashboard.health_status_normal'),
+            value:
+              collectorLoading && !collectorStatus ? '...' : t('dashboard.health_status_normal'),
             tone: collectorLoading && !collectorStatus ? 'muted' : 'ok',
             icon: <IconCheck size={16} />,
           };
@@ -375,7 +431,9 @@ export function VersionCard({
         }
       : {
           label: t('dashboard.health_queue_status'),
-          value: collector?.queue || (collectorLoading && !collectorStatus ? '...' : t('dashboard.health_status_normal')),
+          value:
+            collector?.queue ||
+            (collectorLoading && !collectorStatus ? '...' : t('dashboard.health_status_normal')),
           tone: collectorLoading && !collectorStatus ? 'muted' : 'ok',
           icon: <IconCheck size={16} />,
         };
@@ -411,7 +469,9 @@ export function VersionCard({
               }
             }}
           >
-            <div className={styles.icon}><IconSettings size={18} /></div>
+            <div className={styles.icon}>
+              <IconSettings size={18} />
+            </div>
             <div className={styles.content}>
               <div className={styles.versionHeader}>
                 <div className={styles.label}>{t('dashboard.app_version')}</div>
@@ -434,14 +494,33 @@ export function VersionCard({
                 </Button>
               </div>
               <div className={styles.valueWrap}>
-                <span className={styles.value}>{appVersion || t('dashboard.version_unknown')}</span>
-                {appBadge && <span className={`${styles.badge} ${appBadge.className}`}>{appBadge.label}</span>}
+                <button
+                  type="button"
+                  className={styles.versionSummaryButton}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setVersionModalTarget('manager');
+                  }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  aria-label={t('dashboard.open_version_details')}
+                >
+                  <span className={styles.value}>
+                    {appVersion || t('dashboard.version_unknown')}
+                  </span>
+                  {appBadge && (
+                    <span className={`${styles.badge} ${appBadge.className}`}>
+                      {appBadge.label}
+                    </span>
+                  )}
+                </button>
               </div>
             </div>
           </div>
 
           <div className={styles.item}>
-            <div className={styles.icon}><IconSatellite size={18} /></div>
+            <div className={styles.icon}>
+              <IconSatellite size={18} />
+            </div>
             <div className={styles.content}>
               <div className={styles.versionHeader}>
                 <div className={styles.label}>{t('dashboard.api_version')}</div>
@@ -460,14 +539,29 @@ export function VersionCard({
                 </Button>
               </div>
               <div className={styles.valueWrap}>
-                <span className={styles.value}>{apiVersion || t('dashboard.version_unknown')}</span>
-                {apiBadge && <span className={`${styles.badge} ${apiBadge.className}`}>{apiBadge.label}</span>}
+                <button
+                  type="button"
+                  className={styles.versionSummaryButton}
+                  onClick={() => setVersionModalTarget('api')}
+                  aria-label={t('dashboard.open_version_details')}
+                >
+                  <span className={styles.value}>
+                    {apiVersion || t('dashboard.version_unknown')}
+                  </span>
+                  {apiBadge && (
+                    <span className={`${styles.badge} ${apiBadge.className}`}>
+                      {apiBadge.label}
+                    </span>
+                  )}
+                </button>
               </div>
             </div>
           </div>
 
           <div className={styles.item}>
-            <div className={styles.icon}><IconTimer size={18} /></div>
+            <div className={styles.icon}>
+              <IconTimer size={18} />
+            </div>
             <div className={styles.content}>
               <div className={styles.label}>{t('dashboard.build_time')}</div>
               <div className={styles.value}>{buildTimeDisplay}</div>
@@ -475,7 +569,9 @@ export function VersionCard({
           </div>
 
           <div className={styles.item}>
-            <div className={styles.icon}><IconExternalLink size={18} /></div>
+            <div className={styles.icon}>
+              <IconExternalLink size={18} />
+            </div>
             <div className={styles.content}>
               <div className={styles.label}>{t('dashboard.cpa_base')}</div>
               <div className={styles.value}>{cpaBase || '-'}</div>
@@ -493,13 +589,19 @@ export function VersionCard({
                 <div className={`${styles.healthIcon} ${styles[item.tone]}`}>{item.icon}</div>
                 <div className={styles.content}>
                   <div className={styles.label}>{item.label}</div>
-                  <div className={`${styles.value} ${styles[`${item.tone}Text`]}`}>{item.value}</div>
+                  <div className={`${styles.value} ${styles[`${item.tone}Text`]}`}>
+                    {item.value}
+                  </div>
                 </div>
               </>
             );
 
             return item.to ? (
-              <Link key={item.label} to={item.to} className={`${styles.healthItem} ${styles.healthLink}`}>
+              <Link
+                key={item.label}
+                to={item.to}
+                className={`${styles.healthItem} ${styles.healthLink}`}
+              >
                 {content}
               </Link>
             ) : (
@@ -510,6 +612,59 @@ export function VersionCard({
           })}
         </div>
       </section>
+
+      <Modal
+        open={Boolean(versionDetails)}
+        onClose={() => setVersionModalTarget(null)}
+        title={t('dashboard.version_details_title')}
+        width={440}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setVersionModalTarget(null)}>
+              {t('common.close')}
+            </Button>
+            <Button onClick={handleOpenReleaseNotes} disabled={!versionDetails?.releaseUrl}>
+              <IconExternalLink size={16} />
+              {t('dashboard.view_changelog')}
+            </Button>
+          </>
+        }
+      >
+        {versionDetails && (
+          <div className={styles.versionDetails}>
+            <div className={styles.versionDetailsLabel}>{t('dashboard.current_version')}</div>
+            <div className={styles.versionDetailsCurrent}>{versionDetails.current}</div>
+            <div className={styles.versionDetailsLatest}>
+              {t('dashboard.latest_upstream_version')}:{' '}
+              <strong>{versionDetails.latest || t('dashboard.version_unknown')}</strong>
+            </div>
+            <div
+              className={`${styles.versionDetailsStatus} ${
+                versionDetails.comparison !== null && versionDetails.comparison > 0
+                  ? styles.versionDetailsUpdate
+                  : versionDetails.comparison === null
+                    ? styles.versionDetailsUnknown
+                    : styles.versionDetailsCurrentStatus
+              }`}
+            >
+              {versionDetails.comparison !== null && versionDetails.comparison > 0 ? (
+                <IconInfo size={18} />
+              ) : versionDetails.comparison === null ? (
+                <IconInfo size={18} />
+              ) : (
+                <IconCheck size={18} />
+              )}
+              <span>
+                {versionDetails.comparison !== null && versionDetails.comparison > 0
+                  ? t('dashboard.version_upstream_update_available')
+                  : versionDetails.comparison === null
+                    ? t('dashboard.version_compare_unavailable')
+                    : t('dashboard.version_upstream_is_latest')}
+              </span>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={requestLogModalOpen}

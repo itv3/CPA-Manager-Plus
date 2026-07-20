@@ -8,8 +8,20 @@ export const readManagerLatestTag = (data: ManagerLatestRelease | VersionPayload
   return typeof raw === 'string' ? raw : raw == null ? '' : String(raw);
 };
 
+export const readManagerReleaseUrl = (data: ManagerLatestRelease | VersionPayload): string => {
+  if (!data) return '';
+  const raw = data.html_url ?? data.release_url;
+  return typeof raw === 'string' ? raw : raw == null ? '' : String(raw);
+};
+
 export const readApiLatestVersion = (data: VersionPayload): string => {
   if (!data) return '';
   const raw = data['latest-version'] ?? data.latest_version ?? data.latest;
+  return typeof raw === 'string' ? raw : raw == null ? '' : String(raw);
+};
+
+export const readApiReleaseUrl = (data: VersionPayload): string => {
+  if (!data) return '';
+  const raw = data['release-url'] ?? data.release_url;
   return typeof raw === 'string' ? raw : raw == null ? '' : String(raw);
 };

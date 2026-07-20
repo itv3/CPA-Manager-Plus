@@ -38,7 +38,8 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.item, .healthItem {
+.item,
+.healthItem {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -189,6 +190,32 @@
     min-width: 0;
   }
 
+  .versionSummaryButton {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0;
+    padding: 1px 2px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:hover .value {
+      color: var(--color-primary);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--focus-border);
+      outline-offset: 2px;
+    }
+  }
+
   .versionHeader {
     display: flex;
     align-items: center;
@@ -218,10 +245,18 @@
     }
   }
 
-  .okText { color: #10b981; }
-  .warnText { color: #f59e0b; }
-  .errorText { color: #ef4444; }
-  .mutedText { color: var(--text-tertiary); }
+  .okText {
+    color: #10b981;
+  }
+  .warnText {
+    color: #f59e0b;
+  }
+  .errorText {
+    color: #ef4444;
+  }
+  .mutedText {
+    color: var(--text-tertiary);
+  }
 }
 
 .badge {
@@ -241,4 +276,62 @@
     color: #10b981;
     border: 1px solid rgba(16, 185, 129, 0.2);
   }
+}
+
+.versionDetails {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 4px;
+  text-align: center;
+}
+
+.versionDetailsLabel {
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.versionDetailsCurrent {
+  font-size: 30px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.versionDetailsLatest {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.versionDetailsStatus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid;
+  border-radius: var(--app-radius-md);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.versionDetailsUpdate {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.versionDetailsCurrentStatus {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.versionDetailsUnknown {
+  color: var(--text-secondary);
+  background: var(--app-surface-muted);
+  border-color: var(--app-border);
 }

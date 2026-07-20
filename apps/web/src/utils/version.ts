@@ -4,9 +4,19 @@
 
 export type VersionComparison = -1 | 0 | 1 | null;
 
+/**
+ * Pro 组件版本使用“上游版本-修改序号”，比较上游更新时忽略修改序号。
+ * 例如 v7.2.92-1 与上游版本比较时按 v7.2.92 处理。
+ */
+export const getUpstreamBaseVersion = (version?: string | null): string => {
+  if (!version) return '';
+  const cleaned = version.trim();
+  if (!cleaned) return '';
+  return cleaned.split('-', 1)[0];
+};
+
 export const parseVersionSegments = (version?: string | null): number[] | null => {
-  if (!version) return null;
-  const cleaned = version.trim().replace(/^v/i, '');
+  const cleaned = getUpstreamBaseVersion(version).replace(/^v/i, '');
   if (!cleaned) return null;
   const parts = cleaned
     .split(/[^0-9]+/)
