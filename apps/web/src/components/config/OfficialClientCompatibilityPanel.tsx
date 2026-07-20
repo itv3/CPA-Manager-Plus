@@ -16,6 +16,7 @@ const CODEX_PROFILE = 'codex-desktop-0.145.0-alpha.18-v1';
 const PAGE_LIMIT = 100;
 
 type CompatibilityFilter = 'all' | 'enabled' | 'disabled';
+type CompatibilityPlatform = 'anthropic' | 'openai';
 
 type CompatibilityRow = {
   account: ProAccount;
@@ -37,6 +38,38 @@ const isOfficialClientAccount = (account: ProAccount) =>
 
 const defaultProfile = (platform: string) =>
   platform.toLowerCase() === 'anthropic' ? CLAUDE_PROFILE : CODEX_PROFILE;
+
+const compareCompatibilityRows = (left: CompatibilityRow, right: CompatibilityRow) => {
+  if (left.compatibility.enabled !== right.compatibility.enabled) {
+    return left.compatibility.enabled ? -1 : 1;
+  }
+  if (left.account.createdAtMs !== right.account.createdAtMs) {
+    return right.account.createdAtMs - left.account.createdAtMs;
+  }
+  return (left.account.name || left.account.id).localeCompare(
+    right.account.name || right.account.id
+  );
+};
+
+const loadPlatformAccounts = async (
+  managerBase: string,
+  managementKey: string,
+  platform: CompatibilityPlatform
+) => {
+  const accounts: ProAccount[] = [];
+  let cursor = '';
+  do {
+    const page = await proAccountsApi.list(managerBase, managementKey, {
+      platform,
+      authType: 'api',
+      cursor: cursor || undefined,
+      limit: PAGE_LIMIT,
+    });
+    accounts.push(...page.items.filter(isOfficialClientAccount));
+    cursor = page.nextCursor || '';
+  } while (cursor);
+  return accounts;
+};
 
 const operationID = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -66,17 +99,12 @@ export function OfficialClientCompatibilityPanel({
     setLoading(true);
     setError('');
     try {
-      const accounts: ProAccount[] = [];
-      let cursor = '';
-      do {
-        const page = await proAccountsApi.list(managerBase, managementKey, {
-          authType: 'api',
-          cursor: cursor || undefined,
-          limit: PAGE_LIMIT,
-        });
-        accounts.push(...page.items.filter(isOfficialClientAccount));
-        cursor = page.nextCursor || '';
-      } while (cursor);
+      const accountGroups = await Promise.all(
+        (['anthropic', 'openai'] as const).map((platform) =>
+          loadPlatformAccounts(managerBase, managementKey, platform)
+        )
+      );
+      const accounts = accountGroups.flat();
 
       const details = await Promise.all(
         accounts.map(async (account): Promise<CompatibilityRow> => {
@@ -101,11 +129,7 @@ export function OfficialClientCompatibilityPanel({
           }
         })
       );
-      setRows(
-        details.sort(
-          (left, right) => left.account.name?.localeCompare(right.account.name ?? '') ?? 0
-        )
-      );
+      setRows(details);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -119,11 +143,13 @@ export function OfficialClientCompatibilityPanel({
 
   const visibleRows = useMemo(
     () =>
-      rows.filter((row) => {
-        if (filter === 'enabled') return row.compatibility.enabled;
-        if (filter === 'disabled') return !row.compatibility.enabled;
-        return true;
-      }),
+      rows
+        .filter((row) => {
+          if (filter === 'enabled') return row.compatibility.enabled;
+          if (filter === 'disabled') return !row.compatibility.enabled;
+          return true;
+        })
+        .sort(compareCompatibilityRows),
     [filter, rows]
   );
 
