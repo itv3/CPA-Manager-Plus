@@ -83,6 +83,7 @@ const deferred = <T,>() => {
 };
 
 const successfulConnectivity = (protocol: string) => ({
+  account: { ...account, healthStatus: 'healthy', lastTestedAtMs: 1000 },
   connectivity: {
     success: true,
     statusCode: 200,
@@ -118,6 +119,7 @@ describe('账号连通性测试弹窗', () => {
       models: ['client-model', 'other-model'],
     });
     apiMocks.testAccount.mockResolvedValue({
+      account: { ...account, healthStatus: 'error', lastTestedAtMs: 1000 },
       connectivity: {
         success: false,
         statusCode: 429,
@@ -209,6 +211,9 @@ describe('账号连通性测试弹窗', () => {
     expect(treeText(renderer.root)).not.toContain('已通过 ');
     expect(treeText(renderer.root)).toContain('重试');
     expect(onTested).toHaveBeenCalledTimes(1);
+    expect(onTested).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'account-1', lastTestedAtMs: 1000 })
+    );
   });
 
   it('Chat Completions 账号:显示常规模式但不提供 Compact', async () => {
@@ -309,6 +314,7 @@ describe('账号连通性测试弹窗', () => {
 
   it('成功时显示实际响应和完成状态', async () => {
     apiMocks.testAccount.mockResolvedValue({
+      account: { ...account, healthStatus: 'healthy', lastTestedAtMs: 1000 },
       connectivity: {
         success: true,
         statusCode: 200,

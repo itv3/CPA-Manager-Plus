@@ -7,7 +7,6 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountgateway"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proaccountprobe"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -220,17 +219,10 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	if input.Headers != nil {
 		headers = *input.Headers
 	}
-	probe, err := s.probe.ProbeCandidate(ctx, proaccountprobe.Input{
-		Platform: account.Platform, AuthType: "api", BaseURL: baseURL, APIKey: input.APIKey,
-		ProxyURL: proxyURL, ProtocolMode: input.ProtocolMode, Model: input.TestModel,
-		AllowedModels: allowed, ModelMapping: mapping, Headers: headers,
-	})
-	if err != nil || probe.SourceType == "" {
-		operation = s.fail(ctx, operation, "candidate_probe_failed", "新凭证预探测失败，旧配置未修改")
-		if err == nil {
-			err = ErrConnectivityFailed
-		}
-		return Result{Account: account, Operation: operation, Probe: &probe}, err
+	replacementSourceType, ok := replacementAPISourceType(account.Platform, oldSourceType, input.ProtocolMode)
+	if !ok {
+		operation = s.fail(ctx, operation, "invalid_protocol_mode", "无法根据当前账号与显式协议确定替换凭证类型")
+		return Result{Account: account, Operation: operation}, ErrInvalidRequest
 	}
 	compatibility := cloneOfficialClientCompatibility(editable.OfficialClientCompatibility)
 	if input.OfficialClientCompatibility != nil {
@@ -239,35 +231,36 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	if compatibility != nil {
 		capabilities, capabilityErr := s.gateway.Capabilities(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 		if capabilityErr != nil {
-			return Result{Account: account, Operation: operation, Probe: &probe}, capabilityErr
+			return Result{Account: account, Operation: operation}, capabilityErr
 		}
 		if !capabilities.OfficialClientCompatibility {
 			operation = s.fail(ctx, operation, "official_client_compatibility_unsupported", "当前 Gateway 不支持 API Key 官方客户端兼容")
-			return Result{Account: account, Operation: operation, Probe: &probe}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
+			return Result{Account: account, Operation: operation}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
 		}
-		if !proaccountgateway.SupportsOfficialClientCompatibility(probe.SourceType) {
+		if !proaccountgateway.SupportsOfficialClientCompatibility(replacementSourceType) {
 			if compatibility.Enabled {
 				operation = s.fail(ctx, operation, "official_client_compatibility_unsupported", "目标协议不支持已启用的 API Key 官方客户端兼容")
-				return Result{Account: account, Operation: operation, Probe: &probe}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
+				return Result{Account: account, Operation: operation}, proaccountgateway.ErrOfficialClientCompatibilityUnsupported
 			}
 			// Chat Completions 等目标不接收兼容字段；显式关闭或旧关闭态可以安全省略。
 			compatibility = nil
 		}
 	}
 	contextValue := operation.Context
-	contextValue["newSourceType"] = probe.SourceType
+	contextValue["newSourceType"] = replacementSourceType
 	contextValue["oldSourceType"] = oldSourceType
 	contextValue["oldSourceLocator"] = oldSourceLocator
 	contextValue["oldAuthIndex"] = account.Binding.AuthIndex
 	contextValue["oldEnabled"] = account.Enabled
 	operation, err = s.transition(ctx, operation, model.ProOperationStateProbed, account.ID, contextValue, "", "", "delete_replacement_credential")
 	if err != nil {
-		return Result{Account: account, Operation: operation, Probe: &probe}, err
+		return Result{Account: account, Operation: operation}, err
 	}
-	savedBaseURL := normalizeAPIBaseURLForSource(probe.SourceType, baseURL)
+	// 编辑保存只按当前协议或用户显式选择确定凭证类型，不向模型上游发起协议探测。
+	savedBaseURL := normalizeAPIBaseURLForSource(replacementSourceType, baseURL)
 	newSnapshot, err := s.gateway.CreateDisabledAPI(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.CreateAPIInput{
-		Platform: account.Platform, SourceType: probe.SourceType, Name: account.Name,
-		BaseURL: savedBaseURL, APIKey: input.APIKey, ProxyURL: proxyURL, Headers: headers, AllowedModels: allowed, ModelMapping: mapping, CatalogModels: probe.Models,
+		Platform: account.Platform, SourceType: replacementSourceType, Name: account.Name,
+		BaseURL: savedBaseURL, APIKey: input.APIKey, ProxyURL: proxyURL, Headers: headers, AllowedModels: allowed, ModelMapping: mapping,
 		OfficialClientCompatibility: compatibility,
 	})
 	if err != nil {
@@ -275,7 +268,7 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 			_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator)
 		}
 		operation = s.fail(ctx, operation, "replacement_create_failed", "替换凭证创建失败，旧配置未修改")
-		return Result{Account: account, Operation: operation, Probe: &probe}, err
+		return Result{Account: account, Operation: operation}, err
 	}
 	contextValue["replacementSourceType"] = newSnapshot.SourceType
 	contextValue["replacementSourceLocator"] = newSnapshot.SourceLocator
@@ -283,57 +276,64 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 	operation, err = s.transition(ctx, operation, model.ProOperationStateCredentialSavedDisabled, account.ID, contextValue, "", "", "delete_replacement_credential")
 	if err != nil {
 		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator)
-		return Result{Account: account, Operation: operation, Probe: &probe}, err
-	}
-	operation, err = s.transition(ctx, operation, model.ProOperationStateModelsConfigured, account.ID, contextValue, "", "", "delete_replacement_credential")
-	if err != nil {
-		return Result{Account: account, Operation: operation, Probe: &probe}, err
-	}
-	rules, _ := proaccountgateway.NormalizeModelRules(proaccountgateway.ModelRules{AllowedModels: allowed, ModelMapping: mapping})
-	clientModel := chooseClientTestModel(input.TestModel, allowed, mapping, probe.TestModel)
-	if !proaccountgateway.ModelAllowed(clientModel, rules) {
-		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator)
-		operation = s.fail(ctx, operation, "model_not_allowed", "测试模型不在有效白名单内，旧配置未修改")
-		return Result{Account: account, Operation: operation, Probe: &probe}, ErrConnectivityFailed
-	}
-	connectivity, err := s.gateway.TestAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, proaccountgateway.AccountReference{
-		Platform: account.Platform, AuthType: account.AuthType, SourceType: newSnapshot.SourceType,
-		SourceLocator: newSnapshot.SourceLocator, AuthIndex: newSnapshot.AuthIndex,
-	}, proaccountgateway.ResolveMappedModel(clientModel, rules))
-	if err != nil || !connectivity.Success {
-		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator)
-		operation = s.fail(ctx, operation, "replacement_test_failed", "替换凭证测试失败，旧配置未修改")
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, ErrConnectivityFailed
-	}
-	operation, err = s.transition(ctx, operation, model.ProOperationStateTested, account.ID, contextValue, "", "", "delete_replacement_credential")
-	if err != nil {
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		return Result{Account: account, Operation: operation}, err
 	}
 	snapshot, err := s.gateway.Snapshot(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	if err != nil {
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		if cleanupErr := s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator); cleanupErr != nil {
+			return Result{Account: account, Operation: operation}, errors.Join(err, cleanupErr)
+		}
+		operation, transitionErr := s.transition(ctx, operation, model.ProOperationStateFailed, account.ID, contextValue,
+			"replacement_snapshot_failed", "读取替换凭证状态失败，旧配置未修改", "")
+		if transitionErr != nil {
+			return Result{Account: account, Operation: operation}, transitionErr
+		}
+		return Result{Account: account, Operation: operation}, err
+	}
+	oldSnapshot := proaccountgateway.AccountSnapshot{
+		SourceType: oldSourceType, SourceLocator: oldSourceLocator, AuthIndex: account.Binding.AuthIndex,
+	}
+	if replacementCredentialBoundElsewhere(snapshot.Accounts, oldSnapshot, newSnapshot) {
+		if cleanupErr := s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, newSnapshot.SourceType, newSnapshot.SourceLocator); cleanupErr != nil {
+			return Result{Account: account, Operation: operation}, errors.Join(ErrCredentialAlreadyBound, cleanupErr)
+		}
+		operation, transitionErr := s.transition(ctx, operation, model.ProOperationStateFailed, account.ID, contextValue,
+			"replacement_credential_conflict", "该 API Key 已绑定到另一个账号，旧配置未修改", "")
+		if transitionErr != nil {
+			return Result{Account: account, Operation: operation}, transitionErr
+		}
+		return Result{Account: account, Operation: operation}, ErrCredentialAlreadyBound
+	}
+	operation, err = s.transition(ctx, operation, model.ProOperationStateModelsConfigured, account.ID, contextValue, "", "", "delete_replacement_credential")
+	if err != nil {
+		return Result{Account: account, Operation: operation}, err
+	}
+	// 保存与测试严格分离；连通性只允许由“测试连接”入口显式触发。
+	operation, err = s.transition(ctx, operation, model.ProOperationStateTested, account.ID, contextValue, "", "编辑保存已跳过连通性测试", "delete_replacement_credential")
+	if err != nil {
+		return Result{Account: account, Operation: operation}, err
 	}
 	projectedLocator, err := proaccountgateway.ProjectedLocatorAfterDelete(snapshot.Accounts,
-		proaccountgateway.AccountSnapshot{SourceType: oldSourceType, SourceLocator: oldSourceLocator}, newSnapshot)
+		oldSnapshot, newSnapshot)
 	if err != nil {
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		return Result{Account: account, Operation: operation}, err
 	}
 	contextValue["replacementProjectedLocator"] = projectedLocator
 	oldStatusChanged := !proaccountgateway.SharesEnabledState(snapshot.Accounts,
 		proaccountgateway.AccountSnapshot{SourceType: oldSourceType, SourceLocator: oldSourceLocator})
 	contextValue["oldStatusChanged"] = oldStatusChanged
 	operation, err = s.transition(ctx, operation, model.ProOperationStateCompensating, account.ID, contextValue,
-		"replacement_switch_pending", "正在切换到已测试的替换凭证", "rollback_replacement_switch")
+		"replacement_switch_pending", "正在切换到已保存的替换凭证", "rollback_replacement_switch")
 	if err != nil {
 		_ = s.deleteAccountByAuthIndex(ctx, setup, newSnapshot.AuthIndex)
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		return Result{Account: account, Operation: operation}, err
 	}
 
 	if oldStatusChanged {
 		if _, err = s.gateway.SetAccountEnabled(ctx, setup.CPAUpstreamURL, setup.ManagementKey,
 			oldSourceType, oldSourceLocator, false); err != nil {
 			operation, _ = s.rollbackReplacementSwitch(ctx, setup, operation)
-			return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+			return Result{Account: account, Operation: operation}, err
 		}
 	}
 	enabledSnapshot := newSnapshot
@@ -342,27 +342,89 @@ func (s *Service) migrateAPI(ctx context.Context, input UpdateInput, operation m
 			newSnapshot.SourceType, newSnapshot.SourceLocator, true)
 		if err != nil {
 			operation, _ = s.rollbackReplacementSwitch(ctx, setup, operation)
-			return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+			return Result{Account: account, Operation: operation}, err
 		}
 	}
 	enabledSnapshot.SourceLocator = projectedLocator
 	discovery := discoveryFromSnapshot(enabledSnapshot)
-	if input.Name != nil {
+	discovery.Name = account.Name
+	if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
 		discovery.Name = strings.TrimSpace(*input.Name)
-	} else {
-		discovery.Name = account.Name
 	}
 	updated, err := s.repository.RebindManaged(ctx, account.ID, input.ExpectedVersion, discovery, s.now().UnixMilli())
 	if err != nil {
 		operation, _ = s.rollbackReplacementSwitch(ctx, setup, operation)
-		return Result{Account: account, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		return Result{Account: account, Operation: operation}, err
+	}
+	if input.Notes != nil {
+		updated, err = s.repository.UpdateMetadata(ctx, updated.ID, updated.Version, updated.Name, *input.Notes, s.now().UnixMilli())
+		if err != nil {
+			return Result{Account: updated, Operation: operation}, err
+		}
 	}
 	if err = s.deleteAccountByAuthIndex(ctx, setup, account.Binding.AuthIndex); err != nil {
-		return Result{Account: updated, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+		return Result{Account: updated, Operation: operation}, err
 	}
 	operation, err = s.transition(ctx, operation, model.ProOperationStateEnabled, account.ID, contextValue, "", "", "")
 	s.syncBindingsAfterMutation(ctx, setup)
-	return Result{Account: updated, Operation: operation, Probe: &probe, Connectivity: &connectivity}, err
+	return Result{Account: updated, Operation: operation}, err
+}
+
+// replacementCredentialBoundElsewhere 判断替换凭证是否已属于其他账号。
+// 新旧凭证在切换期间会短暂同时存在，因此只排除本次候选凭证和目标账号原凭证。
+func replacementCredentialBoundElsewhere(accounts []proaccountgateway.AccountSnapshot, oldAccount proaccountgateway.AccountSnapshot, replacement proaccountgateway.AccountSnapshot) bool {
+	authIndex := strings.TrimSpace(replacement.AuthIndex)
+	if authIndex == "" {
+		return false
+	}
+	for _, candidate := range accounts {
+		if strings.TrimSpace(candidate.AuthIndex) != authIndex {
+			continue
+		}
+		if sameAccountLocation(candidate, replacement) || sameAccountLocation(candidate, oldAccount) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func sameAccountLocation(left proaccountgateway.AccountSnapshot, right proaccountgateway.AccountSnapshot) bool {
+	return strings.TrimSpace(left.SourceType) == strings.TrimSpace(right.SourceType) &&
+		strings.TrimSpace(left.SourceLocator) == strings.TrimSpace(right.SourceLocator)
+}
+
+// replacementAPISourceType 在不访问模型上游的前提下确定编辑后的凭证类型。
+// 自动模式沿用当前协议；只有用户明确选择协议时才切换 OpenAI 的底层配置类型。
+func replacementAPISourceType(platform string, currentSourceType string, protocolMode string) (string, bool) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	currentSourceType = strings.TrimSpace(currentSourceType)
+	protocolMode = strings.ToLower(strings.TrimSpace(protocolMode))
+	if protocolMode == "" {
+		protocolMode = "auto"
+	}
+	switch platform {
+	case "openai":
+		switch protocolMode {
+		case "responses":
+			return proaccountgateway.SourceCodexAPIKey, true
+		case "chat_completions":
+			return proaccountgateway.SourceOpenAICompatibility, true
+		case "auto":
+			if currentSourceType == proaccountgateway.SourceCodexAPIKey || currentSourceType == proaccountgateway.SourceOpenAICompatibility {
+				return currentSourceType, true
+			}
+		}
+	case "anthropic":
+		if protocolMode == "auto" && currentSourceType == proaccountgateway.SourceClaudeAPIKey {
+			return currentSourceType, true
+		}
+	case "gemini":
+		if protocolMode == "auto" && currentSourceType == proaccountgateway.SourceGeminiAPIKey {
+			return currentSourceType, true
+		}
+	}
+	return "", false
 }
 
 func (s *Service) updateRulesAndName(ctx context.Context, input UpdateInput, operation model.ProAccountDraft, account model.ProAccount) (Result, error) {
@@ -431,16 +493,16 @@ func (s *Service) updateRulesAndName(ctx context.Context, input UpdateInput, ope
 	if err != nil {
 		return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 	}
-	if input.Name != nil && strings.TrimSpace(*input.Name) != account.Name {
-		discovery := model.ProAccountDiscovery{
-			Platform: account.Platform, AuthType: account.AuthType, SourceType: sourceType,
-			Name: strings.TrimSpace(*input.Name), Email: account.Email, Enabled: account.Enabled,
-			HealthStatus: account.HealthStatus, LastError: account.LastError,
-			AllowedModels: account.AllowedModels, ModelMapping: account.ModelMapping, ModelRuleVersion: account.ModelRuleVersion,
-			ExpiresAtMS: account.ExpiresAtMS, AuthIndex: account.Binding.AuthIndex,
-			SourceLocator: sourceLocator, SourceFingerprint: account.Binding.SourceFingerprint,
+	if input.Name != nil || input.Notes != nil {
+		name := account.Name
+		notes := account.Notes
+		if input.Name != nil {
+			name = strings.TrimSpace(*input.Name)
 		}
-		account, err = s.repository.RebindManaged(ctx, account.ID, account.Version, discovery, s.now().UnixMilli())
+		if input.Notes != nil {
+			notes = *input.Notes
+		}
+		account, err = s.repository.UpdateMetadata(ctx, account.ID, account.Version, name, notes, s.now().UnixMilli())
 		if err != nil {
 			return Result{Account: account, Operation: operation}, restoreCompatibility(err)
 		}

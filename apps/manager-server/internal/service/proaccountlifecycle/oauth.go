@@ -49,6 +49,7 @@ func (s *Service) StartOAuth(ctx context.Context, input OAuthStartInput) (OAuthR
 	}
 	operation, created, err := s.start(ctx, input.OperationID, input.IdempotencyKey, "add", "", map[string]any{
 		"platform": input.Platform, "authType": "oauth", "knownDraftLocators": knownDrafts,
+		"name": strings.TrimSpace(input.Name), "notes": strings.TrimSpace(input.Notes),
 	})
 	if err != nil {
 		return OAuthResult{Operation: operation}, err
@@ -138,6 +139,14 @@ func (s *Service) OAuthStatus(ctx context.Context, operationID string) (OAuthRes
 	account, err := s.accounts.Get(ctx, synced.Items[0].ProAccountID)
 	if err != nil {
 		return OAuthResult{Operation: operation}, err
+	}
+	account, err = s.repository.UpdateMetadata(
+		ctx, account.ID, account.Version,
+		contextString(operation.Context, "name"), contextString(operation.Context, "notes"),
+		s.now().UnixMilli(),
+	)
+	if err != nil {
+		return OAuthResult{Operation: operation, Account: &account}, err
 	}
 	contextValue := operation.Context
 	contextValue["sourceType"] = account.Binding.SourceType

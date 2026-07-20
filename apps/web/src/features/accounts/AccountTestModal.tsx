@@ -24,7 +24,7 @@ interface AccountTestModalProps {
   managerBase: string;
   managementKey: string;
   onClose: () => void;
-  onTested: () => void;
+  onTested: (account: ProAccount) => void;
 }
 
 type TestStatus = 'idle' | 'connecting' | 'success' | 'error';
@@ -244,7 +244,7 @@ export function AccountTestModal({
       }
       setOutputLines(nextLines);
       setResult(connectivity);
-      onTested();
+      onTested(response.account);
     } catch (testError) {
       setError(testError instanceof Error ? testError.message : String(testError));
     } finally {

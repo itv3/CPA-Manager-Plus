@@ -24,6 +24,7 @@ export interface ProAccount {
   sourceType: string;
   planType?: string;
   name?: string;
+  notes?: string;
   email?: string;
   enabled: boolean;
   healthStatus: string;
@@ -379,6 +380,7 @@ export interface ProAccountProbeInput {
 
 export interface ProAccountCreateAPIInput extends ProAccountProbeInput {
   name?: string;
+  notes?: string;
   testModel: string;
   saveDisabledOnTestFailure: boolean;
   draftOnly?: boolean;
@@ -389,6 +391,8 @@ export interface ProAccountCreateAPIInput extends ProAccountProbeInput {
 export interface ProAccountCreateVertexInput {
   operationId: string;
   idempotencyKey: string;
+  name?: string;
+  notes?: string;
   file: File;
   location: string;
   allowedModels: string[];
@@ -403,6 +407,7 @@ export interface ProAccountUpdateInput {
   idempotencyKey: string;
   expectedVersion: number;
   name?: string;
+  notes?: string;
   baseUrl?: string;
   apiKey?: string;
   proxyUrl?: string;
@@ -410,7 +415,6 @@ export interface ProAccountUpdateInput {
   headers?: Record<string, string>;
   allowedModels: string[];
   modelMapping: Record<string, string>;
-  testModel?: string;
   officialClientCompatibility?: ProAccountOfficialClientCompatibility;
 }
 
@@ -612,6 +616,7 @@ export const proAccountsApi = {
           platform: input.platform,
           auth_type: 'api',
           name: input.name,
+          notes: input.notes,
           base_url: input.baseUrl,
           api_key: input.apiKey,
           proxy_url: input.proxyUrl,
@@ -639,6 +644,8 @@ export const proAccountsApi = {
     const form = new FormData();
     form.append('operation_id', input.operationId);
     form.append('idempotency_key', input.idempotencyKey);
+    form.append('name', input.name ?? '');
+    form.append('notes', input.notes ?? '');
     form.append('file', input.file);
     form.append('location', input.location);
     form.append('allowed_models', JSON.stringify(input.allowedModels));
@@ -661,7 +668,13 @@ export const proAccountsApi = {
   async startOAuth(
     base: string,
     managementKey: string,
-    input: { operationId: string; idempotencyKey: string; platform: string }
+    input: {
+      operationId: string;
+      idempotencyKey: string;
+      platform: string;
+      name?: string;
+      notes?: string;
+    }
   ) {
     try {
       const response = await axios.post<ProAccountOAuthResult>(
@@ -670,6 +683,8 @@ export const proAccountsApi = {
           operation_id: input.operationId,
           idempotency_key: input.idempotencyKey,
           platform: input.platform,
+          name: input.name,
+          notes: input.notes,
         },
         requestConfig(managementKey, input.idempotencyKey)
       );
@@ -1098,6 +1113,7 @@ export const proAccountsApi = {
         {
           ...mutationBody(input.operationId, input.idempotencyKey, input.expectedVersion),
           name: input.name,
+          notes: input.notes,
           base_url: input.baseUrl,
           api_key: input.apiKey,
           proxy_url: input.proxyUrl,
@@ -1105,7 +1121,6 @@ export const proAccountsApi = {
           headers: input.headers,
           allowed_models: input.allowedModels,
           model_mapping: input.modelMapping,
-          test_model: input.testModel,
           official_client_compatibility: officialClientCompatibilityBody(
             input.officialClientCompatibility
           ),
@@ -1172,6 +1187,7 @@ export const proAccountsApi = {
       const response = await axios.post<{
         connectivity: ProAccountConnectivityResult;
         operation: ProAccountOperation;
+        account: ProAccount;
       }>(
         buildURL(base, `/v0/pro/accounts/${encodeURIComponent(account.id)}/test`),
         {

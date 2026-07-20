@@ -20,7 +20,7 @@ const buttonByText = (renderer: ReactTestRenderer, text: string) => {
 };
 
 describe('统一账号模型规则编辑器', () => {
-  it('空白名单显示允许全部并支持填入自定义模型', () => {
+  it('空白名单说明无映射时允许全部且支持填入自定义模型', () => {
     let models: string[] = [];
     let renderer!: ReactTestRenderer;
 
@@ -40,7 +40,9 @@ describe('统一账号模型规则编辑器', () => {
       renderer = create(render());
     });
 
-    expect(JSON.stringify(renderer.toJSON())).toContain('允许全部模型');
+    const content = JSON.stringify(renderer.toJSON());
+    expect(content).toContain('没有映射时允许全部模型');
+    expect(content).toContain('存在映射时仅允许映射后的客户端模型名');
 
     const manualInput = renderer.root.findByProps({
       placeholder: '输入自定义模型名称，可使用末尾通配符 *',

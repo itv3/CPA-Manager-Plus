@@ -125,6 +125,7 @@ export function AccountWizardModal({
   const [platform, setPlatform] = useState<AccountPlatform>('openai');
   const [authType, setAuthType] = useState<AccountAuthType>('oauth');
   const [name, setName] = useState('');
+  const [notes, setNotes] = useState('');
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com');
   const [apiKey, setApiKey] = useState('');
   const [proxyUrl, setProxyUrl] = useState('');
@@ -170,6 +171,7 @@ export function AccountWizardModal({
     setPlatform('openai');
     setAuthType('oauth');
     setName('');
+    setNotes('');
     setBaseUrl('https://api.openai.com');
     setApiKey('');
     setProxyUrl('');
@@ -260,6 +262,10 @@ export function AccountWizardModal({
   };
 
   const validateSelection = () => {
+    if (!name.trim()) {
+      setError('请输入账号名称');
+      return false;
+    }
     if (!authTypesForPlatform(platform, capabilities).includes(authType)) {
       setError('当前平台不支持所选认证方式');
       return false;
@@ -492,6 +498,8 @@ export function AccountWizardModal({
       const result = await proAccountsApi.startOAuth(managerBase, managementKey, {
         ...identity,
         platform,
+        name: name.trim(),
+        notes: notes.trim(),
       });
       const url = result.oauth?.url ?? '';
       if (!url) throw new Error('Gateway 未返回授权地址');
@@ -643,6 +651,8 @@ export function AccountWizardModal({
     try {
       const result = await proAccountsApi.createVertex(managerBase, managementKey, {
         ...identity,
+        name: name.trim(),
+        notes: notes.trim(),
         file: vertexFile,
         location: location.trim(),
         allowedModels: [],
@@ -753,6 +763,7 @@ export function AccountWizardModal({
           ...identity,
           platform,
           name: name.trim(),
+          notes: notes.trim(),
           baseUrl: baseUrl.trim(),
           apiKey,
           proxyUrl: proxyUrl.trim() || undefined,
@@ -997,18 +1008,24 @@ export function AccountWizardModal({
                     className={styles.input}
                     value={name}
                     onChange={(event) => setName(event.target.value)}
-                    placeholder={
-                      authType === 'api'
-                        ? accountDisplayName(platform, authType)
-                        : '授权后自动使用账号名称或邮箱'
-                    }
-                    disabled={authType !== 'api' || busy}
+                    placeholder={accountDisplayName(platform, authType)}
+                    disabled={configurationLocked}
                   />
                   <span className={styles.fieldHint}>
-                    {authType === 'api'
-                      ? '可选；留空时使用平台和认证类型生成显示名称。'
-                      : 'OAuth 和 Vertex 会从凭证中自动识别，保存后仍可在编辑页面修改。'}
+                    必填；仅用于账号管理页面显示，不会修改上游授权账号。
                   </span>
+                </label>
+
+                <label className={`${styles.field} ${styles.fieldFull}`}>
+                  <span className={styles.fieldLabel}>备注</span>
+                  <textarea
+                    className={styles.textarea}
+                    value={notes}
+                    onChange={(event) => setNotes(event.target.value)}
+                    placeholder="可选，用于记录账号用途、归属或其他说明"
+                    rows={3}
+                    disabled={configurationLocked}
+                  />
                 </label>
 
                 {authType === 'api' ? (
@@ -1357,6 +1374,8 @@ export function AccountWizardModal({
                 </div>
               </div>
               <dl className={styles.review}>
+                <dt>账号名称</dt>
+                <dd>{name.trim()}</dd>
                 <dt>平台 / 类型</dt>
                 <dd>{accountDisplayName(platform, authType)}</dd>
                 <dt>允许模型</dt>

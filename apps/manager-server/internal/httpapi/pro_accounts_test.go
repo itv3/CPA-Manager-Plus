@@ -65,10 +65,13 @@ func TestProAccountLifecycleCreateMigrateToggleAndDelete(t *testing.T) {
 		t.Fatalf("create body = %s", createRR.Body.String())
 	}
 	accountID := created.Account.ID
+	gatewayState.mu.Lock()
+	apiCallsBeforeMigrate := gatewayState.apiCalls
+	gatewayState.mu.Unlock()
 
 	migrateRR := testutil.Request(t, handler, http.MethodPut, "/v0/pro/accounts/"+accountID, fmt.Sprintf(`{
 		"operation_id":"migrate-operation","idempotency_key":"migrate-key","expected_version":%d,
-		"base_url":%q,"api_key":"replacement-key","protocol_mode":"auto",
+		"base_url":%q,"api_key":"replacement-key","protocol_mode":"chat_completions",
 		"allowed_models":["client-model"],"model_mapping":{"client-model":"upstream-model"},"test_model":"client-model"
 	}`, created.Account.Version, chatUpstream.URL), testutil.AdminKey)
 	testutil.RequireStatus(t, migrateRR, http.StatusOK)
@@ -85,9 +88,9 @@ func TestProAccountLifecycleCreateMigrateToggleAndDelete(t *testing.T) {
 		t.Fatalf("migrate body = %s", migrateRR.Body.String())
 	}
 	gatewayState.mu.Lock()
-	if len(gatewayState.codex) != 0 || len(gatewayState.compat) != 1 {
+	if len(gatewayState.codex) != 0 || len(gatewayState.compat) != 1 || gatewayState.apiCalls != apiCallsBeforeMigrate {
 		gatewayState.mu.Unlock()
-		t.Fatalf("迁移后 Gateway 配置 codex=%d compat=%d", len(gatewayState.codex), len(gatewayState.compat))
+		t.Fatalf("迁移后 Gateway 配置 codex=%d compat=%d apiCalls=%d，迁移前 apiCalls=%d", len(gatewayState.codex), len(gatewayState.compat), gatewayState.apiCalls, apiCallsBeforeMigrate)
 	}
 	gatewayState.mu.Unlock()
 
@@ -117,7 +120,7 @@ func TestProAccountLifecycleCreateMigrateToggleAndDelete(t *testing.T) {
 	}
 	gatewayState.mu.Lock()
 	defer gatewayState.mu.Unlock()
-	if gatewayState.apiCalls < 2 || len(gatewayState.compat) != 0 {
+	if gatewayState.apiCalls != apiCallsBeforeMigrate || len(gatewayState.compat) != 0 {
 		t.Fatalf("Gateway 最终状态 apiCalls=%d compat=%d", gatewayState.apiCalls, len(gatewayState.compat))
 	}
 }
@@ -779,7 +782,9 @@ func TestProAccountModelRulesAndConnectivityUseSameAllowlist(t *testing.T) {
 		"operation_id":"test-allowed","idempotency_key":"test-allowed-key","expected_version":2,"model":"client-model"
 	}`, testutil.AdminKey)
 	testutil.RequireStatus(t, allowedRR, http.StatusOK)
-	if !strings.Contains(allowedRR.Body.String(), `"success":true`) || apiCalls.Load() != 1 {
+	if !strings.Contains(allowedRR.Body.String(), `"success":true`) ||
+		!strings.Contains(allowedRR.Body.String(), `"account":{"id":"`+accountID+`"`) ||
+		!strings.Contains(allowedRR.Body.String(), `"lastTestedAtMs":`) || apiCalls.Load() != 1 {
 		t.Fatalf("test body = %s apiCalls=%d", allowedRR.Body.String(), apiCalls.Load())
 	}
 }

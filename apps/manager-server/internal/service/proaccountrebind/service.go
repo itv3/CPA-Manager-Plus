@@ -149,6 +149,7 @@ func (s *Service) confirmOne(ctx context.Context, input ConfirmInput, item Confi
 		return result
 	}
 	discovery := discoveryFromSnapshot(discoverySnapshot)
+	discovery.Name = account.Name
 	account, err = s.repository.RebindFromReview(ctx, review.ID, account.ID, item.ExpectedVersion, discovery, s.now().UnixMilli())
 	if err != nil {
 		return s.failItem(ctx, operation, result, err)

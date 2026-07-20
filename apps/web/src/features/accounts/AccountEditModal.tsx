@@ -50,6 +50,7 @@ export function AccountEditModal({
 }: AccountEditModalProps) {
   const [current, setCurrent] = useState<ProAccount | null>(null);
   const [name, setName] = useState('');
+  const [notes, setNotes] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [originalBaseUrl, setOriginalBaseUrl] = useState('');
   const [proxyUrl, setProxyUrl] = useState('');
@@ -89,6 +90,7 @@ export function AccountEditModal({
         const headers = formatHeaderLines(result.editable.headers ?? {});
         setCurrent(result.item);
         setName(result.item.name ?? '');
+        setNotes(result.item.notes ?? '');
         setBaseUrl(result.editable.baseUrl ?? '');
         setOriginalBaseUrl(result.editable.baseUrl ?? '');
         setProxyUrl(result.editable.proxyUrl ?? '');
@@ -192,6 +194,10 @@ export function AccountEditModal({
 
   const submit = async () => {
     if (!current) return;
+    if (!name.trim()) {
+      setError('请输入账号名称');
+      return;
+    }
     if (credentialsChanged && !apiKey.trim()) {
       setError('修改 API 地址或 Headers 时必须填写新 API Key');
       return;
@@ -210,6 +216,7 @@ export function AccountEditModal({
         ...identity,
         expectedVersion: current.version,
         name: name.trim(),
+        notes: notes.trim(),
         baseUrl: credentialsChanged ? baseUrl.trim() : undefined,
         apiKey: credentialsChanged ? apiKey : undefined,
         proxyUrl: credentialsChanged || proxyChanged ? proxyUrl.trim() : undefined,
@@ -217,7 +224,6 @@ export function AccountEditModal({
         headers: credentialsChanged ? headers : undefined,
         allowedModels: resolved.allowedModels,
         modelMapping: resolved.modelMapping,
-        testModel: credentialsChanged ? resolved.testModel : undefined,
         officialClientCompatibility:
           compatibilityChanged && compatibility ? compatibility : undefined,
       });
@@ -225,7 +231,7 @@ export function AccountEditModal({
       onSaved(result);
       onClose();
     } catch (saveError) {
-      setApiKey('');
+      // 保存失败时保留用户刚输入的密钥，避免再次点击保存退化为仅更新名称和备注。
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
       setSaving(false);
@@ -279,6 +285,16 @@ export function AccountEditModal({
                   className={styles.input}
                   value={`${current.platform} / ${current.authType}`}
                   disabled
+                />
+              </label>
+              <label className={`${styles.field} ${styles.fieldFull}`}>
+                <span className={styles.fieldLabel}>备注</span>
+                <textarea
+                  className={styles.textarea}
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  placeholder="可选，用于记录账号用途、归属或其他说明"
+                  rows={3}
                 />
               </label>
               {current.authType === 'api' ? (

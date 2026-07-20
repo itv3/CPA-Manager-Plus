@@ -32,6 +32,7 @@ type Input struct {
 type Result struct {
 	Connectivity proaccountgateway.ConnectivityResult `json:"connectivity"`
 	Operation    model.ProAccountDraft                `json:"operation"`
+	Account      model.ProAccount                     `json:"account"`
 }
 
 type AccountReader interface {
@@ -86,9 +87,9 @@ func (s *Service) Test(ctx context.Context, input Input) (Result, error) {
 	}
 	if !created {
 		if operation.State == model.ProOperationStateEnabled {
-			return Result{Operation: operation}, nil
+			return Result{Account: account, Operation: operation}, nil
 		}
-		return Result{Operation: operation}, errors.New("account test operation is not restartable")
+		return Result{Account: account, Operation: operation}, errors.New("account test operation is not restartable")
 	}
 	if input.ExpectedVersion <= 0 || input.ExpectedVersion != account.Version {
 		operation = s.fail(ctx, operation, "version_conflict")
@@ -138,25 +139,31 @@ func (s *Service) Test(ctx context.Context, input Input) (Result, error) {
 	}
 	if err != nil {
 		operation = s.fail(ctx, operation, "connectivity_request_failed")
-		_, _ = s.repository.RecordTestResult(ctx, account.ID, false, "connectivity_request_failed", s.now().UnixMilli())
-		return Result{Operation: operation}, err
+		if updated, updateErr := s.repository.RecordTestResult(ctx, account.ID, false, "connectivity_request_failed", s.now().UnixMilli()); updateErr == nil {
+			account = updated
+		}
+		return Result{Account: account, Operation: operation}, err
 	}
 	if !connectivity.Success {
 		operation = s.fail(ctx, operation, connectivity.ErrorCode)
-		_, _ = s.repository.RecordTestResult(ctx, account.ID, false, connectivity.ErrorCode, s.now().UnixMilli())
-		return Result{Connectivity: connectivity, Operation: operation}, nil
+		if updated, updateErr := s.repository.RecordTestResult(ctx, account.ID, false, connectivity.ErrorCode, s.now().UnixMilli()); updateErr == nil {
+			account = updated
+		}
+		return Result{Account: account, Connectivity: connectivity, Operation: operation}, nil
 	}
 	operation, err = s.operations.Transition(ctx, operation.OperationID, proaccountoperation.TransitionInput{
 		ExpectedVersion: operation.Version, State: model.ProOperationStateTested, Context: operation.Context,
 	})
 	if err != nil {
-		return Result{Connectivity: connectivity, Operation: operation}, err
+		return Result{Account: account, Connectivity: connectivity, Operation: operation}, err
 	}
-	_, _ = s.repository.RecordTestResult(ctx, account.ID, true, "", s.now().UnixMilli())
+	if updated, updateErr := s.repository.RecordTestResult(ctx, account.ID, true, "", s.now().UnixMilli()); updateErr == nil {
+		account = updated
+	}
 	operation, err = s.operations.Transition(ctx, operation.OperationID, proaccountoperation.TransitionInput{
 		ExpectedVersion: operation.Version, State: model.ProOperationStateEnabled, Context: operation.Context,
 	})
-	return Result{Connectivity: connectivity, Operation: operation}, err
+	return Result{Account: account, Connectivity: connectivity, Operation: operation}, err
 }
 
 func (s *Service) fail(ctx context.Context, operation model.ProAccountDraft, code string) model.ProAccountDraft {

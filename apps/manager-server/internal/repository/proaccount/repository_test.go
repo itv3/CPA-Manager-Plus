@@ -177,6 +177,144 @@ func TestRepositoryListFiltersAndCursor(t *testing.T) {
 	}
 }
 
+func TestRepositoryListOrdersByEnabledAndLastUsedWithoutTestTime(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	ids := map[string]string{}
+	for index, discovery := range []model.ProAccountDiscovery{
+		{Platform: "openai", AuthType: "api", SourceType: "auth_file", Name: "启用-较早使用", Enabled: true, SourceLocator: "enabled-old.json"},
+		{Platform: "openai", AuthType: "api", SourceType: "auth_file", Name: "停用-最近使用", Enabled: false, SourceLocator: "disabled-new.json"},
+		{Platform: "openai", AuthType: "api", SourceType: "auth_file", Name: "启用-最近使用", Enabled: true, SourceLocator: "enabled-new.json"},
+	} {
+		result, syncErr := repo.Sync(ctx, []model.ProAccountDiscovery{discovery}, int64(1000+index), false)
+		if syncErr != nil || len(result.Items) != 1 {
+			t.Fatalf("写入账号：result=%#v err=%v", result, syncErr)
+		}
+		ids[discovery.Name] = result.Items[0].ProAccountID
+	}
+	for name, lastUsedAtMS := range map[string]int64{
+		"启用-较早使用": 1000,
+		"停用-最近使用": 3000,
+		"启用-最近使用": 2000,
+	} {
+		if _, err := db.Exec(`update pro_accounts set last_used_at_ms = ? where id = ?`, lastUsedAtMS, ids[name]); err != nil {
+			t.Fatalf("设置最近使用时间：%v", err)
+		}
+	}
+	if _, err := repo.RecordTestResult(ctx, ids["启用-较早使用"], true, "", 9000); err != nil {
+		t.Fatalf("记录测速结果：%v", err)
+	}
+
+	firstPage, err := repo.List(ctx, model.ProAccountListFilter{Limit: 2})
+	if err != nil || len(firstPage.Items) != 2 || firstPage.NextCursor == "" {
+		t.Fatalf("读取第一页：result=%#v err=%v", firstPage, err)
+	}
+	if firstPage.Items[0].Name != "启用-最近使用" || firstPage.Items[1].Name != "启用-较早使用" {
+		t.Fatalf("启用账号排序错误：%q, %q", firstPage.Items[0].Name, firstPage.Items[1].Name)
+	}
+	secondPage, err := repo.List(ctx, model.ProAccountListFilter{Limit: 2, Cursor: firstPage.NextCursor})
+	if err != nil || len(secondPage.Items) != 1 || secondPage.Items[0].Name != "停用-最近使用" {
+		t.Fatalf("停用账号应排在启用账号之后：result=%#v err=%v", secondPage, err)
+	}
+}
+
+func TestRepositoryMetadataSurvivesDiscoverySyncAndSupportsNotesSearch(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	discovery := model.ProAccountDiscovery{
+		Platform: "anthropic", AuthType: "api", SourceType: "config_claude_api_key",
+		Name: "自动生成名称", Enabled: true, AuthIndex: "auth-metadata", SourceLocator: "index:0",
+	}
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{discovery}, 1000, false)
+	if err != nil || len(created.Items) != 1 {
+		t.Fatalf("创建账号：result=%#v err=%v", created, err)
+	}
+	account, ok, err := repo.Get(ctx, created.Items[0].ProAccountID)
+	if err != nil || !ok {
+		t.Fatalf("读取账号：ok=%v err=%v", ok, err)
+	}
+	account, err = repo.UpdateMetadata(ctx, account.ID, account.Version, "生产 AnyRouter", "财务组专用", 2000)
+	if err != nil {
+		t.Fatalf("保存名称与备注：%v", err)
+	}
+	discovery.Name = "再次自动生成的名称"
+	if _, err := repo.Sync(ctx, []model.ProAccountDiscovery{discovery}, 3000, false); err != nil {
+		t.Fatalf("再次同步：%v", err)
+	}
+	account, ok, err = repo.Get(ctx, account.ID)
+	if err != nil || !ok || account.Name != "生产 AnyRouter" || account.Notes != "财务组专用" {
+		t.Fatalf("同步不应覆盖 Manager 元数据：item=%#v ok=%v err=%v", account, ok, err)
+	}
+	searched, err := repo.List(ctx, model.ProAccountListFilter{Search: "财务组", Limit: 10})
+	if err != nil || len(searched.Items) != 1 || searched.Items[0].ID != account.ID {
+		t.Fatalf("按备注搜索：result=%#v err=%v", searched, err)
+	}
+}
+
+func TestRepositoryLastUsedExcludesAccountTestButKeepsRawUsage(t *testing.T) {
+	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("打开 SQLite：%v", err)
+	}
+	defer db.Close()
+	repo := proaccount.New(db)
+	ctx := context.Background()
+	created, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
+		Platform: "anthropic", AuthType: "api", SourceType: "config_claude_api_key",
+		Name: "测试过滤", Enabled: true, AuthIndex: "auth-test-filter", SourceLocator: "index:0",
+	}}, 3000, false)
+	if err != nil || len(created.Items) != 1 {
+		t.Fatalf("创建账号：result=%#v err=%v", created, err)
+	}
+	accountID := created.Items[0].ProAccountID
+	if _, err := db.Exec(`insert into pro_account_drafts (
+		operation_id, idempotency_key, operation_type, pro_account_id, state,
+		cleanup_deadline_ms, created_at_ms, updated_at_ms
+	) values ('test-operation', 'test-idempotency', 'test', ?, 'enabled', 10000, 4900, 5100)`, accountID); err != nil {
+		t.Fatalf("写入测速操作：%v", err)
+	}
+	for _, event := range []struct {
+		hash      string
+		timestamp int64
+		endpoint  string
+	}{
+		{hash: "real-usage", timestamp: 4000, endpoint: "/v1/messages"},
+		{hash: "account-test", timestamp: 5000, endpoint: "POST /v1/messages"},
+	} {
+		if _, err := db.Exec(`insert into usage_events (
+			event_hash, timestamp_ms, timestamp, model, auth_index, endpoint,
+			input_tokens, output_tokens, total_tokens, failed, created_at_ms
+		) values (?, ?, '2026-07-20T00:00:00Z', 'test-model', 'auth-test-filter', ?, 1, 1, 2, 0, ?)`,
+			event.hash, event.timestamp, event.endpoint, event.timestamp); err != nil {
+			t.Fatalf("写入用量事件：%v", err)
+		}
+	}
+	if _, err := repo.Sync(ctx, []model.ProAccountDiscovery{{
+		Platform: "anthropic", AuthType: "api", SourceType: "config_claude_api_key",
+		Name: "测试过滤", Enabled: true, AuthIndex: "auth-test-filter", SourceLocator: "index:0",
+	}}, 6000, false); err != nil {
+		t.Fatalf("同步用量：%v", err)
+	}
+	account, ok, err := repo.Get(ctx, accountID)
+	if err != nil || !ok || account.LastUsedAtMS != 4000 {
+		t.Fatalf("最近使用时间应忽略测速请求：item=%#v ok=%v err=%v", account, ok, err)
+	}
+	localUsage, _, _, err := repo.Usage(ctx, account.ID, 0, 7000)
+	if err != nil || localUsage.Requests != 2 {
+		t.Fatalf("原始用量聚合不应丢弃测速事件：usage=%#v err=%v", localUsage, err)
+	}
+}
+
 func TestRepositoryUsageBackfillsRetainedHistoryAndUsesBindingValidity(t *testing.T) {
 	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {

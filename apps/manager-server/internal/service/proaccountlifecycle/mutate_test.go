@@ -80,12 +80,35 @@ func (r *migrationRepository) UpdateModelRules(_ context.Context, accountID stri
 	return r.state.account, nil
 }
 
+func (r *migrationRepository) UpdateMetadata(_ context.Context, accountID string, expectedVersion int64, name string, notes string, nowMS int64) (model.ProAccount, error) {
+	if r.state.account.ID != accountID || r.state.account.Version != expectedVersion {
+		return model.ProAccount{}, ErrResourceVersionConflict
+	}
+	if strings.TrimSpace(name) != "" {
+		r.state.account.Name = strings.TrimSpace(name)
+	}
+	r.state.account.Notes = strings.TrimSpace(notes)
+	r.state.account.UpdatedAtMS = nowMS
+	r.state.account.Version++
+	return r.state.account, nil
+}
+
 type migrationProbe struct {
 	sourceType string
 }
 
 func (p migrationProbe) ProbeCandidate(context.Context, proaccountprobe.Input) (proaccountprobe.Result, error) {
 	return proaccountprobe.Result{Platform: "openai", SourceType: p.sourceType, TestModel: "gpt-test"}, nil
+}
+
+type rejectingMigrationProbe struct {
+	t *testing.T
+}
+
+func (p rejectingMigrationProbe) ProbeCandidate(context.Context, proaccountprobe.Input) (proaccountprobe.Result, error) {
+	p.t.Helper()
+	p.t.Fatal("编辑保存不应调用候选凭证探测")
+	return proaccountprobe.Result{}, errors.New("编辑保存不应调用候选凭证探测")
 }
 
 type migrationOperations struct {
@@ -126,18 +149,20 @@ func (o *migrationOperations) Transition(_ context.Context, operationID string, 
 
 type migrationGateway struct {
 	Gateway
-	accounts       map[string]proaccountgateway.AccountSnapshot
-	replacement    proaccountgateway.AccountSnapshot
-	createInput    proaccountgateway.CreateAPIInput
-	createErr      error
-	failEnableAuth string
-	deleteErrors   map[string]error
-	calls          []string
-	editable       proaccountgateway.EditableAccount
-	capabilities   proaccountgateway.Capabilities
-	compatibility  proaccountgateway.OfficialClientCompatibility
-	restored       []proaccountgateway.OfficialClientCompatibility
-	proxyErr       error
+	accounts           map[string]proaccountgateway.AccountSnapshot
+	replacement        proaccountgateway.AccountSnapshot
+	createInput        proaccountgateway.CreateAPIInput
+	createErr          error
+	failEnableAuth     string
+	deleteErrors       map[string]error
+	calls              []string
+	editable           proaccountgateway.EditableAccount
+	capabilities       proaccountgateway.Capabilities
+	compatibility      proaccountgateway.OfficialClientCompatibility
+	restored           []proaccountgateway.OfficialClientCompatibility
+	proxyErr           error
+	testCalls          int
+	additionalAccounts []proaccountgateway.AccountSnapshot
 }
 
 func (g *migrationGateway) EditableAccount(context.Context, string, string, string, string) (proaccountgateway.EditableAccount, error) {
@@ -190,14 +215,16 @@ func (g *migrationGateway) CreateDisabledAPI(_ context.Context, _ string, _ stri
 }
 
 func (g *migrationGateway) TestAccount(context.Context, string, string, proaccountgateway.AccountReference, string) (proaccountgateway.ConnectivityResult, error) {
+	g.testCalls++
 	return proaccountgateway.ConnectivityResult{Success: true, StatusCode: 200}, nil
 }
 
 func (g *migrationGateway) Snapshot(context.Context, string, string) (proaccountgateway.SnapshotResult, error) {
-	accounts := make([]proaccountgateway.AccountSnapshot, 0, len(g.accounts))
+	accounts := make([]proaccountgateway.AccountSnapshot, 0, len(g.accounts)+len(g.additionalAccounts))
 	for _, account := range g.accounts {
 		accounts = append(accounts, account)
 	}
+	accounts = append(accounts, g.additionalAccounts...)
 	return proaccountgateway.SnapshotResult{Accounts: accounts}, nil
 }
 
@@ -259,6 +286,7 @@ func (g *migrationGateway) DeleteAccount(_ context.Context, _ string, _ string, 
 
 func TestMigrateAPISwitchesWithoutDeletingOldCredentialEarly(t *testing.T) {
 	service, state, gateway, _ := newMigrationService()
+	service.probe = rejectingMigrationProbe{t: t}
 	result, err := service.Update(context.Background(), migrationUpdateInput())
 	if err != nil {
 		t.Fatalf("迁移 API 凭证：%v", err)
@@ -276,6 +304,64 @@ func TestMigrateAPISwitchesWithoutDeletingOldCredentialEarly(t *testing.T) {
 	joined := strings.Join(gateway.calls, ",")
 	if !strings.Contains(joined, wantOrder) {
 		t.Fatalf("切换调用顺序 = %s，期望包含 %s", joined, wantOrder)
+	}
+	if gateway.testCalls != 0 {
+		t.Fatalf("编辑保存调用了连通性测试，次数 = %d", gateway.testCalls)
+	}
+}
+
+func TestMigrateAPIRejectsCredentialBoundToAnotherAccountBeforeSwitch(t *testing.T) {
+	service, state, gateway, _ := newMigrationService()
+	gateway.additionalAccounts = []proaccountgateway.AccountSnapshot{{
+		Platform: "openai", AuthType: "api", SourceType: proaccountgateway.SourceCodexAPIKey,
+		SourceLocator: "index:2", AuthIndex: "auth-new", Enabled: true, ModelRuleVersion: "rule-other",
+	}}
+
+	result, err := service.Update(context.Background(), migrationUpdateInput())
+	if !errors.Is(err, ErrCredentialAlreadyBound) {
+		t.Fatalf("重复凭证错误 = %v", err)
+	}
+	if result.Operation.State != model.ProOperationStateFailed || result.Operation.ErrorCode != "replacement_credential_conflict" {
+		t.Fatalf("重复凭证操作状态 = %#v", result.Operation)
+	}
+	if state.account.Binding.AuthIndex != "auth-old" || !state.account.Enabled {
+		t.Fatalf("重复凭证冲突改变了原账号：%#v", state.account)
+	}
+	if _, exists := gateway.accounts["auth-new"]; exists {
+		t.Fatal("重复凭证冲突后候选凭证未清理")
+	}
+	joined := strings.Join(gateway.calls, ",")
+	if strings.Contains(joined, "enabled:") || joined != "create:auth-new,delete:auth-new" {
+		t.Fatalf("重复凭证冲突仍执行了切换：%s", joined)
+	}
+	if gateway.testCalls != 0 {
+		t.Fatalf("重复凭证冲突调用了连通性测试，次数 = %d", gateway.testCalls)
+	}
+}
+
+func TestReplacementAPISourceTypeUsesCurrentOrExplicitProtocol(t *testing.T) {
+	tests := []struct {
+		name      string
+		platform  string
+		current   string
+		mode      string
+		want      string
+		wantValid bool
+	}{
+		{name: "OpenAI 自动沿用 Responses", platform: "openai", current: proaccountgateway.SourceCodexAPIKey, mode: "auto", want: proaccountgateway.SourceCodexAPIKey, wantValid: true},
+		{name: "OpenAI 自动沿用 Chat Completions", platform: "openai", current: proaccountgateway.SourceOpenAICompatibility, mode: "", want: proaccountgateway.SourceOpenAICompatibility, wantValid: true},
+		{name: "OpenAI 显式切换 Responses", platform: "openai", current: proaccountgateway.SourceOpenAICompatibility, mode: "responses", want: proaccountgateway.SourceCodexAPIKey, wantValid: true},
+		{name: "OpenAI 显式切换 Chat Completions", platform: "openai", current: proaccountgateway.SourceCodexAPIKey, mode: "chat_completions", want: proaccountgateway.SourceOpenAICompatibility, wantValid: true},
+		{name: "Anthropic 沿用当前协议", platform: "anthropic", current: proaccountgateway.SourceClaudeAPIKey, mode: "auto", want: proaccountgateway.SourceClaudeAPIKey, wantValid: true},
+		{name: "拒绝未知组合", platform: "openai", current: "unknown", mode: "auto", wantValid: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, valid := replacementAPISourceType(test.platform, test.current, test.mode)
+			if got != test.want || valid != test.wantValid {
+				t.Fatalf("凭证类型 = %q,%t，期望 %q,%t", got, valid, test.want, test.wantValid)
+			}
+		})
 	}
 }
 
@@ -344,7 +430,6 @@ func TestCreateAPIRequiresOfficialClientCompatibilityCapability(t *testing.T) {
 
 func TestMigrateAPINormalizesFullChatEndpointBeforeCompatibilitySave(t *testing.T) {
 	service, _, gateway, _ := newMigrationService()
-	service.probe = migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}
 	gateway.replacement = proaccountgateway.AccountSnapshot{
 		Platform: "openai", AuthType: "api", SourceType: proaccountgateway.SourceOpenAICompatibility,
 		SourceLocator: "provider:1:key:0", AuthIndex: "auth-new", Enabled: false,
@@ -394,7 +479,6 @@ func TestMigrateAPIRejectsEnabledCompatibilityForChatCompletions(t *testing.T) {
 			Enabled: true, Profile: "codex-desktop-0.145.0-alpha.18-v1",
 		},
 	}
-	service.probe = migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}
 	input := migrationUpdateInput()
 	input.ProtocolMode = "chat_completions"
 
@@ -523,8 +607,9 @@ func TestMigrateAPISharedProviderDoesNotDisableSiblingKeys(t *testing.T) {
 		Platform: "openai", AuthType: "api", SourceType: proaccountgateway.SourceOpenAICompatibility,
 		SourceLocator: "provider:1:key:0", AuthIndex: "auth-new", Enabled: false, ModelRuleVersion: "rule-new",
 	}
-	service.probe = migrationProbe{sourceType: proaccountgateway.SourceOpenAICompatibility}
-	result, err := service.Update(context.Background(), migrationUpdateInput())
+	input := migrationUpdateInput()
+	input.ProtocolMode = "auto"
+	result, err := service.Update(context.Background(), input)
 	if err != nil {
 		t.Fatalf("迁移共享 Provider Key：%v", err)
 	}

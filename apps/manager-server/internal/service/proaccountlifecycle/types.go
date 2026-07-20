@@ -16,6 +16,7 @@ type CreateAPIInput struct {
 	IdempotencyKey              string
 	Platform                    string
 	Name                        string
+	Notes                       string
 	BaseURL                     string
 	APIKey                      string
 	ProxyURL                    string
@@ -44,6 +45,8 @@ type CompleteDraftInput struct {
 type CreateVertexInput struct {
 	OperationID    string
 	IdempotencyKey string
+	Name           string
+	Notes          string
 	FileName       string
 	ServiceAccount []byte
 	Location       string
@@ -64,6 +67,7 @@ type MutationInput struct {
 type UpdateInput struct {
 	MutationInput
 	Name                        *string
+	Notes                       *string
 	BaseURL                     *string
 	APIKey                      string
 	ProxyURL                    *string
@@ -79,6 +83,8 @@ type OAuthStartInput struct {
 	OperationID    string
 	IdempotencyKey string
 	Platform       string
+	Name           string
+	Notes          string
 }
 
 type ReauthorizationStartInput struct {
@@ -113,6 +119,7 @@ type AccountReader interface {
 
 type AccountRepository interface {
 	Sync(ctx context.Context, discoveries []model.ProAccountDiscovery, nowMS int64, dryRun bool) (model.ProAccountSyncResult, error)
+	UpdateMetadata(ctx context.Context, accountID string, expectedVersion int64, name string, notes string, nowMS int64) (model.ProAccount, error)
 	UpdateModelRules(ctx context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error)
 	RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error)
 	RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error)

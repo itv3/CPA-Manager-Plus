@@ -50,11 +50,12 @@ func TestProAccountMigrationUpgradesLegacyTable(t *testing.T) {
 	defer db.Close()
 	var version int64
 	var ruleVersion sql.NullString
-	if err := db.QueryRow(`select version, model_rule_version from pro_accounts where id = 'legacy-id'`).Scan(&version, &ruleVersion); err != nil {
+	var notes sql.NullString
+	if err := db.QueryRow(`select version, model_rule_version, notes from pro_accounts where id = 'legacy-id'`).Scan(&version, &ruleVersion, &notes); err != nil {
 		t.Fatalf("读取迁移结果：%v", err)
 	}
-	if version != 1 || ruleVersion.Valid {
-		t.Fatalf("迁移字段 = version:%d rule:%#v", version, ruleVersion)
+	if version != 1 || ruleVersion.Valid || notes.Valid {
+		t.Fatalf("迁移字段 = version:%d rule:%#v notes:%#v", version, ruleVersion, notes)
 	}
 	var attributionQuality string
 	if err := db.QueryRow(`select attribution_quality from pro_account_bindings where pro_account_id = 'legacy-id'`).Scan(&attributionQuality); err != nil {

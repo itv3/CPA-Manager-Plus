@@ -57,6 +57,12 @@ func (s *Service) CreateVertex(ctx context.Context, input CreateVertexInput) (Re
 	if err != nil {
 		return Result{Operation: operation}, err
 	}
+	account, err = s.repository.UpdateMetadata(ctx, account.ID, account.Version, input.Name, input.Notes, s.now().UnixMilli())
+	if err != nil {
+		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, snapshot.SourceType, snapshot.SourceLocator)
+		operation = s.fail(ctx, operation, "manager_metadata_create_failed", "账号名称或备注保存失败，已清理 Vertex 草稿")
+		return Result{Account: account, Operation: operation}, err
+	}
 	contextValue := operation.Context
 	contextValue["sourceType"] = snapshot.SourceType
 	contextValue["sourceLocator"] = snapshot.SourceLocator

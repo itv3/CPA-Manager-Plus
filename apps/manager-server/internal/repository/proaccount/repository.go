@@ -23,6 +23,7 @@ type Repository interface {
 	Usage(ctx context.Context, accountID string, fromMS int64, toMS int64) (model.ProAccountLocalUsage, []model.ProAccountUsageWindow, string, error)
 	UsageCostStats(ctx context.Context, accountID string, fromMS int64, toMS int64) ([]model.ProAccountUsageCostStat, error)
 	UpdatePlanType(ctx context.Context, accountID string, planType string) error
+	UpdateMetadata(ctx context.Context, accountID string, expectedVersion int64, name string, notes string, nowMS int64) (model.ProAccount, error)
 	UpdateModelRules(ctx context.Context, accountID string, expectedVersion int64, allowedModels []string, modelMapping map[string]string, modelRuleVersion string, nowMS int64) (model.ProAccount, error)
 	RecordTestResult(ctx context.Context, accountID string, success bool, errorCode string, nowMS int64) (model.ProAccount, error)
 	RebindManaged(ctx context.Context, accountID string, expectedVersion int64, discovery model.ProAccountDiscovery, nowMS int64) (model.ProAccount, error)
@@ -42,8 +43,10 @@ type repository struct {
 }
 
 type listCursor struct {
-	UpdatedAtMS int64  `json:"updatedAtMs"`
-	ID          string `json:"id"`
+	Version      int    `json:"version"`
+	Enabled      int    `json:"enabled"`
+	LastUsedAtMS int64  `json:"lastUsedAtMs"`
+	ID           string `json:"id"`
 }
 
 func New(db *sql.DB) Repository {
@@ -65,7 +68,7 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 	}
 
 	query := `select
-		a.id, a.platform, a.auth_type, a.source_type, a.plan_type, a.name, a.email, a.enabled,
+		a.id, a.platform, a.auth_type, a.source_type, a.plan_type, a.name, a.notes, a.email, a.enabled,
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
 		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
@@ -73,7 +76,7 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 		b.first_seen_at_ms, b.last_seen_at_ms, b.created_at_ms, b.updated_at_ms
 		from pro_accounts a
 		left join pro_account_bindings b on b.pro_account_id = a.id and b.is_current = 1 ` +
-		where + ` order by a.updated_at_ms desc, a.id desc limit ?`
+		where + ` order by a.enabled desc, coalesce(a.last_used_at_ms, 0) desc, a.id desc limit ?`
 	queryArgs := append(append([]any{}, args...), filter.Limit+1)
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -97,7 +100,9 @@ func (r *repository) List(ctx context.Context, filter model.ProAccountListFilter
 	if len(items) > filter.Limit {
 		last := items[filter.Limit-1]
 		items = items[:filter.Limit]
-		nextCursor = encodeCursor(listCursor{UpdatedAtMS: last.UpdatedAtMS, ID: last.ID})
+		nextCursor = encodeCursor(listCursor{
+			Version: 1, Enabled: boolInt(last.Enabled), LastUsedAtMS: last.LastUsedAtMS, ID: last.ID,
+		})
 	}
 	return model.ProAccountListResult{Items: items, NextCursor: nextCursor, Total: total}, nil
 }
@@ -106,9 +111,9 @@ func buildListWhere(filter model.ProAccountListFilter) (string, []any, error) {
 	clauses := []string{`a.deleted_at_ms is null`}
 	args := make([]any, 0)
 	if search := strings.TrimSpace(filter.Search); search != "" {
-		clauses = append(clauses, `(lower(coalesce(a.name, '')) like ? or lower(coalesce(a.email, '')) like ? or lower(a.id) like ?)`)
+		clauses = append(clauses, `(lower(coalesce(a.name, '')) like ? or lower(coalesce(a.notes, '')) like ? or lower(coalesce(a.email, '')) like ? or lower(a.id) like ?)`)
 		like := "%" + strings.ToLower(search) + "%"
-		args = append(args, like, like, like)
+		args = append(args, like, like, like, like)
 	}
 	if value := strings.TrimSpace(filter.Platform); value != "" {
 		clauses = append(clauses, `a.platform = ?`)
@@ -131,8 +136,11 @@ func buildListWhere(filter model.ProAccountListFilter) (string, []any, error) {
 		if err != nil {
 			return "", nil, fmt.Errorf("invalid cursor: %w", err)
 		}
-		clauses = append(clauses, `(a.updated_at_ms < ? or (a.updated_at_ms = ? and a.id < ?))`)
-		args = append(args, cursor.UpdatedAtMS, cursor.UpdatedAtMS, cursor.ID)
+		clauses = append(clauses, `(a.enabled < ? or (a.enabled = ? and (
+			coalesce(a.last_used_at_ms, 0) < ? or
+			(coalesce(a.last_used_at_ms, 0) = ? and a.id < ?)
+		)))`)
+		args = append(args, cursor.Enabled, cursor.Enabled, cursor.LastUsedAtMS, cursor.LastUsedAtMS, cursor.ID)
 	}
 	return "where " + strings.Join(clauses, " and "), args, nil
 }
@@ -151,7 +159,7 @@ func decodeCursor(raw string) (listCursor, error) {
 	if err := json.Unmarshal(data, &cursor); err != nil {
 		return listCursor{}, err
 	}
-	if cursor.UpdatedAtMS <= 0 || strings.TrimSpace(cursor.ID) == "" {
+	if cursor.Version != 1 || (cursor.Enabled != 0 && cursor.Enabled != 1) || cursor.LastUsedAtMS < 0 || strings.TrimSpace(cursor.ID) == "" {
 		return listCursor{}, errors.New("cursor fields are required")
 	}
 	return cursor, nil
@@ -163,7 +171,7 @@ func (r *repository) Get(ctx context.Context, id string) (model.ProAccount, bool
 		return model.ProAccount{}, false, nil
 	}
 	row := r.db.QueryRowContext(ctx, `select
-		a.id, a.platform, a.auth_type, a.source_type, a.plan_type, a.name, a.email, a.enabled,
+		a.id, a.platform, a.auth_type, a.source_type, a.plan_type, a.name, a.notes, a.email, a.enabled,
 		a.health_status, a.last_error, a.allowed_models_json, a.model_mapping_json, a.model_rule_version,
 		a.last_used_at_ms, a.last_tested_at_ms, a.expires_at_ms, a.deleted_at_ms, a.created_at_ms, a.updated_at_ms, a.version,
 		b.id, b.auth_index, b.source_type, b.source_locator, b.source_fingerprint,
@@ -324,6 +332,59 @@ func (r *repository) UpdatePlanType(ctx context.Context, accountID string, planT
 	_, err := r.db.ExecContext(ctx, `update pro_accounts set plan_type = ?
 		where id = ? and deleted_at_ms is null and plan_type is not ?`, planType, accountID, planType)
 	return err
+}
+
+func (r *repository) UpdateMetadata(ctx context.Context, accountID string, expectedVersion int64, name string, notes string, nowMS int64) (model.ProAccount, error) {
+	accountID = strings.TrimSpace(accountID)
+	name = strings.TrimSpace(name)
+	notes = strings.TrimSpace(notes)
+	if accountID == "" {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	if expectedVersion <= 0 {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	current, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	if current.Version != expectedVersion {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	if name == "" {
+		name = current.Name
+	}
+	if current.Name == name && current.Notes == notes {
+		return current, nil
+	}
+	if nowMS <= 0 {
+		nowMS = time.Now().UnixMilli()
+	}
+	result, err := r.db.ExecContext(ctx, `update pro_accounts set
+		name = ?, notes = ?, updated_at_ms = ?, version = version + 1
+		where id = ? and version = ? and deleted_at_ms is null`,
+		nullString(name), nullString(notes), nowMS, accountID, expectedVersion)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if affected != 1 {
+		return model.ProAccount{}, ErrVersionConflict
+	}
+	updated, ok, err := r.Get(ctx, accountID)
+	if err != nil {
+		return model.ProAccount{}, err
+	}
+	if !ok {
+		return model.ProAccount{}, ErrAccountNotFound
+	}
+	return updated, nil
 }
 
 func passiveUsageWindows(metadataJSON string, usedPercent sql.NullFloat64, resetAt sql.NullInt64) []model.ProAccountUsageWindow {
@@ -510,9 +571,9 @@ func syncDiscovery(ctx context.Context, tx *sql.Tx, discovery model.ProAccountDi
 		return item, err
 	}
 	if _, err := tx.ExecContext(ctx, `insert into pro_accounts (
-		id, platform, auth_type, source_type, plan_type, name, email, enabled, health_status, last_error,
+		id, platform, auth_type, source_type, plan_type, name, notes, email, enabled, health_status, last_error,
 		allowed_models_json, model_mapping_json, model_rule_version, expires_at_ms, created_at_ms, updated_at_ms
-	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) values (?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		accountID, strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
 		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled), valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown),
 		nullString(discovery.LastError), allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, nowMS); err != nil {
@@ -661,6 +722,14 @@ func backfillAccountUsageSummary(ctx context.Context, tx *sql.Tx, accountID stri
 			and b.attribution_quality <> ?
 			and e.timestamp_ms >= b.valid_from_ms
 			and (b.valid_to_ms is null or e.timestamp_ms < b.valid_to_ms)
+			and lower(coalesce(e.endpoint, '')) not like '%/v0/management/account-test%'
+			and lower(coalesce(e.path, '')) not like '%/v0/management/account-test%'
+			and not exists (
+				select 1 from pro_account_drafts d
+				where d.pro_account_id = pro_accounts.id
+					and d.operation_type = 'test'
+					and e.timestamp_ms between d.created_at_ms and d.updated_at_ms
+			)
 		) where id = ?`, model.ProAttributionQualityAmbiguous, accountID)
 	return err
 }
@@ -682,20 +751,20 @@ func updateDiscoveredAccount(ctx context.Context, tx *sql.Tx, accountID string, 
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `update pro_accounts set
-		platform = ?, auth_type = ?, source_type = ?, plan_type = coalesce(?, plan_type), name = ?, email = ?, enabled = ?,
+		platform = ?, auth_type = ?, source_type = ?, plan_type = coalesce(?, plan_type), email = ?, enabled = ?,
 		health_status = ?, last_error = ?, allowed_models_json = ?, model_mapping_json = ?, model_rule_version = ?,
 		expires_at_ms = ?, updated_at_ms = ?, version = version + 1
 		where id = ? and (
-			platform is not ? or auth_type is not ? or source_type is not ? or plan_type is not coalesce(?, plan_type) or name is not ? or email is not ? or
+			platform is not ? or auth_type is not ? or source_type is not ? or plan_type is not coalesce(?, plan_type) or email is not ? or
 			enabled is not ? or health_status is not ? or last_error is not ? or allowed_models_json is not ? or
 			model_mapping_json is not ? or model_rule_version is not ? or expires_at_ms is not ?
 		)`,
 		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
-		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		nullString(discovery.PlanType), nullString(discovery.Email), boolInt(discovery.Enabled),
 		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
 		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS), nowMS, accountID,
 		strings.ToLower(discovery.Platform), strings.ToLower(discovery.AuthType), discovery.SourceType,
-		nullString(discovery.PlanType), nullString(discovery.Name), nullString(discovery.Email), boolInt(discovery.Enabled),
+		nullString(discovery.PlanType), nullString(discovery.Email), boolInt(discovery.Enabled),
 		valueOr(discovery.HealthStatus, model.ProAccountHealthUnknown), nullString(discovery.LastError),
 		allowedJSON, mappingJSON, nullString(discovery.ModelRuleVersion), nullInt64(discovery.ExpiresAtMS))
 	return err
@@ -753,7 +822,7 @@ type rowScanner interface {
 
 func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var item model.ProAccount
-	var planType, name, email, lastError, allowedJSON, mappingJSON, modelRuleVersion sql.NullString
+	var planType, name, notes, email, lastError, allowedJSON, mappingJSON, modelRuleVersion sql.NullString
 	var lastUsed, lastTested, expires, deletedAt sql.NullInt64
 	var enabled int
 	var bindingID sql.NullInt64
@@ -761,7 +830,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 	var isCurrent sql.NullInt64
 	var validFrom, validTo, firstSeen, lastSeen, bindingCreated, bindingUpdated sql.NullInt64
 	if err := row.Scan(
-		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &planType, &name, &email, &enabled,
+		&item.ID, &item.Platform, &item.AuthType, &item.SourceType, &planType, &name, &notes, &email, &enabled,
 		&item.HealthStatus, &lastError, &allowedJSON, &mappingJSON, &modelRuleVersion,
 		&lastUsed, &lastTested, &expires, &deletedAt, &item.CreatedAtMS, &item.UpdatedAtMS, &item.Version,
 		&bindingID, &authIndex, &bindingSourceType, &sourceLocator, &sourceFingerprint,
@@ -771,6 +840,7 @@ func scanAccount(row rowScanner) (model.ProAccount, error) {
 		return model.ProAccount{}, err
 	}
 	item.Name = name.String
+	item.Notes = notes.String
 	item.PlanType = planType.String
 	item.Email = email.String
 	item.Enabled = enabled != 0

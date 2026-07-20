@@ -108,7 +108,7 @@ export function AccountModelRulesEditor({
         <div>
           <h3 className={styles.sectionTitle}>模型限制（可选）</h3>
           <p className={styles.sectionDescription}>
-            列表为空时允许全部模型；同步或填入模型后仅允许列表中的模型。
+            列表为空且没有映射时允许全部模型；存在映射时仅注册映射后的客户端模型名。
           </p>
         </div>
       </div>
@@ -147,7 +147,7 @@ export function AccountModelRulesEditor({
             </div>
           ) : (
             <div className={styles.modelAllNotice}>
-              尚未选择模型，当前允许全部模型。可点击下方按钮同步，或直接填入模型名称。
+              尚未选择模型。没有映射时允许全部模型；存在映射时仅允许映射后的客户端模型名。
             </div>
           )}
 

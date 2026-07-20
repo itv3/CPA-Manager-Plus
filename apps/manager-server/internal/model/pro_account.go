@@ -38,6 +38,7 @@ type ProAccount struct {
 	SourceType       string             `json:"sourceType"`
 	PlanType         string             `json:"planType,omitempty"`
 	Name             string             `json:"name,omitempty"`
+	Notes            string             `json:"notes,omitempty"`
 	Email            string             `json:"email,omitempty"`
 	Enabled          bool               `json:"enabled"`
 	HealthStatus     string             `json:"healthStatus"`

@@ -11,6 +11,7 @@ func ensureProAccountTables(db *sql.DB) error {
 			source_type text not null,
 			plan_type text,
 			name text,
+			notes text,
 			email text,
 			enabled integer not null default 1,
 			health_status text not null default 'unknown',
@@ -31,6 +32,8 @@ func ensureProAccountTables(db *sql.DB) error {
 		`create index if not exists idx_pro_accounts_enabled on pro_accounts(enabled)`,
 		`create index if not exists idx_pro_accounts_health on pro_accounts(health_status)`,
 		`create index if not exists idx_pro_accounts_updated on pro_accounts(updated_at_ms desc, id desc)`,
+		`create index if not exists idx_pro_accounts_schedule_activity
+			on pro_accounts(enabled desc, coalesce(last_used_at_ms, 0) desc, id desc)`,
 		`create table if not exists pro_account_bindings (
 			id integer primary key autoincrement,
 			pro_account_id text not null references pro_accounts(id) on delete cascade,
@@ -120,6 +123,7 @@ func ensureProAccountColumns(db *sql.DB) error {
 	hasModelRuleVersion := false
 	hasDeletedAt := false
 	hasPlanType := false
+	hasNotes := false
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -141,6 +145,9 @@ func ensureProAccountColumns(db *sql.DB) error {
 		if name == "plan_type" {
 			hasPlanType = true
 		}
+		if name == "notes" {
+			hasNotes = true
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -161,7 +168,12 @@ func ensureProAccountColumns(db *sql.DB) error {
 		}
 	}
 	if !hasPlanType {
-		_, err = db.Exec(`alter table pro_accounts add column plan_type text`)
+		if _, err = db.Exec(`alter table pro_accounts add column plan_type text`); err != nil {
+			return err
+		}
+	}
+	if !hasNotes {
+		_, err = db.Exec(`alter table pro_accounts add column notes text`)
 	}
 	return err
 }

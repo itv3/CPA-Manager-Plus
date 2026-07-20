@@ -30,6 +30,19 @@ func (r *vertexDraftRepository) Sync(_ context.Context, discoveries []model.ProA
 	return model.ProAccountSyncResult{Items: []model.ProAccountSyncItem{{ProAccountID: "vertex-account"}}}, nil
 }
 
+func (r *vertexDraftRepository) UpdateMetadata(_ context.Context, accountID string, expectedVersion int64, name string, notes string, nowMS int64) (model.ProAccount, error) {
+	if r.state.account.ID != accountID || r.state.account.Version != expectedVersion {
+		return model.ProAccount{}, ErrResourceVersionConflict
+	}
+	if name != "" {
+		r.state.account.Name = name
+	}
+	r.state.account.Notes = notes
+	r.state.account.UpdatedAtMS = nowMS
+	r.state.account.Version++
+	return r.state.account, nil
+}
+
 type vertexDraftGateway struct {
 	Gateway
 	imported bool

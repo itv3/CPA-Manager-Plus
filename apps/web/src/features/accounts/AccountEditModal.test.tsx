@@ -47,6 +47,7 @@ const account: ProAccount = {
   authType: 'api',
   sourceType: 'config_codex_api_key',
   name: 'Codex API',
+  notes: '生产环境账号',
   enabled: true,
   healthStatus: 'healthy',
   allowedModels: [],
@@ -130,6 +131,7 @@ describe('统一账号官方客户端兼容编辑', () => {
     });
 
     const input = apiMocks.update.mock.calls[0][3];
+    expect(input.notes).toBe('生产环境账号');
     expect(input.apiKey).toBeUndefined();
     expect(input.baseUrl).toBeUndefined();
     expect(input.officialClientCompatibility).toEqual({
@@ -137,6 +139,54 @@ describe('统一账号官方客户端兼容编辑', () => {
       profile: 'codex-desktop-0.145.0-alpha.18-v1',
       tlsProfile: '',
     });
+  });
+
+  it('只修改名称和备注时不提交任何凭证测试参数', async () => {
+    const renderer = await renderModal();
+    const nameInput = renderer.root.findByProps({ value: 'Codex API' });
+    const notesInput = renderer.root.findByProps({ value: '生产环境账号' });
+    act(() => nameInput.props.onChange({ target: { value: '新的账号名称' } }));
+    act(() => notesInput.props.onChange({ target: { value: '新的备注' } }));
+
+    await act(async () => {
+      buttonByText(renderer, '保存').props.onClick();
+      await Promise.resolve();
+    });
+
+    const input = apiMocks.update.mock.calls[0][3];
+    expect(input.name).toBe('新的账号名称');
+    expect(input.notes).toBe('新的备注');
+    expect(input.apiKey).toBeUndefined();
+    expect(input.baseUrl).toBeUndefined();
+    expect(input.headers).toBeUndefined();
+    expect(input.testModel).toBeUndefined();
+  });
+
+  it('保存失败后保留新密钥，再次保存仍提交同一凭证变更', async () => {
+    const renderer = await renderModal();
+    apiMocks.update.mockRejectedValueOnce(new Error('该 API Key 已绑定到另一个账号'));
+    const keyInput = renderer.root.findByProps({ type: 'password' });
+    act(() => keyInput.props.onChange({ target: { value: 'replacement-secret' } }));
+
+    await act(async () => {
+      buttonByText(renderer, '保存').props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(treeText(renderer.root)).toContain('该 API Key 已绑定到另一个账号');
+    expect(renderer.root.findByProps({ type: 'password' }).props.value).toBe('replacement-secret');
+    expect(apiMocks.update.mock.calls[0][3].apiKey).toBe('replacement-secret');
+
+    apiMocks.update.mockResolvedValueOnce({ account });
+    await act(async () => {
+      buttonByText(renderer, '保存').props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.update).toHaveBeenCalledTimes(2);
+    expect(apiMocks.update.mock.calls[1][3].apiKey).toBe('replacement-secret');
   });
 
   it('Gateway 未声明能力时显示禁用开关且不提交变更', async () => {

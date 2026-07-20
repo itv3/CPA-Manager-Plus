@@ -471,6 +471,8 @@ func (h *Handler) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		OperationID    string `json:"operation_id"`
 		IdempotencyKey string `json:"idempotency_key"`
 		Platform       string `json:"platform"`
+		Name           string `json:"name"`
+		Notes          string `json:"notes"`
 	}
 	if err := decodeBody(w, r, &request); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", "OAuth 启动请求无效", false, nil)
@@ -478,6 +480,7 @@ func (h *Handler) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.App.ProAccountLifecycleService.StartOAuth(r.Context(), proaccountlifecycle.OAuthStartInput{
 		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey), Platform: request.Platform,
+		Name: request.Name, Notes: request.Notes,
 	})
 	if err != nil {
 		h.writeLifecycleOAuthError(w, err, result)
@@ -774,6 +777,7 @@ func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
 		Platform                    string                              `json:"platform"`
 		AuthType                    string                              `json:"auth_type"`
 		Name                        string                              `json:"name"`
+		Notes                       string                              `json:"notes"`
 		BaseURL                     string                              `json:"base_url"`
 		APIKey                      string                              `json:"api_key"`
 		ProxyURL                    string                              `json:"proxy_url"`
@@ -793,7 +797,7 @@ func (h *Handler) handleCreateAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.App.ProAccountLifecycleService.CreateAPI(r.Context(), proaccountlifecycle.CreateAPIInput{
 		OperationID: request.OperationID, IdempotencyKey: idempotencyKey(r, request.IdempotencyKey),
-		Platform: request.Platform, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
+		Platform: request.Platform, Name: request.Name, Notes: request.Notes, BaseURL: request.BaseURL, APIKey: request.APIKey,
 		ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Headers: request.Headers,
 		AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping,
 		TestModel: request.TestModel, SaveDisabled: request.SaveDisabled, DraftOnly: request.DraftOnly,
@@ -845,6 +849,7 @@ func (h *Handler) handleCreateVertex(w http.ResponseWriter, r *http.Request) {
 	draftOnly, _ := strconv.ParseBool(strings.TrimSpace(r.FormValue("draft_only")))
 	result, err := h.App.ProAccountLifecycleService.CreateVertex(r.Context(), proaccountlifecycle.CreateVertexInput{
 		OperationID: r.FormValue("operation_id"), IdempotencyKey: idempotencyKey(r, r.FormValue("idempotency_key")),
+		Name: r.FormValue("name"), Notes: r.FormValue("notes"),
 		FileName: header.Filename, ServiceAccount: raw, Location: r.FormValue("location"),
 		AllowedModels: allowedModels, ModelMapping: modelMapping,
 		TestModel: r.FormValue("test_model"), SaveDisabled: saveDisabled, DraftOnly: draftOnly,
@@ -863,6 +868,7 @@ func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accou
 		ExpectedVersion             int64                               `json:"expected_version"`
 		Enabled                     *bool                               `json:"enabled"`
 		Name                        *string                             `json:"name"`
+		Notes                       *string                             `json:"notes"`
 		BaseURL                     *string                             `json:"base_url"`
 		APIKey                      string                              `json:"api_key"`
 		ProxyURL                    *string                             `json:"proxy_url"`
@@ -887,7 +893,7 @@ func (h *Handler) handleUpdateItem(w http.ResponseWriter, r *http.Request, accou
 		result, err = h.App.ProAccountLifecycleService.SetEnabled(r.Context(), mutation, *request.Enabled)
 	} else {
 		result, err = h.App.ProAccountLifecycleService.Update(r.Context(), proaccountlifecycle.UpdateInput{
-			MutationInput: mutation, Name: request.Name, BaseURL: request.BaseURL, APIKey: request.APIKey,
+			MutationInput: mutation, Name: request.Name, Notes: request.Notes, BaseURL: request.BaseURL, APIKey: request.APIKey,
 			ProxyURL: request.ProxyURL, ProtocolMode: request.ProtocolMode, Headers: request.Headers,
 			AllowedModels: request.AllowedModels, ModelMapping: request.ModelMapping, TestModel: request.TestModel,
 			OfficialClientCompatibility: request.OfficialClientCompatibility.gatewayValue(),
@@ -1028,6 +1034,8 @@ func (h *Handler) writeLifecycleError(w http.ResponseWriter, err error, result p
 		h.writeError(w, http.StatusNotFound, "pro_account_not_found", "统一账号不存在", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrResourceVersionConflict):
 		h.writeError(w, http.StatusConflict, "version_conflict", "账号版本已变化，请刷新后重试", true, details)
+	case errors.Is(err, proaccountlifecycle.ErrCredentialAlreadyBound):
+		h.writeError(w, http.StatusConflict, "credential_already_bound", "该 API Key 已绑定到另一个账号，请先更新或删除原账号", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrUnsupportedAccountType):
 		h.writeError(w, http.StatusBadRequest, "unsupported_account_type", "该平台不支持所选认证方式", false, details)
 	case errors.Is(err, proaccountlifecycle.ErrGatewayCapability):

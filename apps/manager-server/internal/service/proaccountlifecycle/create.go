@@ -100,6 +100,12 @@ func (s *Service) CreateAPI(ctx context.Context, input CreateAPIInput) (Result, 
 	if err != nil {
 		return Result{Operation: operation, Probe: &probe}, err
 	}
+	account, err = s.repository.UpdateMetadata(ctx, account.ID, account.Version, input.Name, input.Notes, s.now().UnixMilli())
+	if err != nil {
+		_ = s.gateway.DeleteAccount(ctx, setup.CPAUpstreamURL, setup.ManagementKey, snapshot.SourceType, snapshot.SourceLocator)
+		operation = s.fail(ctx, operation, "manager_metadata_create_failed", "账号名称或备注保存失败，已清理底层凭证")
+		return Result{Account: account, Operation: operation, Probe: &probe}, err
+	}
 	contextValue := operation.Context
 	contextValue["sourceType"] = snapshot.SourceType
 	contextValue["sourceLocator"] = snapshot.SourceLocator

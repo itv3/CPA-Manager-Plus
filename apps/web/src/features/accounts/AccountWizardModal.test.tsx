@@ -89,6 +89,17 @@ const renderAPIWizard = async (officialClientCompatibility = false) => {
     );
   });
   act(() => buttonByText(renderer, 'API填写').props.onClick());
+  act(() =>
+    inputBy(renderer, (input) => input.props.placeholder === 'OpenAI API').props.onChange({
+      target: { value: '测试 API 账号' },
+    })
+  );
+  act(() =>
+    renderer.root
+      .findAllByType('textarea')
+      .find((textarea) => textarea.props.placeholder === '可选，用于记录账号用途、归属或其他说明')
+      ?.props.onChange({ target: { value: 'API 账号备注' } })
+  );
   return renderer;
 };
 
@@ -105,6 +116,17 @@ const renderOAuthWizard = async (onSaved = vi.fn(), onClose = vi.fn()) => {
       />
     );
   });
+  act(() =>
+    inputBy(renderer, (input) => input.props.placeholder === 'OpenAI OAuth').props.onChange({
+      target: { value: '测试 OAuth 账号' },
+    })
+  );
+  act(() =>
+    renderer.root
+      .findAllByType('textarea')
+      .find((textarea) => textarea.props.placeholder === '可选，用于记录账号用途、归属或其他说明')
+      ?.props.onChange({ target: { value: 'OAuth 账号备注' } })
+  );
   return renderer;
 };
 
@@ -147,6 +169,8 @@ describe('API Key 账号添加向导', () => {
     expect(apiMocks.createAPI).toHaveBeenCalledTimes(1);
     const firstCall = apiMocks.createAPI.mock.calls[0][2];
     expect(firstCall).toMatchObject({
+      name: '测试 API 账号',
+      notes: 'API 账号备注',
       apiKey: 'secret-key',
       protocolMode: 'auto',
       allowedModels: [],
@@ -362,6 +386,10 @@ describe('OAuth 账号添加向导', () => {
       await Promise.resolve();
     });
     expect(apiMocks.startOAuth).toHaveBeenCalledTimes(1);
+    expect(apiMocks.startOAuth.mock.calls[0][2]).toMatchObject({
+      name: '测试 OAuth 账号',
+      notes: 'OAuth 账号备注',
+    });
     expect(treeText(renderer.root)).toContain('打开授权链接');
 
     const callbackInput = renderer.root

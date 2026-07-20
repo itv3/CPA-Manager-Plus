@@ -166,6 +166,7 @@ describe('proAccountsApi', () => {
         tls_profile: '',
       },
     });
+    expect(mocks.put.mock.calls[0][1]).not.toHaveProperty('test_model');
   });
 
   it('OAuth 分支启动、回调、轮询、完成和取消均使用 Manager 私有路由', async () => {

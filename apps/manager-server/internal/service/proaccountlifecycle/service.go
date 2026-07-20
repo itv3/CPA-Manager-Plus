@@ -22,6 +22,7 @@ var (
 	ErrOperationState            = errors.New("pro account operation state is invalid")
 	ErrOperationConflict         = errors.New("pro account operation does not match request")
 	ErrResourceVersionConflict   = proaccountrepo.ErrVersionConflict
+	ErrCredentialAlreadyBound    = errors.New("api credential is already bound to another account")
 	ErrConnectivityFailed        = errors.New("account connectivity test failed")
 	ErrOAuthCredentialMissing    = errors.New("oauth draft credential was not found")
 	ErrOAuthCredentialAmbiguous  = errors.New("multiple oauth draft credentials require confirmation")

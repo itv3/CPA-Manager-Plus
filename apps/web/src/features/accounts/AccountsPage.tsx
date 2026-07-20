@@ -938,7 +938,17 @@ export function AccountsPage() {
     return merged.value;
   };
 
-  const rows = useMemo(() => items, [items]);
+  const rows = useMemo(
+    () =>
+      [...items].sort((left, right) => {
+        if (left.enabled !== right.enabled) return left.enabled ? -1 : 1;
+        const activityDifference = (right.lastUsedAtMs ?? 0) - (left.lastUsedAtMs ?? 0);
+        if (activityDifference !== 0) return activityDifference;
+        if (left.id === right.id) return 0;
+        return left.id < right.id ? 1 : -1;
+      }),
+    [items]
+  );
   const selectedAccounts = useMemo(
     () => rows.filter((item) => selectedIDs.has(item.id)),
     [rows, selectedIDs]
@@ -986,8 +996,8 @@ export function AccountsPage() {
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder={t('accounts.search', { defaultValue: '搜索名称、邮箱或账号 ID' })}
-              aria-label={t('accounts.search', { defaultValue: '搜索名称、邮箱或账号 ID' })}
+              placeholder={t('accounts.search', { defaultValue: '搜索名称、备注、邮箱或账号 ID' })}
+              aria-label={t('accounts.search', { defaultValue: '搜索名称、备注、邮箱或账号 ID' })}
             />
           </label>
           <Select
@@ -1167,12 +1177,9 @@ export function AccountsPage() {
                         <div className={styles.accountName}>
                           {item.name || item.email || item.id}
                         </div>
-                        {item.email && item.email !== item.name ? (
+                        {item.authType === 'oauth' && item.email && item.email !== item.name ? (
                           <div className={styles.accountMeta}>{item.email}</div>
                         ) : null}
-                        <div className={styles.muted} title={item.id}>
-                          {item.id}
-                        </div>
                       </td>
                       <td>
                         <PlatformTypeCell account={item} />
@@ -1368,7 +1375,11 @@ export function AccountsPage() {
         managerBase={managerBase}
         managementKey={managementKey}
         onClose={() => setTestingAccount(null)}
-        onTested={() => void loadAccounts(true)}
+        onTested={(nextAccount) => {
+          setItems((current) =>
+            current.map((item) => (item.id === nextAccount.id ? nextAccount : item))
+          );
+        }}
       />
       <AccountStatsModal
         open={statsAccount !== null}
