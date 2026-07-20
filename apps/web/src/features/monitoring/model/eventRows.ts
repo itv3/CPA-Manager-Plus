@@ -9,6 +9,7 @@ import {
 import { formatApiKeyHashLabel } from './base';
 import { buildSearchText, maskAuthIndex, maskEmailLike, readString } from './base';
 import { sanitizeApiKeyDisplayText, type ApiKeyDisplayInfo } from './apiKeys';
+import { isKeyDisambiguatedLabel } from './sourceDisplay';
 import { buildHourLabel, buildLocalDayKey } from './range';
 import type { MonitoringAuthMeta, MonitoringChannelMeta, MonitoringEventRow } from './types';
 
@@ -64,7 +65,28 @@ export const buildEventRows = (
         detail.auth_provider_snapshot ?? detail.authProviderSnapshot
       );
       const snapshotDisplay = snapshotAccount || snapshotLabel;
-      const sourceLabel = authMeta?.label || snapshotDisplay || sourceMeta.displayName || authIndex;
+      const channelMeta =
+        channelByAuthIndex.get(authIndex) ||
+        (authMeta?.authIndex ? channelByAuthIndex.get(authMeta.authIndex) : undefined);
+      const channelLabel =
+        channelMeta?.name || authMeta?.provider || snapshotProvider || sourceMeta.type || '-';
+      const resolvedSourceName = readString(sourceMeta.displayName);
+      const labelCandidates = authMeta?.label || snapshotLabel || snapshotDisplay;
+      // Prefer multi-key OpenAI-compatible disambiguation (e.g. "kuaileshifu #1") over the
+      // bare provider/auth label so realtime cells match account overview identity.
+      const sourceLabel =
+        (resolvedSourceName &&
+        (isKeyDisambiguatedLabel(resolvedSourceName, channelMeta?.name) ||
+          isKeyDisambiguatedLabel(resolvedSourceName, channelMeta?.host) ||
+          isKeyDisambiguatedLabel(resolvedSourceName, labelCandidates) ||
+          isKeyDisambiguatedLabel(resolvedSourceName, authMeta?.account) ||
+          isKeyDisambiguatedLabel(resolvedSourceName, snapshotAccount))
+          ? resolvedSourceName
+          : '') ||
+        authMeta?.label ||
+        snapshotDisplay ||
+        resolvedSourceName ||
+        authIndex;
       const sourceMasked = maskEmailLike(sourceLabel);
       const account = authMeta?.account || snapshotAccount || sourceLabel;
       const accountMasked = maskEmailLike(account);
@@ -78,11 +100,6 @@ export const buildEventRows = (
         apiKeyDisplay?.masked || apiKeyLabel,
         apiKeyLabel
       );
-      const channelMeta =
-        channelByAuthIndex.get(authIndex) ||
-        (authMeta?.authIndex ? channelByAuthIndex.get(authMeta.authIndex) : undefined);
-      const channelLabel =
-        channelMeta?.name || authMeta?.provider || snapshotProvider || sourceMeta.type || '-';
       const endpoint = readString(detail.__endpoint) || '-';
       const endpointMethod = readString(detail.__endpointMethod) || '-';
       const endpointPath = readString(detail.__endpointPath) || endpoint;
