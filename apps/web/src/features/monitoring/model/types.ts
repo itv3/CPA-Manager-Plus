@@ -183,6 +183,8 @@ export type MonitoringEventRow = {
   totalCost: number;
   reasoningEffort?: string;
   serviceTier?: string;
+  requestServiceTier?: string;
+  responseServiceTier?: string;
   executorType?: string;
   failStatusCode?: number | null;
   failSummary?: string;

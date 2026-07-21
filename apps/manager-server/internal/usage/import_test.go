@@ -518,16 +518,36 @@ func TestNormalizeRawHandlesCurrentCPAGPT56QueuePayloadWithoutCacheMode(t *testi
 		event.NormalizedCacheReadTokens != 30 || event.NormalizedCacheCreationTokens != 17 {
 		t.Fatalf("normalized cache accounting = %#v", event)
 	}
-	if event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" || event.ServiceTier != "default" {
+	if event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" || event.ServiceTier != "priority" {
 		t.Fatalf("service tiers = %q/%q/%q", event.RequestServiceTier, event.ResponseServiceTier, event.ServiceTier)
 	}
 }
 
-func TestNormalizeRawPrefersResponseServiceTier(t *testing.T) {
+func TestNormalizeRawPrefersRequestServiceTierForCodex(t *testing.T) {
 	payload := `{
 	  "timestamp": "2026-07-10T00:00:00Z",
+	  "executor_type": "codex",
 	  "model": "gpt-5.6-sol",
 	  "service_tier": "priority",
+	  "request_service_tier": "priority",
+	  "response_service_tier": "default",
+	  "tokens": {"input_tokens": 1, "total_tokens": 1}
+	}`
+
+	event, err := NormalizeRaw([]byte(payload))
+	if err != nil {
+		t.Fatalf("normalize raw: %v", err)
+	}
+	if event.RequestServiceTier != "priority" || event.ResponseServiceTier != "default" || event.ServiceTier != "priority" {
+		t.Fatalf("service tiers = %q/%q/%q", event.RequestServiceTier, event.ResponseServiceTier, event.ServiceTier)
+	}
+}
+
+func TestNormalizeRawPrefersResponseServiceTierForNonCodex(t *testing.T) {
+	payload := `{
+	  "timestamp": "2026-07-10T00:00:00Z",
+	  "provider": "openai-compatible",
+	  "model": "gpt-5.4",
 	  "request_service_tier": "priority",
 	  "response_service_tier": "default",
 	  "tokens": {"input_tokens": 1, "total_tokens": 1}

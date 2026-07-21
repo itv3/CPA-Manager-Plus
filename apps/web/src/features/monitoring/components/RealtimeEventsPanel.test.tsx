@@ -49,6 +49,8 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'monitoring.result_failed': 'Failed',
     'monitoring.result_success': 'Success',
     'monitoring.service_tier_short': 'Tier',
+    'monitoring.request_service_tier_short': 'Requested tier',
+    'monitoring.response_service_tier_short': 'Reported tier',
     'monitoring.this_call_cost': 'Cost',
     'monitoring.this_call_usage': 'Usage',
     'monitoring.ttft_short': 'TTFT',
@@ -185,6 +187,8 @@ describe('RealtimeEventsPanel', () => {
         executorType: 'codex',
         reasoningEffort: 'medium',
         serviceTier: 'priority',
+        requestServiceTier: 'priority',
+        responseServiceTier: 'default',
         cacheReadTokens: 4,
         cacheCreationTokens: 1,
         failStatusCode: 429,
@@ -198,7 +202,8 @@ describe('RealtimeEventsPanel', () => {
     expect(markup).not.toContain('>Executor: codex<');
     expect(markup).not.toContain('Executor: codex');
     expect(markup).toContain('medium');
-    expect(markup).toContain('Tier: priority');
+    expect(markup).toContain('Requested tier: priority');
+    expect(markup).toContain('Reported tier: default');
     expect(markup).toContain('client-gpt');
     expect(markup).toContain('gpt-5.4');
     expect(markup).not.toContain('Resolved');

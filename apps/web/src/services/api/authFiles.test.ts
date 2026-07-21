@@ -76,6 +76,25 @@ describe('authFilesApi OAuth model alias normalization', () => {
       ],
     });
   });
+
+  it('drops identity mappings and duplicate aliases before patch', async () => {
+    mocks.patch.mockResolvedValue({ status: 'ok' });
+
+    await authFilesApi.saveOauthModelAlias('claude', [
+      { name: 'claude-sonnet-4-5', alias: 'claude-sonnet-4-5' },
+      { name: 'claude-sonnet-4-5-20250929', alias: 'cs4.5', fork: true },
+      { name: 'claude-opus-4-1-20250805', alias: 'CS4.5' },
+      { name: 'claude-opus-4-1-20250805', alias: 'opus' },
+    ]);
+
+    expect(mocks.patch).toHaveBeenCalledWith('/oauth-model-alias', {
+      channel: 'claude',
+      aliases: [
+        { name: 'claude-sonnet-4-5-20250929', alias: 'cs4.5', fork: true },
+        { name: 'claude-opus-4-1-20250805', alias: 'opus' },
+      ],
+    });
+  });
 });
 
 describe('authFilesApi list normalization', () => {

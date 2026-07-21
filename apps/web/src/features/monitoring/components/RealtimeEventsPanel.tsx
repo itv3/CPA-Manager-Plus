@@ -813,6 +813,8 @@ export function RealtimeEventsPanel({
                 row.resolvedModel.trim() !== row.model;
               const reasoningEffort = formatOptionalText(row.reasoningEffort);
               const serviceTier = formatOptionalText(row.serviceTier);
+              const requestServiceTier = formatOptionalText(row.requestServiceTier);
+              const responseServiceTier = formatOptionalText(row.responseServiceTier);
               const failureDetails = buildFailureDetails(row, t, locale);
               const failureTooltipId = failureDetails
                 ? `${tooltipIdPrefix}-failure-tooltip-${row.id}`
@@ -861,8 +863,13 @@ export function RealtimeEventsPanel({
                       ) : (
                         <span className={styles.mutedCell}>-</span>
                       )}
-                      {serviceTier !== '-' ? (
+                      {requestServiceTier !== '-' ? (
+                        <small>{`${t('monitoring.request_service_tier_short')}: ${requestServiceTier}`}</small>
+                      ) : serviceTier !== '-' ? (
                         <small>{`${shortLabel(t, 'monitoring.service_tier_short', 'monitoring.service_tier')}: ${serviceTier}`}</small>
+                      ) : null}
+                      {responseServiceTier !== '-' ? (
+                        <small>{`${t('monitoring.response_service_tier_short')}: ${responseServiceTier}`}</small>
                       ) : null}
                     </div>
                   </td>

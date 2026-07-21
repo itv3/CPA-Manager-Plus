@@ -29,6 +29,9 @@ export function OAuthExcludedCard(props: OAuthExcludedCardProps) {
         </Button>
       }
     >
+      {loadState === 'ready' ? (
+        <div className={styles.cardScopeHint}>{t('oauth_excluded.scope_hint')}</div>
+      ) : null}
       {loadState === 'unsupported' ? (
         <EmptyState
           title={t('oauth_excluded.upgrade_required_title')}
@@ -58,6 +61,15 @@ export function OAuthExcludedCard(props: OAuthExcludedCardProps) {
                     ? t('oauth_excluded.model_count', { count: models.length })
                     : t('oauth_excluded.no_models')}
                 </div>
+                {models?.length ? (
+                  <div
+                    className={styles.excludedModels}
+                    title={models.join(', ')}
+                  >
+                    {models.slice(0, 3).join(' · ')}
+                    {models.length > 3 ? ` · +${models.length - 3}` : ''}
+                  </div>
+                ) : null}
               </div>
               <div className={styles.excludedActions}>
                 <Button

@@ -7,6 +7,7 @@ import { ModelMappingDiagram, type ModelMappingDiagramRef } from '@/components/m
 import { IconChevronUp } from '@/components/ui/icons';
 import type { OAuthModelAliasEntry } from '@/types';
 import type { AuthFileModelItem, OAuthConfigLoadState } from '@/features/authFiles/constants';
+import { formatOAuthAliasPreview } from '@/features/authFiles/oauthAliasValidation';
 import styles from '@/features/authFiles/AuthFilesPage.module.scss';
 type ViewMode = 'diagram' | 'list';
 
@@ -84,6 +85,9 @@ export function OAuthModelAliasCard(props: OAuthModelAliasCardProps) {
         </div>
       }
     >
+      {loadState === 'ready' ? (
+        <div className={styles.cardScopeHint}>{t('oauth_model_alias.scope_hint')}</div>
+      ) : null}
       {loadState === 'unsupported' ? (
         <EmptyState
           title={t('oauth_model_alias.upgrade_required_title')}
@@ -147,6 +151,11 @@ export function OAuthModelAliasCard(props: OAuthModelAliasCardProps) {
                     ? t('oauth_model_alias.model_count', { count: mappings.length })
                     : t('oauth_model_alias.no_models')}
                 </div>
+                {mappings?.length ? (
+                  <div className={styles.excludedModels} title={formatOAuthAliasPreview(mappings, 20)}>
+                    {formatOAuthAliasPreview(mappings)}
+                  </div>
+                ) : null}
               </div>
               <div className={styles.excludedActions}>
                 <Button

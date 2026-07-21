@@ -484,6 +484,12 @@ func eventFromExportedRecord(record map[string]any) (Event, bool, error) {
 		RawJSON:                       rawJSON,
 		CreatedAtMS:                   readInt(record, "created_at_ms", "createdAtMs"),
 	}
+	event.ServiceTier = EffectiveServiceTier(CacheInputContext{
+		ExecutorType:     event.ExecutorType,
+		Provider:         event.Provider,
+		ProviderSnapshot: event.AuthProviderSnapshot,
+		AuthType:         event.AuthType,
+	}, event.RequestServiceTier, event.ServiceTier, event.ResponseServiceTier)
 	if event.Endpoint == "" {
 		event.Endpoint = "-"
 	}
@@ -669,6 +675,12 @@ func eventFromLegacyDetail(
 		RawJSON:                       rawJSON,
 		CreatedAtMS:                   now,
 	}
+	event.ServiceTier = EffectiveServiceTier(CacheInputContext{
+		ExecutorType:     event.ExecutorType,
+		Provider:         event.Provider,
+		ProviderSnapshot: event.AuthProviderSnapshot,
+		AuthType:         event.AuthType,
+	}, event.RequestServiceTier, event.ServiceTier, event.ResponseServiceTier)
 	if event.Model == "" {
 		event.Model = "-"
 	}

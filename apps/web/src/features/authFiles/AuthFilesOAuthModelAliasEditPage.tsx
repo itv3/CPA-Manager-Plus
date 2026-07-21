@@ -16,6 +16,7 @@ import type { AuthFileItem, OAuthModelAliasEntry } from '@/types';
 import { generateId, getErrorMessage } from '@/utils/helpers';
 import styles from './AuthFilesOAuthModelAliasEditPage.module.scss';
 import { isOAuthAliasDraftDirty } from './oauthEditorState';
+import { normalizeOAuthAliasEntries } from './oauthAliasValidation';
 
 type AuthFileModelItem = { id: string; display_name?: string; type?: string; owned_by?: string };
 
@@ -336,23 +337,34 @@ export function AuthFilesOAuthModelAliasEditPage() {
       return;
     }
 
-    const seen = new Set<string>();
-    const normalized = mappings
-      .map((entry) => {
-        const name = String(entry.name ?? '').trim();
-        const alias = String(entry.alias ?? '').trim();
-        if (!name || !alias) return null;
-        const key = `${name.toLowerCase()}::${alias.toLowerCase()}::${entry.fork ? '1' : '0'}::${entry.forceMapping ? '1' : '0'}`;
-        if (seen.has(key)) return null;
-        seen.add(key);
-        return {
-          name,
-          alias,
-          ...(entry.fork ? { fork: true } : {}),
-          ...(entry.forceMapping ? { forceMapping: true } : {}),
-        };
-      })
-      .filter(Boolean) as OAuthModelAliasEntry[];
+    const normalization = normalizeOAuthAliasEntries(mappings);
+    // Whole-form validation: refuse to save when any row would be dropped by CPA rules.
+    // This keeps the draft visible so the user can fix invalid rows instead of silently
+    // persisting a partial subset.
+    const firstIssue = normalization.issues[0];
+    if (firstIssue) {
+      if (firstIssue.code === 'same_as_name') {
+        showNotification(t('oauth_model_alias.alias_same_as_name'), 'error');
+        return;
+      }
+      if (firstIssue.code === 'duplicate_alias') {
+        showNotification(
+          t('oauth_model_alias.alias_duplicate', { alias: firstIssue.alias ?? '' }),
+          'error'
+        );
+        return;
+      }
+      if (firstIssue.code === 'empty_fields' || firstIssue.code === 'duplicate_entry') {
+        showNotification(t('oauth_model_alias.alias_incomplete'), 'error');
+        return;
+      }
+    }
+
+    const normalized = normalization.accepted;
+    if (normalized.length === 0 && mappings.some((entry) => entry.name.trim() || entry.alias.trim())) {
+      showNotification(t('oauth_model_alias.alias_incomplete'), 'error');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -432,6 +444,11 @@ export function AuthFilesOAuthModelAliasEditPage() {
                 <span>{t('oauth_model_alias.title')}</span>
               </div>
               <div className={styles.settingsHeaderHint}>{headerHint}</div>
+            </div>
+
+            <div className={styles.settingsSection}>
+              <div className={styles.settingsDesc}>{t('oauth_model_alias.scope_hint')}</div>
+              <div className={styles.settingsDesc}>{t('oauth_model_alias.usage_hint')}</div>
             </div>
 
             <div className={styles.settingsSection}>

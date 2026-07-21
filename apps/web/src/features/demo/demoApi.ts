@@ -119,10 +119,16 @@ export async function handleDemoApiRequest<T = unknown>(
   if (pathname === '/oauth-model-alias') {
     if (method === 'get') {
       return {
-        items: [
-          { provider: 'codex', source: 'gpt-5-codex', target: 'gpt-4.1' },
-          { provider: 'claude', source: 'claude-sonnet-4-5', target: 'claude-sonnet-4-5' },
-        ],
+        'oauth-model-alias': {
+          codex: [
+            { name: 'gpt-5-codex', alias: 'team-codex', fork: true },
+            { name: 'gpt-5', alias: 'g5', fork: true },
+          ],
+          claude: [
+            { name: 'claude-sonnet-4-5-20250929', alias: 'claude-sonnet-4-5', fork: true },
+            { name: 'claude-opus-4-1-20250805', alias: 'claude-opus-4-1', fork: true },
+          ],
+        },
       } as T;
     }
     return ok as T;

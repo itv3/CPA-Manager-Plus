@@ -594,6 +594,8 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
         const name = String(entry.name ?? entry.id ?? entry.model ?? '').trim();
         const alias = String(entry.alias ?? '').trim();
         if (!name || !alias) return null;
+        // Match CPA SanitizeOAuthModelAlias: drop identity mappings.
+        if (name.toLowerCase() === alias.toLowerCase()) return null;
         const fork = entry.fork === true;
         const forceMapping =
           entry['force-mapping'] === true ||
@@ -609,9 +611,10 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
       .filter(Boolean)
       .filter((entry) => {
         const aliasEntry = entry as OAuthModelAliasEntry;
-        const dedupeKey = `${aliasEntry.name.toLowerCase()}::${aliasEntry.alias.toLowerCase()}::${aliasEntry.fork ? '1' : '0'}::${aliasEntry.forceMapping ? '1' : '0'}`;
-        if (seen.has(dedupeKey)) return false;
-        seen.add(dedupeKey);
+        // Match CPA: aliases must be unique within a channel (first wins).
+        const aliasKey = aliasEntry.alias.toLowerCase();
+        if (seen.has(aliasKey)) return false;
+        seen.add(aliasKey);
         return true;
       }) as OAuthModelAliasEntry[];
 
