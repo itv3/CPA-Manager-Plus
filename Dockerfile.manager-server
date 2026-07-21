@@ -1,5 +1,5 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
-ARG VERSION=v1.11.3-1
+ARG VERSION=v1.11.4-1
 # 为低内存部署节点显式提高 V8 堆上限，避免默认容器内存探测过于保守。
 ARG NODE_OPTIONS=--max-old-space-size=768
 ENV NODE_OPTIONS=$NODE_OPTIONS
