@@ -35,14 +35,14 @@ describe('credential health inspection demo fixtures', () => {
     });
   });
 
-  it('keeps run summary counts aligned with the seven result scenarios', () => {
+  it('keeps run summary counts aligned with the eight result scenarios', () => {
     const detail = getDemoCodexInspectionRun();
     const actions = detail.results.map((item) => item.action);
     const providers = new Set(detail.results.map((item) => item.provider));
     const authFiles = getDemoAuthFiles();
 
     expect(authFiles.total).toBe(authFiles.files.length);
-    expect(detail.results).toHaveLength(7);
+    expect(detail.results).toHaveLength(8);
     expect(providers).toEqual(new Set(['codex', 'xai']));
     expect(detail.run.sampledCount).toBe(detail.results.length);
     expect(detail.run.disableCount).toBe(actions.filter((action) => action === 'disable').length);
@@ -204,7 +204,12 @@ describe('credential health inspection demo fixtures', () => {
     });
     const byAuthIndex = new Map(result.results.map((item) => [item.authIndex, item]));
 
-    expect(result.results).toHaveLength(7);
+    expect(result.results).toHaveLength(8);
+    expect(byAuthIndex.get('codex-upgrade-demo-01')).toMatchObject({
+      action: 'keep',
+      statusCode: 200,
+      planType: 'free',
+    });
     expect(byAuthIndex.get('codex-team-01')).toMatchObject({ action: 'keep', statusCode: 200 });
     expect(byAuthIndex.get('codex-email-user-01')).toMatchObject({
       action: 'reauth',

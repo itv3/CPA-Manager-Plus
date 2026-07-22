@@ -298,7 +298,7 @@ const initialRawConfig: Record<string, unknown> = {
 };
 
 const demoAuthFiles: AuthFilesResponse = {
-  total: 19,
+  total: 20,
   files: [
     {
       id: 'codex-upgrade-demo-runtime',
@@ -3196,6 +3196,43 @@ const buildMonitoringAnalytics = (
 
 const buildDemoInspectionResults = (baseNow: number): CodexInspectionResult[] => [
   {
+    id: 500,
+    runId: 1001,
+    accountKey: 'codex-upgrade-demo-01',
+    fileName: 'codex-upgrade-demo.json',
+    displayAccount: 'Upgrade Demo',
+    authIndex: 'codex-upgrade-demo-01',
+    accountId: 'acct_codex_upgrade_demo',
+    provider: 'codex',
+    disabled: false,
+    status: 'ok',
+    state: 'active',
+    action: 'keep',
+    actionReason: 'monitoring.codex_inspection_reason_healthy',
+    actionStatus: 'none',
+    statusCode: 200,
+    usedPercent: 63,
+    isQuota: false,
+    planType: 'free',
+    quotaWindows: [
+      {
+        id: 'primary',
+        labelKey: 'codex_quota.primary_window',
+        usedPercent: 63,
+        resetLabel: '2h 18m',
+        limitWindowSeconds: 18000,
+      },
+      {
+        id: 'secondary',
+        labelKey: 'codex_quota.secondary_window',
+        usedPercent: 42,
+        resetLabel: '2d 20h',
+        limitWindowSeconds: 604800,
+      },
+    ],
+    createdAtMs: baseNow - 41 * minute,
+  },
+  {
     id: 501,
     runId: 1001,
     accountKey: 'codex-team-01',
@@ -3909,20 +3946,23 @@ export const getDemoCodexInspectionLocalRun = (baseNow = now()): CodexInspection
 
 export const getDemoCodexInspectionLocalLogs = (
   baseNow = now()
-): CodexInspectionStoredLogEntry[] => [
-  {
-    id: 'demo-inspection-start',
-    level: 'info',
-    message: 'Loaded 7 Codex and xAI credentials for inspection',
-    timestamp: baseNow - 42 * minute,
-  },
-  {
-    id: 'demo-inspection-complete',
-    level: 'success',
-    message: 'Credential health inspection completed with 7 results',
-    timestamp: baseNow - 39 * minute,
-  },
-];
+): CodexInspectionStoredLogEntry[] => {
+  const resultCount = buildDemoInspectionResults(baseNow).length;
+  return [
+    {
+      id: 'demo-inspection-start',
+      level: 'info',
+      message: `Loaded ${resultCount} Codex and xAI credentials for inspection`,
+      timestamp: baseNow - 42 * minute,
+    },
+    {
+      id: 'demo-inspection-complete',
+      level: 'success',
+      message: `Credential health inspection completed with ${resultCount} results`,
+      timestamp: baseNow - 39 * minute,
+    },
+  ];
+};
 
 export const getDemoAccountActionCandidates = () => ({
   items: clone(demoAccountCandidates),
@@ -4002,6 +4042,7 @@ const isDemoForbiddenApiCall = (requestUrl: string): boolean => {
 export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
   const requestUrl = String(payload.url || '');
   const authIndex = String(payload.authIndex || '');
+  const isCodexUpgrade = authIndex === 'codex-upgrade-demo-01';
   const isCodexPro20x = authIndex === 'codex-pro-20x-01';
   const isCodexRecovered = authIndex === 'codex-fallback-02';
   const isCodexExpired = authIndex === 'codex-email-user-01';
@@ -4037,19 +4078,25 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
     } else {
       const primaryUsedPercent = isCodexPro20x ? 84 : isCodexRecovered ? 24 : 63;
       const secondaryUsedPercent = isCodexPro20x ? 96 : isCodexRecovered ? 18 : 42;
+      const accountId = isCodexPro20x
+        ? 'acct_codex_pro_20x'
+        : isCodexRecovered
+          ? 'acct_codex_auto'
+          : isCodexUpgrade
+            ? 'acct_codex_upgrade_demo'
+            : 'acct_codex_team';
+      const email = isCodexPro20x
+        ? 'pro20x@example.com'
+        : isCodexRecovered
+          ? 'automation@example.com'
+          : isCodexUpgrade
+            ? 'upgrade@example.com'
+            : 'platform@example.com';
       body = {
         user_id: isCodexPro20x ? 'demo-pro-user' : 'demo-user',
-        account_id: isCodexPro20x
-          ? 'acct_codex_pro_20x'
-          : isCodexRecovered
-            ? 'acct_codex_auto'
-            : 'acct_codex_team',
-        email: isCodexPro20x
-          ? 'pro20x@example.com'
-          : isCodexRecovered
-            ? 'automation@example.com'
-            : 'platform@example.com',
-        plan_type: isCodexPro20x ? 'pro' : 'team',
+        account_id: accountId,
+        email,
+        plan_type: isCodexPro20x ? 'pro' : isCodexUpgrade ? 'free' : 'team',
         rate_limit: {
           allowed: true,
           primary_window: {
