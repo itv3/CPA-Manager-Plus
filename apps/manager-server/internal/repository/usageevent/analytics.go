@@ -276,6 +276,27 @@ type CredentialTimelinePoint struct {
 	LatencySamples        int64
 }
 
+type APIKeyTimelinePoint struct {
+	usage.LongContextTokens
+	APIKeyHash          string
+	BucketMS            int64
+	Model               string
+	BillingModel        string
+	ServiceTier         string
+	Calls               int64
+	Tokens              int64
+	Success             int64
+	Failure             int64
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CachedTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	AvgLatencyMS        sql.NullFloat64
+	LatencySamples      int64
+}
+
 type APIKeyModelStat struct {
 	usage.LongContextTokens
 	APIKeyHash           string
@@ -632,6 +653,120 @@ order by timestamp_ms, model`, where)
 		return nil, err
 	}
 	points := make([]TimelinePoint, 0, len(order))
+	for _, mapKey := range order {
+		point := grouped[mapKey]
+		if point.LatencySamples > 0 {
+			point.AvgLatencyMS.Float64 = point.AvgLatencyMS.Float64 / float64(point.LatencySamples)
+			point.AvgLatencyMS.Valid = true
+		}
+		points = append(points, *point)
+	}
+	return points, nil
+}
+
+func (r *repository) APIKeyTimelineWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]APIKeyTimelinePoint, error) {
+	if len(normalizeFilterValues(filter.APIKeyHashes)) == 0 && strings.TrimSpace(filter.SearchAPIKeyHash) == "" {
+		return nil, nil
+	}
+	where, args := analyticsWhere(filter)
+	query := fmt.Sprintf(`select
+	timestamp_ms,
+	coalesce(api_key_hash, ''),
+	model,
+	coalesce(nullif(resolved_model, ''), model) as billing_model,
+	coalesce(service_tier, '') as service_tier,
+	failed,
+	`+normalizedInputExpr+`,
+	output_tokens,
+	reasoning_tokens,
+	`+compatCachedExpr+`,
+	cache_read_tokens,
+	cache_creation_tokens,
+	total_tokens,
+	latency_ms
+from usage_events %s
+order by timestamp_ms, api_key_hash, model`, where)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type key struct {
+		apiKeyHash   string
+		bucketMS     int64
+		model        string
+		billingModel string
+		serviceTier  string
+	}
+	grouped := map[key]*APIKeyTimelinePoint{}
+	order := make([]key, 0)
+	for rows.Next() {
+		var timestampMS int64
+		var point APIKeyTimelinePoint
+		var failed int
+		var latency sql.NullFloat64
+		var totalTokens int64
+		if err := rows.Scan(
+			&timestampMS,
+			&point.APIKeyHash,
+			&point.Model,
+			&point.BillingModel,
+			&point.ServiceTier,
+			&failed,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.ReasoningTokens,
+			&point.CachedTokens,
+			&point.CacheReadTokens,
+			&point.CacheCreationTokens,
+			&totalTokens,
+			&latency,
+		); err != nil {
+			return nil, err
+		}
+		mapKey := key{
+			apiKeyHash:   point.APIKeyHash,
+			bucketMS:     usage.AnalyticsBucketMS(timestampMS, granularity, location),
+			model:        point.Model,
+			billingModel: point.BillingModel,
+			serviceTier:  point.ServiceTier,
+		}
+		entry := grouped[mapKey]
+		if entry == nil {
+			entry = &APIKeyTimelinePoint{
+				APIKeyHash:   point.APIKeyHash,
+				BucketMS:     mapKey.bucketMS,
+				Model:        point.Model,
+				BillingModel: point.BillingModel,
+				ServiceTier:  point.ServiceTier,
+			}
+			grouped[mapKey] = entry
+			order = append(order, mapKey)
+		}
+		entry.Calls += 1
+		entry.Tokens += totalTokens
+		if failed != 0 {
+			entry.Failure += 1
+		} else {
+			entry.Success += 1
+		}
+		entry.InputTokens += point.InputTokens
+		entry.OutputTokens += point.OutputTokens
+		entry.ReasoningTokens += point.ReasoningTokens
+		entry.CachedTokens += point.CachedTokens
+		entry.CacheReadTokens += point.CacheReadTokens
+		entry.CacheCreationTokens += point.CacheCreationTokens
+		entry.AddIfLongContext(point.InputTokens, point.OutputTokens, point.CachedTokens, point.CacheReadTokens, point.CacheCreationTokens)
+		if latency.Valid && latency.Float64 > 0 {
+			entry.AvgLatencyMS.Float64 += latency.Float64
+			entry.LatencySamples += 1
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	points := make([]APIKeyTimelinePoint, 0, len(order))
 	for _, mapKey := range order {
 		point := grouped[mapKey]
 		if point.LatencySamples > 0 {

@@ -74,23 +74,33 @@ export type CodexInspectionStoredActionFilter =
 export interface CodexInspectionSettings {
   baseUrl: string;
   token: string;
+  targetTypes: string[];
   targetType: string;
   workers: number;
   deleteWorkers: number;
   timeout: number;
   retries: number;
   userAgent: string;
+  xaiInferenceUserAgent: string;
+  xaiInferenceEnabled: boolean;
+  xaiInferenceModel: string;
+  xaiInferencePrompt: string;
   usedPercentThreshold: number;
   sampleSize: number;
 }
 
 export interface CodexInspectionConfigurableSettings {
+  targetTypes: string[];
   targetType: string;
   workers: number;
   deleteWorkers: number;
   timeout: number;
   retries: number;
   userAgent: string;
+  xaiInferenceUserAgent: string;
+  xaiInferenceEnabled: boolean;
+  xaiInferenceModel: string;
+  xaiInferencePrompt: string;
   usedPercentThreshold: number;
   sampleSize: number;
   autoActionMode: CodexInspectionAutoActionMode;
@@ -302,6 +312,22 @@ const pickSample = <T>(items: T[], sampleSize: number): T[] => {
   return shuffled.slice(0, sampleSize);
 };
 
+const pickSamplePerProvider = (
+  items: CodexInspectionAccount[],
+  sampleSize: number
+): CodexInspectionAccount[] => {
+  if (sampleSize <= 0) return [...items];
+
+  const groups = new Map<string, CodexInspectionAccount[]>();
+  items.forEach((item) => {
+    const group = groups.get(item.provider) ?? [];
+    group.push(item);
+    groups.set(item.provider, group);
+  });
+
+  return Array.from(groups.values()).flatMap((group) => pickSample(group, sampleSize));
+};
+
 export const resolveCodexInspectionSettings = (
   config: Config | null,
   apiBase: string,
@@ -317,12 +343,17 @@ export const resolveCodexInspectionSettings = (
   return {
     baseUrl: readString(apiBase) || readString(clean?.baseUrl),
     token: readString(managementKey) || readString(clean?.token),
+    targetTypes: configurable.targetTypes,
     targetType: configurable.targetType,
     workers: configurable.workers,
     deleteWorkers: configurable.deleteWorkers,
     timeout: configurable.timeout,
     retries: configurable.retries,
     userAgent: configurable.userAgent,
+    xaiInferenceUserAgent: configurable.xaiInferenceUserAgent,
+    xaiInferenceEnabled: configurable.xaiInferenceEnabled,
+    xaiInferenceModel: configurable.xaiInferenceModel,
+    xaiInferencePrompt: configurable.xaiInferencePrompt,
     usedPercentThreshold: configurable.usedPercentThreshold,
     sampleSize: configurable.sampleSize,
   };
@@ -487,7 +518,7 @@ export const createCodexInspectionSession = ({
   };
 
   const initialize = async () => {
-    onLog?.('info', `加载认证文件列表，目标类型：${resolvedSettings.targetType}`);
+    onLog?.('info', `加载认证文件列表，目标类型：${resolvedSettings.targetTypes.join(' + ')}`);
 
     const authFilesResponse = await authFilesApi.list();
     files = Array.isArray(authFilesResponse.files) ? authFilesResponse.files : [];
@@ -501,14 +532,14 @@ export const createCodexInspectionSession = ({
       files
     );
     probeSet = accounts
-      .filter((item) => item.provider === resolvedSettings.targetType)
+      .filter((item) => resolvedSettings.targetTypes.includes(item.provider))
       .map((item) => ({
         ...item,
         autoRecoverOwned: ownedDisableFileNames.has(item.fileName),
       }));
     sampledAccounts =
       resolvedSettings.sampleSize > 0
-        ? pickSample(probeSet, Math.min(resolvedSettings.sampleSize, probeSet.length))
+        ? pickSamplePerProvider(probeSet, resolvedSettings.sampleSize)
         : probeSet;
 
     onLog?.(

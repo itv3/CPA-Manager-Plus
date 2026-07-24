@@ -424,6 +424,20 @@ describe('authFilesApi download', () => {
   });
 });
 
+describe('authFilesApi requestCredentialRefresh', () => {
+  it('backdates refresh fields for the exact runtime auth selector', async () => {
+    mocks.patch.mockResolvedValue({ status: 'ok' });
+
+    await authFilesApi.requestCredentialRefresh('codex-runtime-auth-id');
+
+    expect(mocks.patch).toHaveBeenCalledWith('/auth-files/fields', {
+      name: 'codex-runtime-auth-id',
+      expired: '2000-01-01T00:00:00Z',
+      last_refresh: '2000-01-01T00:00:00Z',
+    });
+  });
+});
+
 describe('authFilesApi patchFieldsForAuthIndexes', () => {
   const getUploadedFile = () => {
     const formData = mocks.postForm.mock.calls[0]?.[1];

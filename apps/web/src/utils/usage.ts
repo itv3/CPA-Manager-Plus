@@ -75,6 +75,7 @@ export interface UsageResponseHeaderMetadata {
     retry_after_seconds?: number;
     retry_after_recover_at_ms?: number;
     rate_limit_bypass?: string;
+    should_retry?: boolean;
   };
   trace?: {
     primary_trace_id?: string;
@@ -86,6 +87,7 @@ export interface UsageResponseHeaderMetadata {
     cloud_ai_companion_trace_id?: string;
     client_request_id?: string;
     zeabur_request_id?: string;
+    traceparent?: string;
   };
   routing?: {
     openai_proxy_wasm?: string;
@@ -111,6 +113,31 @@ export interface UsageResponseHeaderMetadata {
     oneapi_request_id?: string;
     cloudflare_ray?: string;
     cloudflare_cache_status?: string;
+  };
+  rate_limit?: {
+    requests?: { limit?: number; remaining?: number };
+    tokens?: { limit?: number; remaining?: number };
+  };
+  data_policy?: {
+    retention_mode?: string;
+    zero_retention?: boolean;
+  };
+  provider_usage?: {
+    provider?: string;
+    kind?: string;
+    state?: string;
+    code?: string;
+    model?: string;
+    unit?: string;
+    actual?: number;
+    limit?: number;
+    remaining?: number;
+    overage?: number;
+    window_kind?: string;
+    observed_at_ms?: number;
+    recover_at_ms?: number;
+    recover_at_estimated?: boolean;
+    source?: string;
   };
 }
 

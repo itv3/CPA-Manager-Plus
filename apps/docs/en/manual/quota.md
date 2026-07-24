@@ -48,6 +48,14 @@ When both CLI billing requests return a generic `403 Access denied` without a mo
 
 To route paid xAI OAuth requests through the official API in CPA, the auth JSON normally needs `using_api: true` together with `base_url: https://api.x.ai/v1`. Otherwise OAuth may continue using the Grok CLI chat proxy by default. Check the xAI console for actual cost and remaining quota.
 
+### xAI Request-Monitoring Evidence
+
+When an xAI request returns HTTP `402` or `429` with `subscription:free-usage-exhausted`, Monitoring structures the model, `actual/limit`, remaining amount, and overage from the error body. If the response describes a rolling 24-hour window without an explicit reset, recovery is estimated as 24 hours after the event and is clearly labeled as estimated. That estimate is an upper bound for cooldown scheduling, not a precise reconstruction of the rolling window. Explicit body fields such as `billing_period_end` or `reset_at` take precedence. Transport `Retry-After` only describes request retry backoff and does not override free-usage cooldown recovery.
+
+`X-Ratelimit-Limit-*` and `X-Ratelimit-Remaining-*` on successful responses describe the current API request or token rate-limit window. They are throughput diagnostics, not the included Grok free-plan allowance, and CPAMP does not use them to calculate free-usage remaining.
+
+Monitoring also exposes safe diagnostic signals such as `X-Request-Id`, `traceparent`, `X-Should-Retry`, `X-Data-Retention`, and `X-Zero-Retention`. `Set-Cookie`, API keys, and other token-like headers are not published. The same sanitized exhaustion evidence is attached to CPAMP-created cooldown records for troubleshooting in Auth Files.
+
 ## Page Actions
 
 - Search by file name, account, note, or index.

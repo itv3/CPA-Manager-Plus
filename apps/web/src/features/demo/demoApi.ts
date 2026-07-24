@@ -1,5 +1,6 @@
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import {
+  advanceDemoCredentialRefresh,
   getDemoApiCallResult,
   getDemoAuthFiles,
   getDemoConfigYaml,
@@ -9,12 +10,22 @@ import {
   getDemoPluginStore,
   getDemoPlugins,
   getDemoRawConfig,
+  requestDemoCredentialRefresh,
 } from '@/features/demo/demoFixtures';
 import { DEMO_API_BASE, DEMO_SERVER_VERSION, getDemoServerBuildDate } from './demoMode';
 
 type DemoMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
 const ok = { status: 'ok', success: true };
+const FORCE_REFRESH_TIMESTAMP = '2000-01-01T00:00:00Z';
+
+const isCredentialRefreshPatch = (data: unknown): data is Record<string, unknown> =>
+  Boolean(
+    data &&
+    typeof data === 'object' &&
+    (data as Record<string, unknown>).expired === FORCE_REFRESH_TIMESTAMP &&
+    (data as Record<string, unknown>).last_refresh === FORCE_REFRESH_TIMESTAMP
+  );
 
 const normalizeDemoUrl = (url: string, config?: AxiosRequestConfig) => {
   const parsed = new URL(url || '/', DEMO_API_BASE);
@@ -105,11 +116,21 @@ export async function handleDemoApiRequest<T = unknown>(
   }
 
   if (pathname === '/auth-files') {
-    if (method === 'get') return getDemoAuthFiles() as T;
+    if (method === 'get') {
+      advanceDemoCredentialRefresh();
+      return getDemoAuthFiles() as T;
+    }
     if (method === 'delete') return { deleted: params.get('all') === 'true' ? 8 : 1 } as T;
     return { ...ok, files: getDemoAuthFiles().files } as T;
   }
-  if (pathname === '/auth-files/status' || pathname === '/auth-files/fields') return ok as T;
+  if (pathname === '/auth-files/fields') {
+    if (method === 'patch' && isCredentialRefreshPatch(data)) {
+      const selector = typeof data.name === 'string' ? data.name : '';
+      requestDemoCredentialRefresh(selector);
+    }
+    return ok as T;
+  }
+  if (pathname === '/auth-files/status') return ok as T;
   if (pathname.startsWith('/auth-files/')) return ok as T;
 
   if (pathname === '/oauth-excluded-models') {

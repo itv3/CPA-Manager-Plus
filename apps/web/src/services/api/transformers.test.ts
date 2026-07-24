@@ -29,4 +29,22 @@ describe('normalizeConfigResponse xAI API keys', () => {
       }),
     ]);
   });
+
+  it('normalizes the xAI inference inspection switch aliases', () => {
+    const config = normalizeConfigResponse({
+      clean: {
+        xai_inference_enabled: true,
+        xai_inference_user_agent: 'xai-custom-agent',
+        xai_inference_model: 'grok-custom',
+        xai_inference_prompt: 'Reply OK.',
+      },
+    });
+
+    expect(config.clean).toMatchObject({
+      xaiInferenceEnabled: true,
+      xaiInferenceUserAgent: 'xai-custom-agent',
+      xaiInferenceModel: 'grok-custom',
+      xaiInferencePrompt: 'Reply OK.',
+    });
+  });
 });

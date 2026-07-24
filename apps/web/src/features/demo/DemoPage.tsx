@@ -2,14 +2,24 @@ import { useLayoutEffect } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { apiClient } from '@/services/api/client';
 import { normalizeConfigResponse } from '@/services/api/transformers';
-import {
-  useAuthStore,
-  useConfigStore,
-  useModelsStore,
-  useUsageServiceStore,
-} from '@/stores';
+import { useAuthStore, useConfigStore, useModelsStore, useUsageServiceStore } from '@/stores';
 import { DemoRouteAdapter } from './DemoRouteAdapter';
-import { getDemoProviderModels, getDemoRawConfig } from '@/features/demo/demoFixtures';
+import {
+  getDemoCodexInspectionLocalLogs,
+  getDemoCodexInspectionLocalRun,
+  getDemoProviderModels,
+  getDemoRawConfig,
+  resetDemoCredentialRefresh,
+} from '@/features/demo/demoFixtures';
+import {
+  CODEX_INSPECTION_LAST_RUN_STORAGE_KEY,
+  saveCodexInspectionLastRun,
+} from '@/features/monitoring/model/codexInspectionStorage';
+import {
+  CODEX_INSPECTION_SETTINGS_STORAGE_KEY,
+  saveCodexInspectionConfigurableSettings,
+} from '@/features/monitoring/model/codexInspectionSettings';
+import { createCodexInspectionConnectionFingerprint } from '@/features/monitoring/codexInspection';
 import {
   DEMO_API_BASE,
   DEMO_MANAGEMENT_KEY,
@@ -29,6 +39,57 @@ const createDemoConfigCache = (config: ReturnType<typeof normalizeConfigResponse
   const cache = new Map<string, { data: unknown; timestamp: number }>();
   cache.set('__full__', { data: config, timestamp: Date.now() });
   return cache;
+};
+
+const restoreStorageValue = (key: string, value: string | null) => {
+  if (value === null) {
+    window.localStorage.removeItem(key);
+  } else {
+    window.localStorage.setItem(key, value);
+  }
+};
+
+// Exported for storage lifecycle coverage; DemoPage remains the only runtime caller.
+// eslint-disable-next-line react-refresh/only-export-components
+export const installDemoInspectionState = () => {
+  if (typeof window === 'undefined') return () => undefined;
+  const lastRunSnapshot = window.localStorage.getItem(CODEX_INSPECTION_LAST_RUN_STORAGE_KEY);
+  const settingsSnapshot = window.localStorage.getItem(CODEX_INSPECTION_SETTINGS_STORAGE_KEY);
+  const run = getDemoCodexInspectionLocalRun();
+  const connectionFingerprint = createCodexInspectionConnectionFingerprint(
+    DEMO_API_BASE,
+    DEMO_MANAGEMENT_KEY
+  );
+
+  saveCodexInspectionConfigurableSettings({
+    targetTypes: run.settings.targetTypes,
+    targetType: run.settings.targetType,
+    workers: run.settings.workers,
+    deleteWorkers: run.settings.deleteWorkers,
+    timeout: run.settings.timeout,
+    retries: run.settings.retries,
+    userAgent: run.settings.userAgent,
+    xaiInferenceUserAgent: run.settings.xaiInferenceUserAgent,
+    xaiInferenceEnabled: run.settings.xaiInferenceEnabled,
+    xaiInferenceModel: run.settings.xaiInferenceModel,
+    xaiInferencePrompt: run.settings.xaiInferencePrompt,
+    usedPercentThreshold: run.settings.usedPercentThreshold,
+    sampleSize: run.settings.sampleSize,
+    autoActionMode: 'disable',
+    autoRecoverEnabled: true,
+  });
+  saveCodexInspectionLastRun({
+    result: run,
+    logs: getDemoCodexInspectionLocalLogs(),
+    logsCollapsed: true,
+    actionFilter: 'all',
+    connectionFingerprint,
+  });
+
+  return () => {
+    restoreStorageValue(CODEX_INSPECTION_LAST_RUN_STORAGE_KEY, lastRunSnapshot);
+    restoreStorageValue(CODEX_INSPECTION_SETTINGS_STORAGE_KEY, settingsSnapshot);
+  };
 };
 
 const captureAuthSnapshot = (state: AuthStoreState) => ({
@@ -81,7 +142,9 @@ export function DemoPage() {
     const demoConfig = normalizeConfigResponse(getDemoRawConfig());
     const demoModels = getDemoProviderModels();
     const restoreDemoPersistIsolation = enableDemoPersistIsolation();
+    const restoreDemoInspectionState = installDemoInspectionState();
 
+    resetDemoCredentialRefresh();
     setDemoMode(true);
     apiClient.setConfig({
       apiBase: DEMO_API_BASE,
@@ -126,6 +189,7 @@ export function DemoPage() {
     }));
 
     return () => {
+      resetDemoCredentialRefresh();
       setDemoMode(false);
       useAuthStore.setState(authSnapshot);
       useConfigStore.setState(configSnapshot);
@@ -143,6 +207,7 @@ export function DemoPage() {
         }
       }
       restoreDemoPersistIsolation();
+      restoreDemoInspectionState();
     };
   }, []);
 

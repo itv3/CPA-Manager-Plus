@@ -496,6 +496,14 @@ describe('auth file Codex status helpers', () => {
       isQuota: false,
       errorKind: 'official_api_healthy',
     });
+    const legacyIdentityStatus = getAuthFileCodexStatus(file, undefined, {
+      fileName: file.name,
+      provider: 'xai',
+      authIndex: file.authIndex,
+      action: 'keep',
+      isQuota: false,
+      errorKind: 'identity_healthy',
+    });
 
     expect(quotaStatus).toMatchObject({
       isCodex: false,
@@ -506,12 +514,9 @@ describe('auth file Codex status helpers', () => {
     });
     expect(quotaStatus.badges.map((badge) => badge.kind)).toContain('observed_quota');
     expect(reauthStatus.badges.map((badge) => badge.kind)).toContain('reauth');
-    expect(partialStatus.badges.map((badge) => badge.kind)).toContain('observed_error');
-    expect(partialStatus.badges.find((badge) => badge.kind === 'observed_error')).toMatchObject({
-      titleKey: 'xai_quota.diagnostic_billing_partial',
-      defaultTitle: 'The latest xAI inspection found an issue. Review the inspection details.',
-    });
+    expect(partialStatus.badges.map((badge) => badge.kind)).not.toContain('observed_error');
     expect(officialApiStatus.badges.map((badge) => badge.kind)).not.toContain('observed_error');
+    expect(legacyIdentityStatus.badges.map((badge) => badge.kind)).not.toContain('observed_error');
     expect(authFileMatchesCodexStatusFilter(quotaStatus, 'quota_limited')).toBe(false);
   });
 

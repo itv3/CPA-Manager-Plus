@@ -16,11 +16,14 @@ import (
 )
 
 const (
-	xaiBillingWeeklyURL  = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
-	xaiBillingMonthlyURL = "https://cli-chat-proxy.grok.com/v1/billing"
-	xaiOfficialAPIMeURL  = "https://api.x.ai/v1/me"
-	xaiGrokVersion       = "0.2.101"
-	xaiGrokUserAgent     = "grok-pager/0.2.101 grok-shell/0.2.101 (macos; aarch64)"
+	xaiBillingWeeklyURL    = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+	xaiBillingMonthlyURL   = "https://cli-chat-proxy.grok.com/v1/billing"
+	xaiOfficialAPIMeURL    = "https://api.x.ai/v1/me"
+	xaiOfficialAPIBaseURL  = "https://api.x.ai/v1"
+	xaiCLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
+	xaiGrokVersion         = "0.2.101"
+	xaiGrokUserAgent       = "grok-pager/0.2.101 grok-shell/0.2.101 (macos; aarch64)"
+	xaiInferenceUserAgent  = model.DefaultXAIInferenceUserAgent
 )
 
 type xaiProbeDecision struct {
@@ -57,6 +60,14 @@ type xaiBillingProbe struct {
 	Partial            bool
 	Healthy            bool
 	OfficialAPIHealthy bool
+	StatusCode         int
+	OfficialAPIStatus  int
+}
+
+type xaiInferenceProbe struct {
+	Healthy    bool
+	StatusCode int
+	Decision   *xaiProbeDecision
 }
 
 type XAIUsageError struct {
@@ -128,79 +139,327 @@ func (s *Service) inspectSingleXAIAccount(
 		return base
 	}
 
-	var probe xaiBillingProbe
-	var err error
+	var billing xaiBillingProbe
+	var billingErr error
 	for attempt := 0; attempt <= settings.Retries; attempt++ {
-		probe, err = s.requestXAIBilling(ctx, setup, settings, item)
-		if err == nil && (!xaiProbeShouldRetry(probe) || attempt == settings.Retries) {
+		billing, billingErr = s.requestXAIBilling(ctx, setup, settings, item)
+		if billingErr == nil && (!xaiProbeShouldRetry(billing) || attempt == settings.Retries) {
 			break
 		}
 	}
-	if err != nil {
-		base.ActionReason = "monitoring.xai_inspection_reason_request_error"
-		base.Error = truncate(err.Error(), maxStoredBodyText)
-		base.ErrorKind = "request_error"
-		base.ErrorDetail = truncate(err.Error(), maxStoredBodyText)
-		return base
+	if billingErr != nil {
+		billing.Failures = append(billing.Failures, *xaiDecision(0, "upstream_error", billingErr.Error()))
+		billing.Partial = true
 	}
-	if probe.OfficialAPIHealthy {
-		base.Action = "keep"
-		base.ActionReason = "monitoring.xai_inspection_reason_official_api_healthy"
-		base.StatusCode = intPointer(http.StatusOK)
-		base.ErrorKind = "official_api_healthy"
-		base.PlanType = "xai"
-		if base.Disabled && !item.AutoRecoverOwned {
-			base.ActionReason = "monitoring.xai_inspection_reason_official_api_manual_disable"
-		}
+	if billing.Summary != nil {
+		base.UsedPercent = xaiSummaryUsedPercent(billing.Summary)
+		base.QuotaWindows = xaiSummaryWindows(billing.Summary)
+	}
+	if !settings.XAIInferenceEnabled {
+		base = resolveXAIBasicInspectionResult(base, billing)
 		logger.info(ctx, "monitoring.xai_inspection_log_server_complete", map[string]any{
-			"fileName": item.FileName,
-			"partial":  false,
-			"action":   base.Action,
+			"fileName":         item.FileName,
+			"billingPartial":   billing.Partial,
+			"inferenceEnabled": false,
+			"inferenceHealthy": false,
+			"action":           base.Action,
 		})
 		return base
 	}
 
-	if blocking, ok := xaiRelevantFailure(probe.Failures, probe.Summary == nil); ok {
-		if base.Disabled && blocking.Action == "disable" {
-			blocking.Action = "keep"
-			blocking.Reason = xaiDisabledReasonKey(blocking.Classification)
+	inference := s.requestXAIInferenceWithRetries(ctx, setup, settings, item)
+	if inference.Healthy {
+		base.Action = "keep"
+		base.ActionReason = "monitoring.xai_inspection_reason_inference_healthy"
+		base.StatusCode = intPointer(inference.StatusCode)
+		base.IsQuota = false
+		base.AutoRecoverEligible = false
+		base.Error = ""
+		base.ErrorKind = "inference_healthy"
+		base.ErrorDetail = ""
+		if base.Disabled && !item.AutoRecoverOwned {
+			base.ActionReason = "monitoring.xai_inspection_reason_inference_manual_disable"
+		} else if base.Disabled && item.AutoRecoverOwned {
+			base.Action = "enable"
+			base.ActionReason = "monitoring.xai_inspection_reason_enable_owned"
+			base.AutoRecoverEligible = true
 		}
-		base.Action = blocking.Action
-		base.ActionReason = blocking.Reason
-		base.StatusCode = intPointer(blocking.StatusCode)
-		base.IsQuota = blocking.IsQuota
-		base.ErrorKind = blocking.Classification
-		base.ErrorDetail = blocking.ErrorDetail
+	} else {
+		decision := inference.Decision
+		if decision == nil {
+			decision = xaiDecision(0, "protocol_changed", "xAI inference did not return a completion event")
+		}
+		if base.Disabled && decision.Action == "disable" {
+			decision.Action = "keep"
+			decision.Reason = xaiDisabledReasonKey(decision.Classification)
+		}
+		base.Action = decision.Action
+		base.ActionReason = decision.Reason
+		base.StatusCode = intPointer(decision.StatusCode)
+		base.IsQuota = decision.IsQuota
+		base.AutoRecoverEligible = false
+		base.Error = decision.ErrorDetail
+		base.ErrorKind = decision.Classification
+		base.ErrorDetail = decision.ErrorDetail
+	}
+	logger.info(ctx, "monitoring.xai_inspection_log_server_complete", map[string]any{
+		"fileName":         item.FileName,
+		"billingPartial":   billing.Partial,
+		"inferenceEnabled": true,
+		"inferenceHealthy": inference.Healthy,
+		"action":           base.Action,
+	})
+	return base
+}
+
+func resolveXAIBasicInspectionResult(
+	base model.CodexInspectionResult,
+	billing xaiBillingProbe,
+) model.CodexInspectionResult {
+	if billing.Summary != nil {
+		if decision, ok := xaiRelevantFailure(billing.Failures, false); ok {
+			if base.Disabled && decision.Action == "disable" {
+				decision.Action = "keep"
+				decision.Reason = xaiDisabledReasonKey(decision.Classification)
+			}
+			base.Action = decision.Action
+			base.ActionReason = decision.Reason
+			base.StatusCode = intPointer(decision.StatusCode)
+			base.IsQuota = decision.IsQuota
+			base.AutoRecoverEligible = false
+			base.Error = decision.ErrorDetail
+			base.ErrorKind = decision.Classification
+			base.ErrorDetail = decision.ErrorDetail
+			return base
+		}
+	}
+
+	if billing.Healthy || billing.OfficialAPIHealthy {
+		base.Action = "keep"
+		base.ActionReason = "monitoring.xai_inspection_reason_billing_healthy"
+		statusCode := billing.StatusCode
+		if billing.OfficialAPIHealthy {
+			statusCode = billing.OfficialAPIStatus
+		}
+		base.StatusCode = intPointer(statusCode)
+		base.IsQuota = false
+		base.AutoRecoverEligible = false
+		base.Error = ""
+		base.ErrorKind = "billing_healthy"
+		if billing.OfficialAPIHealthy && billing.Summary == nil {
+			base.ActionReason = "monitoring.xai_inspection_reason_official_api_healthy"
+			if base.Disabled {
+				base.ActionReason = "monitoring.xai_inspection_reason_official_api_manual_disable"
+			}
+			base.ErrorKind = "official_api_healthy"
+		} else if billing.Partial {
+			base.ActionReason = "monitoring.xai_inspection_reason_billing_partial"
+			base.ErrorKind = "billing_partial"
+		}
+		base.ErrorDetail = ""
 		return base
 	}
 
-	base.Action = "keep"
-	base.ActionReason = "monitoring.xai_inspection_reason_billing_healthy"
-	base.StatusCode = intPointer(http.StatusOK)
-	base.ErrorKind = "billing_healthy"
-	if probe.Partial {
-		base.ActionReason = "monitoring.xai_inspection_reason_billing_partial"
-		base.ErrorKind = "billing_partial"
-		base.ErrorDetail = xaiFailureDetails(probe.Failures)
+	decision, ok := xaiRelevantFailure(billing.Failures, true)
+	if !ok {
+		decision = *xaiDecision(0, "upstream_error", "xAI billing returned no usable health evidence")
 	}
-	if probe.Summary != nil {
-		base.UsedPercent = xaiSummaryUsedPercent(probe.Summary)
-		base.QuotaWindows = xaiSummaryWindows(probe.Summary)
-		base.PlanType = "xai"
+	if base.Disabled && decision.Action == "disable" {
+		decision.Action = "keep"
+		decision.Reason = xaiDisabledReasonKey(decision.Classification)
 	}
-	if base.Disabled && !item.AutoRecoverOwned {
-		base.ActionReason = "monitoring.xai_inspection_reason_manual_disable"
-	} else if base.Disabled && item.AutoRecoverOwned && !probe.Partial && probe.Healthy {
-		base.Action = "enable"
-		base.ActionReason = "monitoring.xai_inspection_reason_enable_owned"
-		base.AutoRecoverEligible = true
-	}
-	logger.info(ctx, "monitoring.xai_inspection_log_server_complete", map[string]any{
-		"fileName": item.FileName,
-		"partial":  probe.Partial,
-		"action":   base.Action,
-	})
+	base.Action = decision.Action
+	base.ActionReason = decision.Reason
+	base.StatusCode = intPointer(decision.StatusCode)
+	base.IsQuota = decision.IsQuota
+	base.AutoRecoverEligible = false
+	base.Error = decision.ErrorDetail
+	base.ErrorKind = decision.Classification
+	base.ErrorDetail = decision.ErrorDetail
 	return base
+}
+
+func (s *Service) requestXAIInferenceWithRetries(
+	ctx context.Context,
+	setup store.Setup,
+	settings model.ManagerCodexInspectionConfig,
+	item account,
+) xaiInferenceProbe {
+	var probe xaiInferenceProbe
+	for attempt := 0; attempt <= settings.Retries; attempt++ {
+		probe = s.requestXAIInference(ctx, setup, settings, item)
+		if probe.Healthy || probe.Decision == nil || !xaiInferenceShouldRetry(*probe.Decision) {
+			break
+		}
+	}
+	return probe
+}
+
+func (s *Service) requestXAIInference(
+	ctx context.Context,
+	setup store.Setup,
+	settings model.ManagerCodexInspectionConfig,
+	item account,
+) xaiInferenceProbe {
+	targetURL, usesCLIChatProxy := resolveXAIInferenceURL(item.File)
+	header := map[string]string{
+		"Authorization": "Bearer $TOKEN$",
+		"Accept":        "application/json",
+		"Content-Type":  "application/json",
+		"User-Agent":    firstNonEmpty(settings.XAIInferenceUserAgent, xaiInferenceUserAgent),
+	}
+	if usesCLIChatProxy {
+		header["x-xai-token-auth"] = "xai-grok-cli"
+		header["x-grok-client-version"] = xaiGrokVersion
+	}
+	if userID := resolveXAIUserID(item.File); userID != "" {
+		header["x-userid"] = userID
+	}
+
+	data, err := json.Marshal(map[string]any{
+		"model":  settings.XAIInferenceModel,
+		"input":  settings.XAIInferencePrompt,
+		"stream": false,
+	})
+	if err != nil {
+		return xaiInferenceProbe{Decision: xaiDecision(0, "upstream_error", err.Error())}
+	}
+
+	response, _, err := s.requestProviderAPICallAt(
+		ctx,
+		setup,
+		settings,
+		item,
+		http.MethodPost,
+		targetURL,
+		header,
+		string(data),
+	)
+	if err != nil {
+		return xaiInferenceProbe{Decision: xaiDecision(0, "upstream_error", err.Error())}
+	}
+	if !response.HasStatusCode {
+		return xaiInferenceProbe{Decision: xaiDecision(0, "protocol_changed", "xAI inference response missing status_code")}
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return xaiInferenceProbe{Decision: xaiDecision(
+			response.StatusCode,
+			xaiClassification(response.StatusCode, response.Body),
+			firstNonEmpty(response.BodyText, fmt.Sprint(response.Body)),
+		)}
+	}
+	if healthy, detail := hasCompletedXAIInferenceOutput(response.Body, response.BodyText); !healthy {
+		classification := xaiClassification(response.StatusCode, response.Body)
+		if classification == "unknown" {
+			classification = "protocol_changed"
+		}
+		return xaiInferenceProbe{Decision: xaiDecision(response.StatusCode, classification, detail)}
+	}
+	return xaiInferenceProbe{Healthy: true, StatusCode: response.StatusCode}
+}
+
+func hasCompletedXAIInferenceOutput(body any, bodyText string) (bool, string) {
+	payload := parseRecord(body)
+	if payload == nil {
+		payload = parseRecord(bodyText)
+	}
+	if payload == nil {
+		return false, "xAI inference response schema changed"
+	}
+	if status := strings.ToLower(readString(payload, "status")); status != "completed" {
+		if status == "" {
+			return false, "xAI inference response missing completed status"
+		}
+		return false, fmt.Sprintf("xAI inference response status is %s", status)
+	}
+	if errorValue, ok := payload["error"]; ok && errorValue != nil {
+		return false, firstNonEmpty(fmt.Sprint(errorValue), "xAI inference response contains an error")
+	}
+	for _, rawOutput := range readXAIArray(payload, "output") {
+		output := toMap(rawOutput)
+		if output == nil || !strings.EqualFold(readString(output, "type"), "message") {
+			continue
+		}
+		for _, rawContent := range readXAIArray(output, "content") {
+			content := toMap(rawContent)
+			if content == nil || !strings.EqualFold(readString(content, "type"), "output_text") {
+				continue
+			}
+			if strings.TrimSpace(readString(content, "text")) != "" {
+				return true, ""
+			}
+		}
+	}
+	return false, "xAI inference completed without output text"
+}
+
+func xaiInferenceShouldRetry(decision xaiProbeDecision) bool {
+	switch decision.Classification {
+	case "upstream_error", "rate_limited", "probe_invalid", "model_unavailable", "protocol_changed":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveXAIInferenceURL(file authFile) (string, bool) {
+	baseURL := strings.TrimSuffix(strings.TrimSpace(readXAIAuthString(file, "base_url", "baseUrl")), "/")
+	usingAPI, hasUsingAPI := readXAIAuthBool(file, "using_api", "usingApi")
+	authKind := strings.ToLower(readXAIAuthString(file, "auth_kind", "authKind"))
+	if !hasUsingAPI {
+		// xAI OAuth/CLI credentials may omit auth_kind and using_api from the
+		// management auth-files listing. Default ambiguous credentials to the
+		// CLI proxy; API credentials must opt in explicitly with api_key or
+		// using_api=true.
+		usingAPI = authKind != "" && !strings.EqualFold(authKind, "oauth")
+	}
+	if !usingAPI && (baseURL == "" || sameXAIBaseURL(baseURL, xaiOfficialAPIBaseURL)) {
+		return xaiCLIChatProxyBaseURL + "/responses", true
+	}
+	if baseURL == "" {
+		baseURL = xaiOfficialAPIBaseURL
+	}
+	return baseURL + "/responses", sameXAIBaseURL(baseURL, xaiCLIChatProxyBaseURL)
+}
+
+func sameXAIBaseURL(left, right string) bool {
+	return strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(left), "/"), strings.TrimSuffix(strings.TrimSpace(right), "/"))
+}
+
+func readXAIAuthString(file authFile, keys ...string) string {
+	metadata := readMap(file, "metadata")
+	attributes := readMap(file, "attributes")
+	for _, record := range []map[string]any{file, metadata, attributes} {
+		if value := readString(record, keys...); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func readXAIAuthBool(file authFile, keys ...string) (bool, bool) {
+	metadata := readMap(file, "metadata")
+	attributes := readMap(file, "attributes")
+	for _, record := range []map[string]any{file, metadata, attributes} {
+		for _, key := range keys {
+			value, ok := record[key]
+			if !ok || value == nil {
+				continue
+			}
+			switch typed := value.(type) {
+			case bool:
+				return typed, true
+			case string:
+				switch strings.ToLower(strings.TrimSpace(typed)) {
+				case "true":
+					return true, true
+				case "false":
+					return false, true
+				}
+			}
+		}
+	}
+	return false, false
 }
 
 func (s *Service) requestXAIBilling(
@@ -237,6 +496,9 @@ func (s *Service) requestXAIBilling(
 			} else {
 				probe.Summary = mergeXAIBillingSummary(probe.Summary, result.Summary)
 			}
+			if probe.StatusCode <= 0 {
+				probe.StatusCode = result.StatusCode
+			}
 			probe.Partial = probe.Partial || result.Partial
 			probe.Healthy = true
 		}
@@ -246,13 +508,14 @@ func (s *Service) requestXAIBilling(
 	}
 	if probe.Summary == nil {
 		if xaiOfficialAPIFallbackEligible(probe.Failures) {
-			healthy, failure, healthErr := s.requestXAIOfficialAPIHealth(ctx, setup, settings, item)
+			healthy, statusCode, failure, healthErr := s.requestXAIOfficialAPIHealth(ctx, setup, settings, item)
 			if healthErr != nil {
 				probe.Failures = append(probe.Failures, *xaiDecision(0, "upstream_error", healthErr.Error()))
 			} else if failure != nil {
 				probe.Failures = append(probe.Failures, *failure)
 			} else if healthy {
 				probe.OfficialAPIHealthy = true
+				probe.OfficialAPIStatus = statusCode
 				return probe, nil
 			}
 		}
@@ -282,17 +545,17 @@ func (s *Service) requestXAIOfficialAPIHealth(
 	setup store.Setup,
 	settings model.ManagerCodexInspectionConfig,
 	item account,
-) (bool, *xaiProbeDecision, error) {
+) (bool, int, *xaiProbeDecision, error) {
 	header := map[string]string{
 		"Authorization": "Bearer $TOKEN$",
 		"Accept":        "application/json",
 	}
 	response, _, err := s.requestProviderBillingAt(ctx, setup, settings, item, xaiOfficialAPIMeURL, header)
 	if err != nil {
-		return false, nil, err
+		return false, 0, nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return false, xaiDecision(
+		return false, response.StatusCode, xaiDecision(
 			response.StatusCode,
 			xaiClassification(response.StatusCode, response.Body),
 			fmt.Sprint(response.Body),
@@ -304,18 +567,18 @@ func (s *Service) requestXAIOfficialAPIHealth(
 		payload = parseRecord(response.BodyText)
 	}
 	if payload == nil {
-		return false, xaiDecision(response.StatusCode, "protocol_changed", "xAI official API identity response schema changed"), nil
+		return false, response.StatusCode, xaiDecision(response.StatusCode, "protocol_changed", "xAI official API identity response schema changed"), nil
 	}
 	blocked, hasTeamBlocked := readXAIBoolPtr(payload, "team_blocked", "teamBlocked")
 	if hasTeamBlocked && blocked != nil && *blocked {
-		return false, xaiDecision(http.StatusForbidden, "spending_limit", "xAI official API team is blocked"), nil
+		return false, response.StatusCode, xaiDecision(http.StatusForbidden, "spending_limit", "xAI official API team is blocked"), nil
 	}
 	userID := readXAIIdentityID(payload, "user_id", "userId")
 	teamID := readXAIIdentityID(payload, "team_id", "teamId")
 	if userID == "" && teamID == "" && !hasTeamBlocked {
-		return false, xaiDecision(response.StatusCode, "protocol_changed", "xAI official API identity response schema changed"), nil
+		return false, response.StatusCode, xaiDecision(response.StatusCode, "protocol_changed", "xAI official API identity response schema changed"), nil
 	}
-	return true, nil, nil
+	return true, response.StatusCode, nil, nil
 }
 
 func readXAIIdentityID(record map[string]any, keys ...string) string {
@@ -403,9 +666,10 @@ func mergeXAIBillingSummary(primary, fallback *xaiBillingSummary) *xaiBillingSum
 }
 
 type xaiBillingResult struct {
-	Summary *xaiBillingSummary
-	Failure *xaiProbeDecision
-	Partial bool
+	Summary    *xaiBillingSummary
+	Failure    *xaiProbeDecision
+	Partial    bool
+	StatusCode int
 }
 
 func (s *Service) requestProviderBilling(
@@ -429,7 +693,7 @@ func (s *Service) requestProviderBilling(
 		if summary == nil {
 			return xaiBillingResult{Failure: xaiDecision(response.StatusCode, "protocol_changed", "xAI billing response schema changed")}, nil
 		}
-		return xaiBillingResult{Summary: summary}, nil
+		return xaiBillingResult{Summary: summary, StatusCode: response.StatusCode}, nil
 	}
 	return xaiBillingResult{Failure: xaiDecision(
 		response.StatusCode,
@@ -446,11 +710,39 @@ func (s *Service) requestProviderBillingAt(
 	targetURL string,
 	header map[string]string,
 ) (apiCallResponse, int, error) {
+	return s.requestProviderAPICallAt(
+		ctx,
+		setup,
+		settings,
+		item,
+		http.MethodGet,
+		targetURL,
+		header,
+		"",
+	)
+}
+
+func (s *Service) requestProviderAPICallAt(
+	ctx context.Context,
+	setup store.Setup,
+	settings model.ManagerCodexInspectionConfig,
+	item account,
+	method string,
+	targetURL string,
+	header map[string]string,
+	requestData string,
+) (apiCallResponse, int, error) {
+	if strings.TrimSpace(method) == "" {
+		method = http.MethodGet
+	}
 	payload := map[string]any{
 		"authIndex": item.AuthIndex,
-		"method":    http.MethodGet,
+		"method":    method,
 		"url":       targetURL,
 		"header":    header,
+	}
+	if requestData != "" {
+		payload["data"] = requestData
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -491,7 +783,7 @@ func (s *Service) requestProviderBillingAt(
 	bodyText, bodyValue := normalizeBody(bodyRaw)
 	return apiCallResponse{
 		StatusCode:    int(readFloat(statusRaw, 0)),
-		HasStatusCode: hasStatus,
+		HasStatusCode: hasStatus && strings.TrimSpace(fmt.Sprint(statusRaw)) != "",
 		BodyText:      bodyText,
 		Body:          bodyValue,
 	}, res.StatusCode, nil
@@ -559,7 +851,7 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 	periodType := strings.ToLower(readString(period, "type"))
 	billingPeriodEnd := readString(config, "billing_period_end", "billingPeriodEnd")
 	hasWeeklyData := usage != nil || len(productUsage) > 0 || strings.Contains(periodType, "weekly")
-	hasMonthlyData := monthlyLimit != nil || used != nil || onDemandCap != nil || onDemandUsed != nil || (!hasWeeklyData && billingPeriodEnd != "")
+	hasMonthlyData := monthlyLimit != nil || used != nil || (!hasWeeklyData && (onDemandCap != nil || billingPeriodEnd != ""))
 	if !hasWeeklyData && !hasMonthlyData {
 		return nil
 	}
@@ -612,10 +904,10 @@ func xaiSummaryWindows(summary *xaiBillingSummary) []model.CodexInspectionQuotaW
 	if summary.HasWeeklyData {
 		windows = append(windows, model.CodexInspectionQuotaWindow{ID: "xai-weekly", LabelKey: "xai_quota.weekly_limit", UsedPercent: summary.UsagePercent, ResetLabel: summary.PeriodEnd})
 	}
-	if summary.HasMonthlyData {
+	if summary.UsedPercent != nil || summary.MonthlyLimitCents != nil {
 		windows = append(windows, model.CodexInspectionQuotaWindow{ID: "xai-monthly", LabelKey: "xai_quota.monthly_limit", UsedPercent: summary.UsedPercent, ResetLabel: summary.BillingPeriodEnd})
 	}
-	if summary.OnDemandUsedPercent != nil || summary.OnDemandCapCents != nil {
+	if summary.OnDemandUsedPercent != nil || (summary.OnDemandCapCents != nil && *summary.OnDemandCapCents > 0) {
 		windows = append(windows, model.CodexInspectionQuotaWindow{ID: "xai-on-demand", LabelKey: "xai_quota.on_demand_cap", UsedPercent: summary.OnDemandUsedPercent, ResetLabel: summary.BillingPeriodEnd})
 	}
 	for index, item := range summary.ProductUsage {

@@ -13,6 +13,8 @@ type AuthFilePatchPayload = { name: string; disabled?: boolean; [key: string]: u
 type AuthFileEntry = AuthFilesResponse['files'][number];
 type AuthFileJsonValue = Record<string, unknown> | Record<string, unknown>[];
 export type AuthFileFieldsPatch = {
+  expired?: string;
+  last_refresh?: string;
   prefix?: string;
   proxy_url?: string;
   websockets?: boolean;
@@ -627,6 +629,7 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
 };
 
 const OAUTH_MODEL_ALIAS_ENDPOINT = '/oauth-model-alias';
+const AUTH_FILE_FORCE_REFRESH_TIMESTAMP = '2000-01-01T00:00:00Z';
 
 export const authFilesApi = {
   list: async () => dedupeAuthFilesResponse(await apiClient.get<AuthFilesResponse>('/auth-files')),
@@ -647,6 +650,13 @@ export const authFilesApi = {
 
   patchFields: (name: string, fields: AuthFileFieldsPatch) =>
     apiClient.patch('/auth-files/fields', { name, ...fields }),
+
+  requestCredentialRefresh: (selector: string) =>
+    apiClient.patch('/auth-files/fields', {
+      name: selector,
+      expired: AUTH_FILE_FORCE_REFRESH_TIMESTAMP,
+      last_refresh: AUTH_FILE_FORCE_REFRESH_TIMESTAMP,
+    }),
 
   patchFieldsForAuthIndexes: async (
     name: string,

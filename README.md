@@ -7,7 +7,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/seakee/cpa-manager-plus?style=flat-square)](https://hub.docker.com/r/seakee/cpa-manager-plus)
 [![Stars](https://img.shields.io/github/stars/seakee/CPA-Manager-Plus?style=flat-square&label=stars)](https://github.com/seakee/CPA-Manager-Plus/stargazers)
 
-A self-hosted CPA / CLIProxyAPI management panel and observability dashboard for requests, usage, cost, quota, failures, and account health.
+A self-hosted CPA / CLIProxyAPI management panel and AI gateway observability dashboard for requests, usage, cost, quota, failures, and account health.
 
 Operate providers, credentials, OAuth, plugins, and configuration while keeping persistent request history, cost analytics, and account automation in local storage.
 
@@ -15,57 +15,11 @@ Operate providers, credentials, OAuth, plugins, and configuration while keeping 
 
 </div>
 
-## Which Panel Should You Choose?
+## What Can CPAMP Help You Answer?
 
-CPA / CLIProxyAPI can serve either the official Management Center or the CPAMP Lightweight Panel directly on `:8317`. The lightweight panel replaces the official UI with CPAMP's clearer management experience without adding another service. Deploy CPAMP Full Mode when you also need persistent observability and long-running operations.
-
-| Need                                                                                       | Recommended choice                                                                                           |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| Keep the upstream UI maintained by the CPA project                                         | Official [CLI Proxy API Management Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) |
-| Replace the official UI with a clearer CPA-hosted WebUI and no additional service          | CPAMP Lightweight Panel                                                                                      |
-| Persist request history and diagnose failures after the CPA queue expires                  | CPAMP Full Mode                                                                                              |
-| Analyze cost and tokens by model, account, API key, project, and time range                | CPAMP Full Mode                                                                                              |
-| Run server-side account inspection, automation, SQLite backups, and recoverable migrations | CPAMP Full Mode                                                                                              |
-
-See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/choosing-a-panel.html) for the comparison, or [install the CPAMP Lightweight Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/cpa-panel.html) directly in CPA.
-
-## Core Capabilities
-
-### CPA Gateway Management
-
-- Manage Gemini, Codex, Claude, Vertex, xAI, OpenAI-compatible, and other CPA provider configuration.
-- Maintain auth files, OAuth logins, API keys, model aliases, priorities, plugins, logs, and system settings.
-- Import official Sub2API OpenAI OAuth exports and split multiple accounts into separate CPA Codex auth files.
-- Install plugins from latest, a selected GitHub Release, prerelease, or a manually entered tag.
-
-### Request Monitoring And Failure Diagnosis
-
-- Persist requests from the CPA usage queue in local SQLite.
-- Inspect account, client API key, and realtime request views with status, latency, token, cache, trace, and redacted failure evidence.
-- Export or import request history as JSONL without exposing raw failure bodies.
-- Open the [Monitoring Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/monitoring).
-
-### Cost And Usage Analytics
-
-- Break down calls, tokens, cost, latency, and failures by model, provider, account, credential, API key, project, channel, and time range.
-- Track input, output, reasoning, cache read/write/creation, service tier, and long-context pricing semantics.
-- Sync model prices from LiteLLM and OpenRouter, then keep local overrides for aliases or internal models.
-- Open the [Usage Analytics Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/usage-analytics).
-
-### Account Health, Quota, And Automation
-
-- Inspect Codex and xAI accounts locally or on a Manager Server schedule.
-- Read Codex windows, Claude weekly/model-scoped limits, xAI/Grok billing signals, credential state, workspace state, and reset evidence when the provider exposes it.
-- Apply controlled quota cooldowns and restore only credentials disabled by the same automation owner.
-- Collect credential failures in an account action queue for reauthorization, review, enable, resolve, or safe deletion.
-- Open the [Account Inspection Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/codex-inspection) and [Auth Files Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/auth-files).
-
-### Production Operations
-
-- Run as one Docker container or a native Linux, macOS, or Windows package for amd64/arm64.
-- Keep request history, Manager configuration, automation state, and model prices in local files with no account registration or telemetry SDK.
-- Use bounded SQLite connections, streaming usage import/export, incremental rollups, recoverable background migrations, and loopback-only pprof diagnostics.
-- Back up SQLite files together with `data.key` to preserve encrypted CPA Management Keys.
+- **Why are requests failing?** Inspect failure rates, status codes, affected models/accounts, and redacted evidence in persistent request history.
+- **Where is the cost going?** Break down tokens and estimated cost by model, provider, account, API key, project, channel, and time range.
+- **Are accounts and quotas healthy?** Review credential state, quota windows, reset evidence, and controlled automation for Codex and xAI accounts.
 
 ## Screenshots
 
@@ -92,14 +46,52 @@ See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/gui
   </tr>
 </table>
 
-## Choose How To Use CPAMP
+## Which Panel Should You Choose?
 
-| Option                  | Best for                                                    | Entry                                   |
-| ----------------------- | ----------------------------------------------------------- | --------------------------------------- |
-| CPAMP Lightweight Panel | Existing CPA users who only want to replace the official UI | CPA `:8317/management.html`             |
-| CPAMP Full Mode         | Request history, cost analytics, inspection, and automation | Manager Server `:18317/management.html` |
+CPA / CLIProxyAPI can serve either the official Management Center or the CPAMP Lightweight Panel directly on `:8317`. The lightweight panel replaces the official UI without adding another service. Deploy CPAMP Full Mode when you also need persistent observability and long-running operations.
 
-Full Mode can be installed with Docker (recommended) or a native package.
+| Option                                                                                                       | Best for                                                    | Entry                                   |
+| ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- | --------------------------------------- |
+| Official [CLI Proxy API Management Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) | Keeping the upstream UI maintained by the CPA project       | CPA `:8317/management.html`             |
+| CPAMP Lightweight Panel                                                                                      | Replacing only the UI without another service or database   | CPA `:8317/management.html`             |
+| CPAMP Full Mode                                                                                              | Request history, cost analytics, inspection, and automation | Manager Server `:18317/management.html` |
+
+See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/choosing-a-panel.html) for the comparison, or [install the CPAMP Lightweight Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/cpa-panel.html) directly in CPA.
+
+## Core Capabilities
+
+### CPA Gateway Management
+
+- Manage CPA provider configurations, including Gemini, Codex, Claude, Vertex, xAI, and OpenAI-compatible providers.
+- Maintain auth files, OAuth logins, API keys, model aliases, priorities, plugins, logs, and system settings.
+- Import official Sub2API OpenAI OAuth exports and split multiple accounts into separate CPA Codex auth files.
+
+### Request Monitoring And Failure Diagnosis
+
+- Persist requests from the CPA usage queue in local SQLite and search account, client API key, and realtime request views.
+- Inspect status, latency, token, cache, trace, and redacted failure evidence without exposing raw failure bodies.
+- Export or import request history as JSONL.
+- Open the [Monitoring Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/monitoring).
+
+### Cost And Usage Analytics
+
+- Break down calls, tokens, cost, latency, and failures by model, provider, account, credential, API key, project, channel, and time range.
+- Track input, output, reasoning, cache, service tier, and long-context pricing semantics.
+- Sync model prices from LiteLLM and OpenRouter, with local overrides for aliases or internal models.
+- Open the [Usage Analytics Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/usage-analytics).
+
+### Account Health, Quota, And Automation
+
+- Inspect Codex and xAI accounts locally or on a Manager Server schedule.
+- Read quota windows, reset evidence, credential state, workspace state, and provider-specific health signals when available.
+- Apply controlled quota cooldowns and route credential failures into an account action queue for review and recovery.
+- Open the [Account Inspection Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/codex-inspection) and [Auth Files Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/auth-files).
+
+### Production Operations
+
+- Run CPAMP Full Mode as one Docker container or a native Linux, macOS, or Windows package for amd64/arm64; the full stack can run alongside CPA.
+- Keep request history, Manager configuration, automation state, and model prices in local files with no account registration or telemetry SDK.
+- Back up SQLite files together with `data.key` to preserve encrypted CPA Management Keys.
 
 Want to preview the interface first? Open the [Live Demo](https://seakee.github.io/CPA-Manager-Plus/). The demo uses fictional data only. It is not a deployment or runtime mode and cannot connect to, manage, or monitor a real CPA instance.
 
@@ -172,15 +164,18 @@ Recommended CPA version: `v7.1.39+`. The HTTP usage queue needs `v6.10.8+`.
 
 ## Documentation
 
-| Task                                                      | Guide                                                                                                        |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Choose the right panel and deployment mode                | [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/choosing-a-panel.html)        |
-| Replace the official UI without deploying another service | [CPAMP Lightweight Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/cpa-panel.html)       |
-| Install and complete first setup                          | [Getting Started](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/getting-started.html)              |
-| Understand supported features and modes                   | [Capability Matrix](https://seakee.github.io/CPA-Manager-Plus/docs/en/reference/capability-matrix.html)      |
-| Configure providers, credentials, quota, and plugins      | [Panel Manual](https://seakee.github.io/CPA-Manager-Plus/docs/en/manual/ai-providers.html)                   |
-| Operate Manager Server, backups, upgrades, and migrations | [Manager Server Guide](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/manager-server.html)     |
-| Diagnose empty monitoring or queue problems               | [Troubleshooting](https://seakee.github.io/CPA-Manager-Plus/docs/en/troubleshooting/request-monitoring.html) |
+| Task                                                      | Guide                                                                                                                                                                                                |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Choose the right panel and deployment mode                | [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/choosing-a-panel.html)                                                                                                |
+| Replace the official UI without deploying another service | [CPAMP Lightweight Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/cpa-panel.html)                                                                                               |
+| Install and complete first setup                          | [Getting Started](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/getting-started.html)                                                                                                      |
+| Understand supported features and modes                   | [Capability Matrix](https://seakee.github.io/CPA-Manager-Plus/docs/en/reference/capability-matrix.html)                                                                                              |
+| Understand runtime ports, keys, and request flow          | [Runtime Model](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/runtime-model.html)                                                                                                          |
+| Configure providers, credentials, quota, and plugins      | [Panel Manual](https://seakee.github.io/CPA-Manager-Plus/docs/en/manual/ai-providers.html)                                                                                                           |
+| Operate Manager Server, backups, upgrades, and migrations | [Manager Server Guide](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/manager-server.html)                                                                                             |
+| Back up data or recover a lost admin key                  | [Backup And Restore](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/backup.html), [Reset Admin Key](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/reset-admin-key.html) |
+| Migrate from the legacy CPA-Manager                       | [Migration From CPA-Manager](https://seakee.github.io/CPA-Manager-Plus/docs/en/migration/from-cpa-manager.html)                                                                                      |
+| Diagnose empty monitoring or queue problems               | [Troubleshooting](https://seakee.github.io/CPA-Manager-Plus/docs/en/troubleshooting/request-monitoring.html)                                                                                         |
 
 ## Data, Privacy, And Security
 

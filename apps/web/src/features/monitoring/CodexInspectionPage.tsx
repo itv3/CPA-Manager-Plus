@@ -519,11 +519,6 @@ export function CodexInspectionPage() {
     executeItemsRef.current = executeItems;
   }, [executeItems]);
 
-  const suggestedResults = useMemo(
-    () => (result ? result.results.filter(isSuggestedAction) : []),
-    [result]
-  );
-
   const displayResults = useMemo(() => (result ? result.results : []), [result]);
 
   const executableResults = useMemo(
@@ -656,7 +651,6 @@ export function CodexInspectionPage() {
         ? progress.summary
         : (result?.summary ?? null);
     const blank = '--';
-    const dash = '—';
     const probeSetCount = summarySource ? summarySource.probeSetCount : null;
     const sampledTotal = summarySource ? summarySource.sampledCount : null;
     const sampledCompleted =
@@ -669,14 +663,6 @@ export function CodexInspectionPage() {
     const disableCount = summarySource ? summarySource.disableCount : null;
     const enableCount = summarySource ? summarySource.enableCount : null;
     const reauthCount = summarySource ? summarySource.reauthCount : null;
-    const keepCount = summarySource ? summarySource.keepCount : null;
-    const actionCounts =
-      summarySource !== null
-        ? summarySource.deleteCount +
-          summarySource.disableCount +
-          summarySource.enableCount +
-          summarySource.reauthCount
-        : null;
 
     const probeMeta = summarySource
       ? t('monitoring.server_codex_inspection_total_files', {
@@ -718,10 +704,7 @@ export function CodexInspectionPage() {
         key: 'delete',
         label: t('monitoring.codex_inspection_delete_count'),
         value: deleteCount === null ? blank : String(deleteCount),
-        meta:
-          actionCounts === null
-            ? dash
-            : t('monitoring.server_codex_inspection_action_total_value', { count: actionCounts }),
+        meta: t('monitoring.codex_inspection_delete_meta'),
         tone: deleteCount && deleteCount > 0 ? 'bad' : undefined,
         icon: 'delete',
         accent: 'red',
@@ -730,7 +713,7 @@ export function CodexInspectionPage() {
         key: 'disable',
         label: t('monitoring.codex_inspection_disable_count'),
         value: disableCount === null ? blank : String(disableCount),
-        meta: `${t('monitoring.codex_inspection_threshold')}: ${inspectionSettings.usedPercentThreshold}%`,
+        meta: `${t('monitoring.codex_inspection_threshold')} ${inspectionSettings.usedPercentThreshold}%`,
         tone: disableCount && disableCount > 0 ? 'warn' : undefined,
         icon: 'disable',
         accent: 'amber',
@@ -739,10 +722,7 @@ export function CodexInspectionPage() {
         key: 'enable',
         label: t('monitoring.codex_inspection_enable_count'),
         value: enableCount === null ? blank : String(enableCount),
-        meta:
-          keepCount === null
-            ? dash
-            : t('monitoring.server_codex_inspection_keep_count', { count: keepCount }),
+        meta: t('monitoring.codex_inspection_enable_meta'),
         tone: enableCount && enableCount > 0 ? 'good' : undefined,
         icon: 'enable',
         accent: 'green',
@@ -751,7 +731,7 @@ export function CodexInspectionPage() {
         key: 'reauth',
         label: t('monitoring.codex_inspection_reauth_count'),
         value: reauthCount === null ? blank : String(reauthCount),
-        meta: t('monitoring.codex_inspection_action_reauth'),
+        meta: t('monitoring.codex_inspection_reauth_meta'),
         tone: reauthCount && reauthCount > 0 ? 'info' : undefined,
         icon: 'reauth',
         accent: 'violet',
@@ -834,6 +814,13 @@ export function CodexInspectionPage() {
     setSettingsDraft((previous) => ({
       ...previous,
       autoRecoverEnabled: value,
+    }));
+  }, []);
+
+  const handleXaiInferenceEnabledChange = useCallback((value: boolean) => {
+    setSettingsDraft((previous) => ({
+      ...previous,
+      xaiInferenceEnabled: value,
     }));
   }, []);
 
@@ -983,7 +970,6 @@ export function CodexInspectionPage() {
       <CodexInspectionResultsPanel
         result={result}
         filteredResults={resultPagination.pageItems}
-        suggestedResults={suggestedResults}
         pendingActionCount={pendingActionCount}
         manualActionCount={filterCounts.reauth}
         reauthActionCount={reauthResults.length}
@@ -996,6 +982,7 @@ export function CodexInspectionPage() {
         pageSizeOptions={CODEX_INSPECTION_RESULT_PAGE_SIZE_OPTIONS}
         executing={executing}
         isInspectionInFlight={isInspectionInFlight}
+        xaiInferenceEnabled={result?.settings.xaiInferenceEnabled ?? false}
         t={t}
         onActionFilterChange={setActionFilter}
         onHandlingFilterChange={setHandlingFilter}
@@ -1060,6 +1047,7 @@ export function CodexInspectionPage() {
           errors={settingsFieldErrors}
           t={t}
           onFieldChange={handleSettingsDraftChange}
+          onXaiInferenceEnabledChange={handleXaiInferenceEnabledChange}
           onAutoActionModeChange={handleAutoActionModeChange}
           onAutoRecoverEnabledChange={handleAutoRecoverEnabledChange}
         />

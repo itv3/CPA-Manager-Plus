@@ -1728,6 +1728,14 @@
   box-shadow: 0 0 0 3px rgba($error-color, 0.12);
 }
 
+.prefixProxyCredentialRefreshButton:global(.btn) {
+  margin-right: auto;
+
+  @include mobile {
+    margin-right: 0;
+  }
+}
+
 .cardActions {
   display: flex;
   align-items: center;

@@ -226,10 +226,10 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
 	persistCtx := context.WithoutCancel(ctx)
 
 	logger := runLogger{service: s, runID: run.ID}
-	logger.info(ctx, "Codex 巡检开始", map[string]any{
+	logger.info(ctx, "凭证健康巡检开始", map[string]any{
 		"triggerType": triggerType,
 		"triggerKey":  strings.TrimSpace(req.TriggerKey),
-		"targetType":  settings.TargetType,
+		"targetTypes": settings.TargetProviders(),
 	})
 
 	files, err := s.fetchAuthFiles(ctx, setup)
@@ -246,12 +246,12 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
 
 	accounts := make([]account, 0, len(allAccounts))
 	for _, next := range allAccounts {
-		if next.Provider == settings.TargetType {
+		if settings.HasTargetProvider(next.Provider) {
 			accounts = append(accounts, next)
 		}
 	}
 	probeSetCount := len(accounts)
-	sampled := pickSample(accounts, settings.SampleSize)
+	sampled := pickSamplePerProvider(accounts, settings.SampleSize)
 
 	run.TotalFiles = len(files)
 	run.ProbeSetCount = probeSetCount
@@ -260,10 +260,11 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
 	run.EnabledCount = len(sampled) - run.DisabledCount
 	_ = s.store.UpdateCodexInspectionRun(persistCtx, run)
 
-	logger.info(ctx, "Codex 巡检集合已准备", map[string]any{
+	logger.info(ctx, "凭证健康巡检集合已准备", map[string]any{
 		"totalFiles":    len(files),
 		"probeSetCount": probeSetCount,
 		"sampledCount":  len(sampled),
+		"targetTypes":   settings.TargetProviders(),
 	})
 
 	results := s.inspectAccounts(ctx, setup, settings, run.ID, sampled, logger)
@@ -279,7 +280,7 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
 		if err := s.store.UpdateCodexInspectionRun(persistCtx, run); err != nil {
 			return RunDetail{}, err
 		}
-		logger.warning(persistCtx, "Codex 巡检已取消", map[string]any{"error": run.Error})
+		logger.warning(persistCtx, "凭证健康巡检已取消", map[string]any{"error": run.Error})
 		return s.GetRun(persistCtx, run.ID)
 	}
 
@@ -299,7 +300,7 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (RunDetail, error) {
 	if err := s.store.UpdateCodexInspectionRun(persistCtx, run); err != nil {
 		return RunDetail{}, err
 	}
-	logger.success(persistCtx, "Codex 巡检完成", map[string]any{
+	logger.success(persistCtx, "凭证健康巡检完成", map[string]any{
 		"deleteCount":  run.DeleteCount,
 		"disableCount": run.DisableCount,
 		"enableCount":  run.EnableCount,
@@ -353,7 +354,7 @@ func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req Exe
 	if detail.Run.Status != model.CodexInspectionStatusCompleted {
 		return ExecuteActionsResult{}, ErrRunNotCompleted
 	}
-	if detail.Run.Settings.TargetType != "" {
+	if len(detail.Run.Settings.TargetProviders()) > 0 {
 		settings = detail.Run.Settings
 	}
 
@@ -1726,6 +1727,32 @@ func pickSample(items []account, sampleSize int) []account {
 		out[i], out[j] = out[j], out[i]
 	})
 	return out[:sampleSize]
+}
+
+// pickSamplePerProvider applies the configured sample size independently to
+// each selected provider. This prevents a combined Codex+xAI run from randomly
+// sampling only one provider and leaving the other without health evidence.
+func pickSamplePerProvider(items []account, sampleSize int) []account {
+	if sampleSize <= 0 {
+		out := make([]account, len(items))
+		copy(out, items)
+		return out
+	}
+
+	groups := make(map[string][]account)
+	providerOrder := make([]string, 0)
+	for _, item := range items {
+		if _, ok := groups[item.Provider]; !ok {
+			providerOrder = append(providerOrder, item.Provider)
+		}
+		groups[item.Provider] = append(groups[item.Provider], item)
+	}
+
+	result := make([]account, 0, len(items))
+	for _, provider := range providerOrder {
+		result = append(result, pickSample(groups[provider], sampleSize)...)
+	}
+	return result
 }
 
 func countAccounts(items []account, disabled bool) int {

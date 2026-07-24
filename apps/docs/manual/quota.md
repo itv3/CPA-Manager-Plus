@@ -48,6 +48,14 @@ xAI 的免费 Grok Build OAuth 可以通过 CLI billing 接口返回周额度和
 
 付费 xAI OAuth 通过 CPA 调用官方 API 时，认证 JSON 通常需要设置 `using_api: true`，并使用 `base_url: https://api.x.ai/v1`。否则 OAuth 默认可能继续路由到 Grok CLI chat proxy。真实费用和剩余额度仍需在 xAI 控制台查看。
 
+### xAI 请求监控证据
+
+当 xAI 请求以 HTTP `402` 或 `429` 返回 `subscription:free-usage-exhausted` 时，请求监控会把错误正文中的模型、`actual/limit`、剩余量和超额量整理为结构化证据。对于“滚动 24 小时”但没有明确 reset 的响应，恢复时间按事件时间加 24 小时估算，并明确标记为“预计恢复”；这是冷却调度用的上界估算，不是精确重建滚动窗口。如果错误正文中有明确的 `billing_period_end` / `reset_at` 等字段，则优先使用该时间。传输层 `Retry-After` 只表示请求重试退避，不会覆盖 free-usage 冷却恢复时间。
+
+成功响应中的 `X-Ratelimit-Limit-*` 和 `X-Ratelimit-Remaining-*` 只表示当前 API 请求或 Token 限流窗口，用于诊断吞吐限制，不等同于 Grok 免费计划的包含额度。CPAMP 不会用这些 Header 推算免费额度余额。
+
+请求监控还会显示可安全保留的 `X-Request-Id`、`traceparent`、`X-Should-Retry`、`X-Data-Retention` 和 `X-Zero-Retention` 信号。`Set-Cookie`、API Key 和其他可能包含 Token 的 Header 不会进入公开监控数据。相同的脱敏耗尽证据会附在 CPAMP 创建的冷却记录中，供认证文件页面排障。
+
 ## 页面操作
 
 - 使用搜索框按文件名、账号、备注或索引快速定位账号。

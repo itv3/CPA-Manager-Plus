@@ -41,6 +41,10 @@ const sanitizeInspectionSettingsForStorage = (
 ): CodexInspectionSettings => ({
   baseUrl: '',
   token: '',
+  targetTypes: normalizeConfigurableSettings({
+    targetTypes: settings.targetTypes,
+    targetType: settings.targetType,
+  }).targetTypes,
   targetType: readString(settings.targetType) || DEFAULT_CODEX_INSPECTION_SETTINGS.targetType,
   workers: clampPositiveInteger(settings.workers, DEFAULT_CODEX_INSPECTION_SETTINGS.workers),
   deleteWorkers: clampPositiveInteger(
@@ -50,6 +54,14 @@ const sanitizeInspectionSettingsForStorage = (
   timeout: clampPositiveInteger(settings.timeout, DEFAULT_CODEX_INSPECTION_SETTINGS.timeout),
   retries: Math.max(0, Math.floor(normalizeNumberValue(settings.retries) ?? 0)),
   userAgent: readString(settings.userAgent) || DEFAULT_CODEX_INSPECTION_SETTINGS.userAgent,
+  xaiInferenceUserAgent:
+    readString(settings.xaiInferenceUserAgent) ||
+    DEFAULT_CODEX_INSPECTION_SETTINGS.xaiInferenceUserAgent,
+  xaiInferenceEnabled: readBoolean(settings.xaiInferenceEnabled, false),
+  xaiInferenceModel:
+    readString(settings.xaiInferenceModel) || DEFAULT_CODEX_INSPECTION_SETTINGS.xaiInferenceModel,
+  xaiInferencePrompt:
+    readString(settings.xaiInferencePrompt) || DEFAULT_CODEX_INSPECTION_SETTINGS.xaiInferencePrompt,
   usedPercentThreshold:
     normalizeNumberValue(settings.usedPercentThreshold) ??
     DEFAULT_CODEX_INSPECTION_SETTINGS.usedPercentThreshold,
@@ -59,12 +71,17 @@ const sanitizeInspectionSettingsForStorage = (
 const normalizeStoredSettings = (value: unknown): CodexInspectionSettings => {
   const input = isRecord(value) ? value : {};
   const configurable = normalizeConfigurableSettings({
+    targetTypes: input.targetTypes,
     targetType: input.targetType,
     workers: input.workers,
     deleteWorkers: input.deleteWorkers,
     timeout: input.timeout,
     retries: input.retries,
     userAgent: input.userAgent,
+    xaiInferenceUserAgent: input.xaiInferenceUserAgent,
+    xaiInferenceEnabled: input.xaiInferenceEnabled,
+    xaiInferenceModel: input.xaiInferenceModel,
+    xaiInferencePrompt: input.xaiInferencePrompt,
     usedPercentThreshold: input.usedPercentThreshold,
     sampleSize: input.sampleSize,
   });
@@ -72,12 +89,17 @@ const normalizeStoredSettings = (value: unknown): CodexInspectionSettings => {
   return {
     baseUrl: '',
     token: '',
+    targetTypes: configurable.targetTypes,
     targetType: configurable.targetType,
     workers: configurable.workers,
     deleteWorkers: configurable.deleteWorkers,
     timeout: configurable.timeout,
     retries: configurable.retries,
     userAgent: configurable.userAgent,
+    xaiInferenceUserAgent: configurable.xaiInferenceUserAgent,
+    xaiInferenceEnabled: configurable.xaiInferenceEnabled,
+    xaiInferenceModel: configurable.xaiInferenceModel,
+    xaiInferencePrompt: configurable.xaiInferencePrompt,
     usedPercentThreshold: configurable.usedPercentThreshold,
     sampleSize: configurable.sampleSize,
   };

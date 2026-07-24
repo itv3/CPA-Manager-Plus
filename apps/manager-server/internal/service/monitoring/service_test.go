@@ -294,6 +294,61 @@ func TestAnalyticsCredentialTimelineBuildsPerCredentialBuckets(t *testing.T) {
 	}
 }
 
+func TestAnalyticsAPIKeyTimelineBuildsExactPerKeyBuckets(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_000_000_000)
+	toMS := fromMS + 3*60*60*1000
+	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{
+		"gpt-a": {Prompt: 1},
+	}); err != nil {
+		t.Fatalf("save model prices: %v", err)
+	}
+
+	first := monitoringEvent("api-key-timeline-a1", fromMS+1_000, "gpt-a", "auth-1", "source-a", false, 1_000_000, 0, 0, 0, 1_000_000, nil)
+	second := monitoringEvent("api-key-timeline-a2", fromMS+2_000, "gpt-a", "auth-1", "source-a", true, 2_000_000, 0, 0, 0, 2_000_000, nil)
+	third := monitoringEvent("api-key-timeline-b1", fromMS+60*60*1000+1_000, "gpt-a", "auth-2", "source-b", false, 3_000_000, 0, 0, 0, 3_000_000, nil)
+	excluded := monitoringEvent("api-key-timeline-c1", fromMS+60*60*1000+2_000, "gpt-a", "auth-3", "source-c", false, 4_000_000, 0, 0, 0, 4_000_000, nil)
+	if _, err := db.InsertEvents(ctx, []usage.Event{first, second, third, excluded}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	resp, err := New(db).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Filters: Filters{
+			APIKeyHashes: []string{"api-key-auth-1", "api-key-auth-2"},
+		},
+		Include: Include{
+			APIKeyTimeline: true,
+			Granularity:    "hour",
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+	if len(resp.APIKeyTimeline) != 2 {
+		t.Fatalf("api key timeline = %#v", resp.APIKeyTimeline)
+	}
+	byKeyBucket := make(map[string]APIKeyTimelinePoint, len(resp.APIKeyTimeline))
+	for _, point := range resp.APIKeyTimeline {
+		byKeyBucket[fmt.Sprintf("%s/%d", point.APIKeyHash, point.BucketMS)] = point
+	}
+	firstBucketMS := time.UnixMilli(fromMS).UTC().Truncate(time.Hour).UnixMilli()
+	secondBucketMS := time.UnixMilli(fromMS + 60*60*1000).UTC().Truncate(time.Hour).UnixMilli()
+	firstBucket := byKeyBucket[fmt.Sprintf("api-key-auth-1/%d", firstBucketMS)]
+	if firstBucket.Calls != 2 || firstBucket.Success != 1 || firstBucket.Failure != 1 || firstBucket.TotalTokens != 3_000_000 {
+		t.Fatalf("first api key bucket = %#v", firstBucket)
+	}
+	if firstBucket.Cost <= 0 {
+		t.Fatalf("first api key bucket cost = %#v", firstBucket)
+	}
+	secondBucket := byKeyBucket[fmt.Sprintf("api-key-auth-2/%d", secondBucketMS)]
+	if secondBucket.Calls != 1 || secondBucket.Success != 1 || secondBucket.Failure != 0 || secondBucket.TotalTokens != 3_000_000 {
+		t.Fatalf("second api key bucket = %#v", secondBucket)
+	}
+}
+
 func TestAnalyticsSummaryComparisonReturnsPreviousPeriod(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()

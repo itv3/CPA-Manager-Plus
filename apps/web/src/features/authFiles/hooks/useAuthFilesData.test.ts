@@ -14,6 +14,7 @@ const { mocks } = vi.hoisted(() => {
       setStatus: vi.fn(),
       patchFields: vi.fn(),
       patchFieldsForAuthIndexes: vi.fn(),
+      requestCredentialRefresh: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
     },
@@ -56,6 +57,7 @@ vi.mock('@/services/api', () => ({
     setStatus: mocks.setStatus,
     patchFields: mocks.patchFields,
     patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
+    requestCredentialRefresh: mocks.requestCredentialRefresh,
   },
 }));
 
@@ -72,6 +74,7 @@ import {
 type UseAuthFilesDataHarness = {
   getCurrent: () => ReturnType<typeof useAuthFilesData>;
   getSavingHistory: () => boolean[];
+  rerender: (connectionFingerprint?: string) => void;
   unmount: () => void;
 };
 
@@ -93,6 +96,7 @@ const mountUseAuthFilesData = (
   connectionFingerprint?: string,
   onStatusMutationCommitted?: () => Promise<void>
 ): UseAuthFilesDataHarness => {
+  let currentConnectionFingerprint = connectionFingerprint;
   let hook: ReturnType<typeof useAuthFilesData> | null = null;
   let lastSavingState: boolean | undefined;
   const savingHistory: boolean[] = [];
@@ -107,7 +111,12 @@ const mountUseAuthFilesData = (
   };
 
   function HookHarness() {
-    captureHook(useAuthFilesData({ connectionFingerprint, onStatusMutationCommitted }));
+    captureHook(
+      useAuthFilesData({
+        connectionFingerprint: currentConnectionFingerprint,
+        onStatusMutationCommitted,
+      })
+    );
     return null;
   }
 
@@ -123,6 +132,13 @@ const mountUseAuthFilesData = (
       return hook;
     },
     getSavingHistory: () => [...savingHistory],
+    rerender: (nextConnectionFingerprint?: string) => {
+      if (!renderer) return;
+      currentConnectionFingerprint = nextConnectionFingerprint;
+      act(() => {
+        renderer?.update(createElement(HookHarness));
+      });
+    },
     unmount: () => {
       if (!renderer) return;
       act(() => {
@@ -141,6 +157,7 @@ beforeEach(() => {
   mocks.setStatus.mockReset();
   mocks.patchFields.mockReset();
   mocks.patchFieldsForAuthIndexes.mockReset();
+  mocks.requestCredentialRefresh.mockReset();
   mocks.showNotification.mockReset();
   mocks.showConfirmation.mockReset();
 
@@ -152,9 +169,11 @@ beforeEach(() => {
   mocks.setStatus.mockImplementation(async (_name: string, disabled: boolean) => ({ disabled }));
   mocks.patchFields.mockResolvedValue(undefined);
   mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
+  mocks.requestCredentialRefresh.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -1249,6 +1268,189 @@ describe('useAuthFilesData handleDeleteAll', () => {
     });
 
     expect(mocks.deleteFiles).toHaveBeenCalledWith(['shared-xai.json']);
+    hook.unmount();
+  });
+});
+
+describe('useAuthFilesData handleCredentialRefresh', () => {
+  it('tracks the exact auth row until CPA confirms the refreshed credential', async () => {
+    let resolveRequest!: () => void;
+    mocks.requestCredentialRefresh.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+    const hook = mountUseAuthFilesData();
+    const file: AuthFileItem = {
+      id: 'codex-runtime-auth-id',
+      name: 'shared-codex.json',
+      authIndex: 'auth-2',
+      type: 'codex',
+      last_refresh: '2026-01-01T00:00:00Z',
+      id_token: { plan_type: 'free' },
+    };
+    const refreshedFiles: AuthFileItem[] = [
+      {
+        id: 'codex-runtime-auth-1',
+        name: 'shared-codex.json',
+        authIndex: 'auth-1',
+        type: 'codex',
+        last_refresh: '2026-01-01T00:00:00Z',
+        id_token: { plan_type: 'free' },
+      },
+      {
+        ...file,
+        last_refresh: '2026-01-02T00:00:00Z',
+        id_token: { plan_type: 'plus' },
+      },
+    ];
+    mocks.list.mockResolvedValue({ files: refreshedFiles });
+    const operationKey = 'shared-codex.json\u0000auth-2';
+    let request!: Promise<void>;
+
+    await act(async () => {
+      request = hook.getCurrent().handleCredentialRefresh(file);
+      void hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledWith('codex-runtime-auth-id');
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledTimes(1);
+    expect(hook.getCurrent().credentialRefreshing[operationKey]).toBe(true);
+
+    await act(async () => {
+      resolveRequest();
+      await request;
+    });
+
+    expect(hook.getCurrent().credentialRefreshing[operationKey]).toBeUndefined();
+    expect(hook.getCurrent().files).toEqual(refreshedFiles);
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_completed:shared-codex.json',
+      'success'
+    );
+    hook.unmount();
+  });
+
+  it('keeps the request pending when CPA does not confirm the refresh in time', async () => {
+    vi.useFakeTimers();
+    const file: AuthFileItem = {
+      id: 'codex-runtime-auth-id',
+      name: 'codex-account.json',
+      authIndex: 'auth-1',
+      type: 'codex',
+      last_refresh: '2026-01-01T00:00:00Z',
+      id_token: { plan_type: 'free' },
+    };
+    mocks.list.mockResolvedValue({ files: [file] });
+    const hook = mountUseAuthFilesData();
+    let request!: Promise<void>;
+
+    await act(async () => {
+      request = hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    expect(hook.getCurrent().credentialRefreshing['codex-account.json\u0000auth-1']).toBe(true);
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+      await request;
+    });
+
+    expect(mocks.list).toHaveBeenCalledTimes(15);
+    expect(hook.getCurrent().files).toEqual([file]);
+    expect(
+      hook.getCurrent().credentialRefreshing['codex-account.json\u0000auth-1']
+    ).toBeUndefined();
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_pending:codex-account.json',
+      'warning'
+    );
+    hook.unmount();
+  });
+
+  it('does not let an old connection cleanup unlock the same row on a new connection', async () => {
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    mocks.requestCredentialRefresh
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          })
+      );
+    const file: AuthFileItem = {
+      id: 'codex-runtime-auth-id',
+      name: 'codex-account.json',
+      authIndex: 'auth-1',
+      type: 'codex',
+      last_refresh: '2026-01-01T00:00:00Z',
+    };
+    mocks.list.mockResolvedValue({
+      files: [{ ...file, last_refresh: '2026-01-02T00:00:00Z' }],
+    });
+    const hook = mountUseAuthFilesData('connection-a');
+    let firstRequest!: Promise<void>;
+    let secondRequest!: Promise<void>;
+
+    await act(async () => {
+      firstRequest = hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    hook.rerender('connection-b');
+
+    await act(async () => {
+      secondRequest = hook.getCurrent().handleCredentialRefresh(file);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveFirst();
+      await firstRequest;
+    });
+
+    await act(async () => {
+      await hook.getCurrent().handleCredentialRefresh(file);
+    });
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolveSecond();
+      await secondRequest;
+    });
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_completed:codex-account.json',
+      'success'
+    );
+    hook.unmount();
+  });
+
+  it('falls back to the file name and reports request failures', async () => {
+    mocks.requestCredentialRefresh.mockRejectedValue(new Error('refresh unavailable'));
+    const hook = mountUseAuthFilesData();
+
+    await act(async () => {
+      await hook.getCurrent().handleCredentialRefresh({
+        name: 'single-codex.json',
+        type: 'codex',
+      });
+    });
+
+    expect(mocks.requestCredentialRefresh).toHaveBeenCalledWith('single-codex.json');
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      'auth_files.credential_refresh_failed:single-codex.json',
+      'error'
+    );
     hook.unmount();
   });
 });

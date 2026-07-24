@@ -3,14 +3,7 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
-import {
-  IconChartLine,
-  IconCheck,
-  IconInbox,
-  IconRefreshCw,
-  IconShield,
-  IconTrash2,
-} from '@/components/ui/icons';
+import { IconRefreshCw, IconShield, IconTrash2 } from '@/components/ui/icons';
 import { Input } from '@/components/ui/Input';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
@@ -20,9 +13,12 @@ import { Panel } from '@/features/monitoring/components/CodexInspectionPanels';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
 import { InspectionConfigDrawer } from '@/features/monitoring/components/InspectionConfigDrawer';
 import { InspectionConfigFields } from '@/features/monitoring/components/InspectionConfigFields';
+import {
+  SummaryCard as MonitoringSummaryCard,
+  type SummaryCardProps as MonitoringSummaryCardProps,
+} from '@/features/monitoring/components/MonitoringShared';
 import { CodexReauthDialog } from '@/features/oauth/CodexReauthDialog';
 import type { CodexReauthTarget } from '@/features/oauth/codexReauthModel';
-import { formatPercent } from '@/features/monitoring/components/accountOverviewPresentation';
 import {
   type CodexInspectionAction,
   type CodexInspectionResultItem,
@@ -32,10 +28,10 @@ import {
   CODEX_INSPECTION_RESULT_PAGE_SIZE_OPTIONS,
   buildCodexInspectionPaginationState,
   buildConfigOverviewItems,
-  type CodexInspectionSummaryAccent,
   countHandlingStates,
   filterInspectionResults,
   formatActionLabel,
+  formatPercent,
   formatServerCodexInspectionLogDetail,
   formatTimestamp,
   getActionFilterCounts,
@@ -50,6 +46,11 @@ import {
   validateInspectionConfigDraft,
   validateInspectionConfigFields,
 } from '@/features/monitoring/model/codexInspectionPresentation';
+import {
+  DEFAULT_CODEX_INSPECTION_SETTINGS,
+  codexInspectionTargetTypesToSelection,
+  normalizeCodexInspectionTargetTypes,
+} from '@/features/monitoring/model/codexInspectionSettings';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
   getUsageServiceErrorCode,
@@ -73,7 +74,7 @@ import {
   getHeaderSnapshotRecoverAtMs,
   getHeaderSnapshotTraceId,
   getHeaderSnapshotUsedPercent,
-  getUsageHeaderSnapshotForIdentity,
+  getUsageHeaderSnapshotMatchForIdentity,
 } from '@/utils/usageHeaderSnapshots';
 import styles from './CodexInspectionPage.module.scss';
 
@@ -83,12 +84,16 @@ type ServerCodexInspectionDraft = {
   intervalMinutes: string;
   timePoints: string;
   timeZone: string;
-  targetType: string;
+  targetTypes: string;
   workers: string;
   deleteWorkers: string;
   timeout: string;
   retries: string;
   userAgent: string;
+  xaiInferenceUserAgent: string;
+  xaiInferenceEnabled: boolean;
+  xaiInferenceModel: string;
+  xaiInferencePrompt: string;
   usedPercentThreshold: string;
   sampleSize: string;
   autoActionMode: string;
@@ -103,12 +108,17 @@ type NormalizedServerCodexInspectionConfig = {
     timePoints: string[];
     timeZone: string;
   };
+  targetTypes: string[];
   targetType: string;
   workers: number;
   deleteWorkers: number;
   timeout: number;
   retries: number;
   userAgent: string;
+  xaiInferenceUserAgent: string;
+  xaiInferenceEnabled: boolean;
+  xaiInferenceModel: string;
+  xaiInferencePrompt: string;
   usedPercentThreshold: number;
   sampleSize: number;
   autoActionMode: string;
@@ -123,12 +133,17 @@ const DEFAULT_SERVER_CODEX_CONFIG: NormalizedServerCodexInspectionConfig = {
     timePoints: [],
     timeZone: '',
   },
+  targetTypes: ['codex'],
   targetType: 'codex',
   workers: 4,
   deleteWorkers: 4,
   timeout: 15000,
   retries: 0,
   userAgent: 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal',
+  xaiInferenceUserAgent: DEFAULT_CODEX_INSPECTION_SETTINGS.xaiInferenceUserAgent,
+  xaiInferenceEnabled: false,
+  xaiInferenceModel: DEFAULT_CODEX_INSPECTION_SETTINGS.xaiInferenceModel,
+  xaiInferencePrompt: DEFAULT_CODEX_INSPECTION_SETTINGS.xaiInferencePrompt,
   usedPercentThreshold: 100,
   sampleSize: 0,
   autoActionMode: 'none',
@@ -188,7 +203,20 @@ const resolveServerCodexConfig = (
           ? schedule.timeZone
           : DEFAULT_SERVER_CODEX_CONFIG.schedule.timeZone,
     },
-    targetType: config?.targetType || DEFAULT_SERVER_CODEX_CONFIG.targetType,
+    targetTypes: (() => {
+      const targetTypes = normalizeCodexInspectionTargetTypes(
+        config?.targetTypes,
+        config?.targetType
+      );
+      return targetTypes.length > 0 ? targetTypes : DEFAULT_SERVER_CODEX_CONFIG.targetTypes;
+    })(),
+    targetType: (() => {
+      const targetTypes = normalizeCodexInspectionTargetTypes(
+        config?.targetTypes,
+        config?.targetType
+      );
+      return targetTypes[0] ?? DEFAULT_SERVER_CODEX_CONFIG.targetType;
+    })(),
     workers:
       config?.workers && config.workers > 0 ? config.workers : DEFAULT_SERVER_CODEX_CONFIG.workers,
     deleteWorkers:
@@ -202,6 +230,13 @@ const resolveServerCodexConfig = (
         ? config.retries
         : DEFAULT_SERVER_CODEX_CONFIG.retries,
     userAgent: config?.userAgent || DEFAULT_SERVER_CODEX_CONFIG.userAgent,
+    xaiInferenceUserAgent:
+      config?.xaiInferenceUserAgent || DEFAULT_SERVER_CODEX_CONFIG.xaiInferenceUserAgent,
+    xaiInferenceEnabled:
+      config?.xaiInferenceEnabled ?? DEFAULT_SERVER_CODEX_CONFIG.xaiInferenceEnabled,
+    xaiInferenceModel: config?.xaiInferenceModel || DEFAULT_SERVER_CODEX_CONFIG.xaiInferenceModel,
+    xaiInferencePrompt:
+      config?.xaiInferencePrompt || DEFAULT_SERVER_CODEX_CONFIG.xaiInferencePrompt,
     usedPercentThreshold:
       config?.usedPercentThreshold !== undefined
         ? config.usedPercentThreshold
@@ -224,12 +259,16 @@ const toDraft = (config?: ManagerCodexInspectionConfig | null): ServerCodexInspe
     intervalMinutes: String(resolved.schedule.intervalMinutes),
     timePoints: resolved.schedule.timePoints.join(', '),
     timeZone: resolved.schedule.timeZone,
-    targetType: resolved.targetType,
+    targetTypes: codexInspectionTargetTypesToSelection(resolved.targetTypes, resolved.targetType),
     workers: String(resolved.workers),
     deleteWorkers: String(resolved.deleteWorkers),
     timeout: String(resolved.timeout),
     retries: String(resolved.retries),
     userAgent: resolved.userAgent,
+    xaiInferenceUserAgent: resolved.xaiInferenceUserAgent,
+    xaiInferenceEnabled: resolved.xaiInferenceEnabled,
+    xaiInferenceModel: resolved.xaiInferenceModel,
+    xaiInferencePrompt: resolved.xaiInferencePrompt,
     usedPercentThreshold: String(resolved.usedPercentThreshold),
     sampleSize: String(resolved.sampleSize),
     autoActionMode: resolved.autoActionMode,
@@ -314,12 +353,17 @@ const createConfigFromDraft = (
             timePoints,
             timeZone: draft.timeZone.trim(),
           },
-    targetType: validation.values.targetType,
+    targetTypes: validation.values.targetTypes,
+    targetType: validation.values.targetTypes[0],
     workers: validation.values.workers,
     deleteWorkers: validation.values.deleteWorkers,
     timeout: validation.values.timeout,
     retries: validation.values.retries,
     userAgent: validation.values.userAgent,
+    xaiInferenceUserAgent: validation.values.xaiInferenceUserAgent,
+    xaiInferenceEnabled: validation.values.xaiInferenceEnabled,
+    xaiInferenceModel: validation.values.xaiInferenceModel,
+    xaiInferencePrompt: validation.values.xaiInferencePrompt,
     usedPercentThreshold: validation.values.usedPercentThreshold,
     sampleSize: validation.values.sampleSize,
     autoActionMode: validation.values.autoActionMode,
@@ -333,15 +377,6 @@ const statusToneClass: Record<StatusTone, string> = {
   good: styles['tone-good'],
   warn: styles['tone-warn'],
   bad: styles['tone-bad'],
-};
-
-const summaryAccentClassMap: Record<CodexInspectionSummaryAccent, string> = {
-  blue: styles.summaryAccentBlue,
-  cyan: styles.summaryAccentCyan,
-  red: styles.summaryAccentRed,
-  amber: styles.summaryAccentAmber,
-  green: styles.summaryAccentGreen,
-  violet: styles.summaryAccentViolet,
 };
 
 const logLevelClass: Record<string, string> = {
@@ -399,34 +434,6 @@ function formatTrigger(
   return t('monitoring.server_codex_inspection_trigger_manual');
 }
 
-function formatResultStateHeader(
-  run: CodexInspectionRun | null | undefined,
-  t: ReturnType<typeof useTranslation>['t']
-) {
-  if (run?.triggerType === 'scheduled') {
-    return t('monitoring.server_codex_inspection_result_state_scheduled');
-  }
-  if (run?.triggerType === 'manual') {
-    return t('monitoring.server_codex_inspection_result_state_manual');
-  }
-  return t('monitoring.server_codex_inspection_result_state_snapshot');
-}
-
-function formatResultsDescription(
-  run: CodexInspectionRun | null | undefined,
-  locale: string,
-  t: ReturnType<typeof useTranslation>['t']
-) {
-  const time = run?.finishedAtMs ? formatTimestamp(run.finishedAtMs, locale) : t('common.not_set');
-  if (run?.triggerType === 'manual') {
-    return t('monitoring.server_codex_inspection_results_desc_manual', { time });
-  }
-  if (run?.triggerType === 'scheduled') {
-    return t('monitoring.server_codex_inspection_results_desc_scheduled', { time });
-  }
-  return t('monitoring.server_codex_inspection_results_desc');
-}
-
 function formatSchedule(
   config: NormalizedServerCodexInspectionConfig,
   t: ReturnType<typeof useTranslation>['t']
@@ -450,12 +457,16 @@ function getComparableConfig(config: NormalizedServerCodexInspectionConfig) {
     intervalMinutes: config.schedule.intervalMinutes,
     timePoints: normalizeTimePointList(config.schedule.timePoints),
     timeZone: (config.schedule.timeZone || '').trim(),
-    targetType: config.targetType.trim(),
+    targetTypes: normalizeCodexInspectionTargetTypes(config.targetTypes, config.targetType),
     workers: config.workers,
     deleteWorkers: config.deleteWorkers,
     timeout: config.timeout,
     retries: config.retries,
     userAgent: config.userAgent.trim(),
+    xaiInferenceUserAgent: config.xaiInferenceUserAgent.trim(),
+    xaiInferenceEnabled: config.xaiInferenceEnabled,
+    xaiInferenceModel: config.xaiInferenceModel.trim(),
+    xaiInferencePrompt: config.xaiInferencePrompt.trim(),
     usedPercentThreshold: config.usedPercentThreshold,
     sampleSize: config.sampleSize,
     autoActionMode: config.autoActionMode,
@@ -483,7 +494,7 @@ function resolveActionLabel(action: string, t: ReturnType<typeof useTranslation>
   return action || t('common.not_set');
 }
 
-function formatServerActionStatusLabel(
+function formatServerTerminalActionStatusLabel(
   item: CodexInspectionResult,
   t: ReturnType<typeof useTranslation>['t']
 ) {
@@ -499,40 +510,7 @@ function formatServerActionStatusLabel(
   if (status === 'skipped') {
     return t('monitoring.server_codex_inspection_action_status_skipped');
   }
-  if (status === 'needs_review') {
-    return t('monitoring.server_codex_inspection_action_status_needs_review');
-  }
-  if (status === 'pending') {
-    return t('monitoring.server_codex_inspection_action_status_pending');
-  }
   return '';
-}
-
-function formatServerResultStateToken(
-  value: string | undefined,
-  t: ReturnType<typeof useTranslation>['t']
-) {
-  const normalized = (value ?? '').trim().toLowerCase();
-  if (!normalized) return '';
-  if (normalized === 'active') return t('monitoring.state_active');
-  if (normalized === 'disabled') return t('monitoring.state_disabled');
-  if (normalized === 'inactive') return t('monitoring.state_inactive');
-  if (normalized === 'enabled') return t('monitoring.codex_inspection_state_enabled');
-  return value?.trim() ?? '';
-}
-
-function formatServerResultStateDetail(
-  item: CodexInspectionResult,
-  t: ReturnType<typeof useTranslation>['t']
-) {
-  const errorText = item.actionError || item.errorDetail || item.error;
-  if (errorText) return errorText;
-
-  return (
-    formatServerResultStateToken(item.status, t) ||
-    formatServerResultStateToken(item.state, t) ||
-    '--'
-  );
 }
 
 function normalizeServerResultAction(action: string): CodexInspectionAction {
@@ -566,12 +544,20 @@ function buildObservedHeaderEvidence(
 ) {
   if (!snapshot) return [];
   const evidence: string[] = [];
+  const observedAt = formatObservedHeaderRecoverAt(snapshot.timestamp_ms, locale);
+  if (observedAt) {
+    evidence.push(
+      t('monitoring.codex_inspection_observed_header_at', {
+        time: observedAt,
+      })
+    );
+  }
   const quotaParts = [
     getHeaderSnapshotPlanType(snapshot),
     (() => {
       const usedPercent = getHeaderSnapshotUsedPercent(snapshot);
       return typeof usedPercent === 'number' && Number.isFinite(usedPercent)
-        ? formatPercent(usedPercent / 100)
+        ? formatPercent(usedPercent)
         : '';
     })(),
     (() => {
@@ -607,11 +593,9 @@ function toServerResultItem(
   snapshot: UsageHeaderSnapshot | undefined,
   locale: string
 ): CodexInspectionResultItem {
-  const actionStatusLabel = formatServerActionStatusLabel(item, t);
   const actionReason = item.actionReason?.startsWith('monitoring.')
     ? t(item.actionReason)
     : item.actionReason;
-  const reasonParts = [actionReason, actionStatusLabel].filter(Boolean);
   const observedHeaderEvidence = buildObservedHeaderEvidence(snapshot, locale, t);
   return {
     key: `server-${item.id || item.accountKey}`,
@@ -626,7 +610,7 @@ function toServerResultItem(
     state: item.state ?? '',
     raw: item as unknown as CodexInspectionResultItem['raw'],
     action: normalizeServerResultAction(item.action),
-    actionReason: reasonParts.join(' · '),
+    actionReason,
     statusCode: item.statusCode ?? null,
     usedPercent: item.usedPercent ?? null,
     isQuota: item.isQuota,
@@ -828,32 +812,32 @@ export function ServerCodexInspectionPage() {
   const latestRun = runs[0] ?? null;
   const activeRun = detail?.run ?? latestRun;
   const activeTone = getRunTone(activeRun);
-  const actionCounts = activeRun
-    ? activeRun.deleteCount +
-      activeRun.disableCount +
-      activeRun.enableCount +
-      (activeRun.reauthCount ?? 0)
-    : 0;
 
   const resultRows = useMemo(() => detail?.results ?? [], [detail?.results]);
+  const headerSnapshotCutoffMs =
+    detail?.run.finishedAtMs ?? detail?.run.updatedAtMs ?? Number.POSITIVE_INFINITY;
   const headerSnapshotLookup = useMemo(
-    () => buildUsageHeaderSnapshotLookup(headerSnapshots),
-    [headerSnapshots]
+    () =>
+      buildUsageHeaderSnapshotLookup(
+        headerSnapshots.filter((snapshot) => snapshot.timestamp_ms <= headerSnapshotCutoffMs)
+      ),
+    [headerSnapshotCutoffMs, headerSnapshots]
   );
   const resultItems = useMemo(
     () =>
-      resultRows.map((item) =>
-        toServerResultItem(
+      resultRows.map((item) => {
+        const snapshotMatch = getUsageHeaderSnapshotMatchForIdentity(headerSnapshotLookup, {
+          fileName: item.fileName,
+          authIndex: item.authIndex,
+          account: item.accountId || item.displayAccount,
+        });
+        return toServerResultItem(
           item,
           t,
-          getUsageHeaderSnapshotForIdentity(headerSnapshotLookup, {
-            fileName: item.fileName,
-            authIndex: item.authIndex,
-            account: item.accountId || item.displayAccount,
-          }),
+          snapshotMatch.confidence === 'high' ? snapshotMatch.snapshot : undefined,
           i18n.language
-        )
-      ),
+        );
+      }),
     [headerSnapshotLookup, i18n.language, resultRows, t]
   );
   const resultByKey = useMemo(() => {
@@ -1194,18 +1178,21 @@ export function ServerCodexInspectionPage() {
     [executeServerActions, showConfirmation, t]
   );
 
-  const handleOpenCodexReauth = useCallback((item: CodexInspectionResult) => {
-    if (item.provider === 'xai') {
-      navigate('/oauth#oauth-provider-xai');
-      return;
-    }
-    setCodexReauthTarget({
-      account: item.displayAccount || item.accountId || item.fileName,
-      fileName: item.fileName,
-      authIndex: item.authIndex ?? null,
-      accountId: item.accountId ?? null,
-    });
-  }, [navigate]);
+  const handleOpenCodexReauth = useCallback(
+    (item: CodexInspectionResult) => {
+      if (item.provider === 'xai') {
+        navigate('/oauth#oauth-provider-xai');
+        return;
+      }
+      setCodexReauthTarget({
+        account: item.displayAccount || item.accountId || item.fileName,
+        fileName: item.fileName,
+        authIndex: item.authIndex ?? null,
+        accountId: item.accountId ?? null,
+      });
+    },
+    [navigate]
+  );
 
   const handleDeleteServerReauth = useCallback(
     (targets: CodexInspectionResult[], scope: 'single' | 'bulk') => {
@@ -1294,6 +1281,23 @@ export function ServerCodexInspectionPage() {
             </div>
           </div>
           <div className={styles.statusActions}>
+            <details className={`${styles.infoNote} ${styles.infoNoteCompact}`}>
+              <summary>{t('monitoring.server_codex_inspection_info_summary')}</summary>
+              <ul className={styles.infoNoteList}>
+                <li>
+                  <strong>{t('monitoring.server_codex_inspection_worker_poll')}:</strong>{' '}
+                  {t('monitoring.server_codex_inspection_effect_hint')}
+                </li>
+                <li>
+                  <strong>{t('monitoring.server_codex_inspection_time_basis')}:</strong>{' '}
+                  {t('monitoring.server_codex_inspection_server_time_hint')}
+                </li>
+                <li>
+                  <strong>{t('monitoring.server_codex_inspection_history_refresh')}:</strong>{' '}
+                  {t('monitoring.server_codex_inspection_auto_refresh_hint')}
+                </li>
+              </ul>
+            </details>
             <Button
               variant="secondary"
               size="sm"
@@ -1313,30 +1317,16 @@ export function ServerCodexInspectionPage() {
           </div>
         </div>
 
-        <details className={styles.infoNote}>
-          <summary>{t('monitoring.server_codex_inspection_info_summary')}</summary>
-          <ul className={styles.infoNoteList}>
-            <li>
-              <strong>{t('monitoring.server_codex_inspection_worker_poll')}:</strong>{' '}
-              {t('monitoring.server_codex_inspection_effect_hint')}
-            </li>
-            <li>
-              <strong>{t('monitoring.server_codex_inspection_time_basis')}:</strong>{' '}
-              {t('monitoring.server_codex_inspection_server_time_hint')}
-            </li>
-            <li>
-              <strong>{t('monitoring.server_codex_inspection_history_refresh')}:</strong>{' '}
-              {t('monitoring.server_codex_inspection_auto_refresh_hint')}
-            </li>
-          </ul>
-        </details>
-
         <CodexInspectionConfigOverview
           title={t('monitoring.codex_inspection_config_overview_title')}
           editLabel={t('monitoring.codex_inspection_config_overview_edit')}
+          copyLabel={t('monitoring.codex_inspection_settings_copy_prompt')}
+          copiedLabel={t('common.copied')}
           ariaLabel={t('monitoring.server_codex_inspection_config_summary_title')}
           items={configOverviewItems}
           onEdit={openConfigDrawer}
+          compact
+          embedded
         />
 
         <div className={styles.summaryGrid}>
@@ -1348,85 +1338,64 @@ export function ServerCodexInspectionPage() {
               meta: t('monitoring.server_codex_inspection_total_files', {
                 count: activeRun?.totalFiles ?? 0,
               }),
-              Icon: IconInbox,
+              icon: 'probe' as const,
               accent: 'blue' as const,
             },
             {
               key: 'sampled',
               label: t('monitoring.codex_inspection_sampled_accounts'),
               value: activeRun ? String(activeRun.sampledCount) : summaryBlankValue,
-              meta: formatTrigger(activeRun, t),
-              Icon: IconChartLine,
+              meta: getRunStatusLabel(activeRun, t),
+              icon: 'sampled' as const,
               accent: 'cyan' as const,
             },
             {
               key: 'delete',
               label: t('monitoring.codex_inspection_delete_count'),
               value: activeRun ? String(activeRun.deleteCount) : summaryBlankValue,
-              meta: t('monitoring.server_codex_inspection_action_total_value', {
-                count: actionCounts,
-              }),
-              tone: 'bad',
-              Icon: IconTrash2,
+              meta: t('monitoring.codex_inspection_delete_meta'),
+              tone: 'bad' as const,
+              icon: 'delete' as const,
               accent: 'red' as const,
             },
             {
               key: 'disable',
               label: t('monitoring.codex_inspection_disable_count'),
               value: activeRun ? String(activeRun.disableCount) : summaryBlankValue,
-              meta: `${t('monitoring.codex_inspection_threshold')}: ${selectedConfig.usedPercentThreshold}%`,
-              tone: 'warn',
-              Icon: IconShield,
+              meta: `${t('monitoring.codex_inspection_threshold')} ${selectedConfig.usedPercentThreshold}%`,
+              tone: 'warn' as const,
+              icon: 'disable' as const,
               accent: 'amber' as const,
             },
             {
               key: 'enable',
               label: t('monitoring.codex_inspection_enable_count'),
               value: activeRun ? String(activeRun.enableCount) : summaryBlankValue,
-              meta: t('monitoring.server_codex_inspection_keep_count', {
-                count: activeRun?.keepCount ?? 0,
-              }),
-              tone: 'good',
-              Icon: IconCheck,
+              meta: t('monitoring.codex_inspection_enable_meta'),
+              tone: 'good' as const,
+              icon: 'enable' as const,
               accent: 'green' as const,
             },
             {
               key: 'reauth',
               label: t('monitoring.codex_inspection_reauth_count'),
               value: activeRun ? String(activeRun.reauthCount) : summaryBlankValue,
-              meta: t('monitoring.codex_inspection_action_reauth'),
-              tone: 'info',
-              Icon: IconRefreshCw,
+              meta: t('monitoring.codex_inspection_reauth_meta'),
+              icon: 'reauth' as const,
               accent: 'violet' as const,
             },
           ].map((card) => {
-            const SummaryIcon = card.Icon;
+            const tone: MonitoringSummaryCardProps['tone'] = card.tone;
             return (
-              <div
+              <MonitoringSummaryCard
                 key={card.key}
-                className={[
-                  styles.summaryCard,
-                  summaryAccentClassMap[card.accent],
-                  card.tone ? styles[`tone-${card.tone}`] : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <div className={styles.summaryHeader}>
-                  <span className={styles.summaryIcon}>
-                    <SummaryIcon size={18} />
-                  </span>
-                  <span className={styles.summaryLabel} title={card.label}>
-                    {card.label}
-                  </span>
-                </div>
-                <div className={styles.summaryBody}>
-                  <strong className={styles.summaryValue}>{card.value}</strong>
-                  <span className={styles.summaryMeta} title={card.meta}>
-                    {card.meta}
-                  </span>
-                </div>
-              </div>
+                label={card.label}
+                value={card.value}
+                meta={card.meta}
+                icon={card.icon}
+                accent={card.accent}
+                tone={tone}
+              />
             );
           })}
         </div>
@@ -1541,18 +1510,18 @@ export function ServerCodexInspectionPage() {
                 />
               </div>
             ) : (
-              <>
-                <div className={`${styles.serverField} ${styles.serverFieldHalf}`}>
+              <div className={styles.scheduleTimePointFields}>
+                <div className={styles.scheduleTimePointField}>
                   <Input
                     id="timePoints"
                     label={t('monitoring.server_codex_inspection_time_points')}
                     value={draft.timePoints}
                     onChange={(event) => updateDraft('timePoints', event.target.value)}
                     placeholder="09:00, 13:30, 22:00"
-                    hint={t('monitoring.server_codex_inspection_time_points_hint')}
+                    aria-describedby="timePoints-hint"
                   />
                 </div>
-                <div className={`${styles.serverField} ${styles.serverFieldHalf}`}>
+                <div className={styles.scheduleTimePointField}>
                   <span className={styles.serverFieldLabel}>
                     {t('monitoring.server_codex_inspection_time_zone')}
                   </span>
@@ -1561,9 +1530,14 @@ export function ServerCodexInspectionPage() {
                     options={timeZoneOptions}
                     onChange={(value) => updateDraft('timeZone', value)}
                     ariaLabel={t('monitoring.server_codex_inspection_time_zone')}
+                    triggerClassName={styles.configSelectTrigger}
+                    dropdownClassName={styles.configSelectDropdown}
                   />
                 </div>
-              </>
+                <div id="timePoints-hint" className={styles.scheduleTimePointHint}>
+                  {t('monitoring.server_codex_inspection_time_points_hint')}
+                </div>
+              </div>
             )}
           </div>
         </section>
@@ -1573,6 +1547,7 @@ export function ServerCodexInspectionPage() {
           errors={fieldErrors}
           t={t}
           onFieldChange={(field, value) => updateDraft(field, value)}
+          onXaiInferenceEnabledChange={(value) => updateDraft('xaiInferenceEnabled', value)}
           onAutoActionModeChange={(value) => updateDraft('autoActionMode', value)}
           onAutoRecoverEnabledChange={(value) => updateDraft('autoRecoverEnabled', value)}
         />
@@ -1581,10 +1556,7 @@ export function ServerCodexInspectionPage() {
   };
 
   const renderRunsPanel = () => (
-    <Panel
-      title={t('monitoring.server_codex_inspection_history_title')}
-      subtitle={t('monitoring.server_codex_inspection_history_desc')}
-    >
+    <Panel title={t('monitoring.server_codex_inspection_history_title')}>
       {runs.length > 0 ? (
         <div
           className={styles.runHistoryList}
@@ -1675,6 +1647,9 @@ export function ServerCodexInspectionPage() {
     const reauthResults = resultRows.filter(isPendingServerReauthResult);
     const canExecuteActions = detail?.run.status === 'completed';
     const resultsRun = detail?.run ?? null;
+    const resultsConfig = resolveServerCodexConfig(
+      resultsRun?.settings ?? managerConfig?.codexInspection
+    );
     const actionFilterCounts = getActionFilterCounts(resultItems);
     const handlingFilterCounts = countHandlingStates(resultItems);
     const panelResult: CodexInspectionRunResult | null = resultsRun
@@ -1682,14 +1657,19 @@ export function ServerCodexInspectionPage() {
           settings: {
             baseUrl: serviceBase,
             token: '',
-            targetType: selectedConfig.targetType,
-            workers: selectedConfig.workers,
-            deleteWorkers: selectedConfig.deleteWorkers,
-            timeout: selectedConfig.timeout,
-            retries: selectedConfig.retries,
-            userAgent: selectedConfig.userAgent,
-            usedPercentThreshold: selectedConfig.usedPercentThreshold,
-            sampleSize: selectedConfig.sampleSize,
+            targetTypes: resultsConfig.targetTypes,
+            targetType: resultsConfig.targetType,
+            workers: resultsConfig.workers,
+            deleteWorkers: resultsConfig.deleteWorkers,
+            timeout: resultsConfig.timeout,
+            retries: resultsConfig.retries,
+            userAgent: resultsConfig.userAgent,
+            xaiInferenceUserAgent: resultsConfig.xaiInferenceUserAgent,
+            xaiInferenceEnabled: resultsConfig.xaiInferenceEnabled,
+            xaiInferenceModel: resultsConfig.xaiInferenceModel,
+            xaiInferencePrompt: resultsConfig.xaiInferencePrompt,
+            usedPercentThreshold: resultsConfig.usedPercentThreshold,
+            sampleSize: resultsConfig.sampleSize,
           },
           files: [],
           results: resultItems,
@@ -1704,8 +1684,8 @@ export function ServerCodexInspectionPage() {
             enableCount: resultsRun.enableCount,
             reauthCount: resultsRun.reauthCount,
             keepCount: resultsRun.keepCount,
-            usedPercentThreshold: selectedConfig.usedPercentThreshold,
-            sampled: selectedConfig.sampleSize > 0,
+            usedPercentThreshold: resultsConfig.usedPercentThreshold,
+            sampled: resultsConfig.sampleSize > 0,
             plannedActionPreview: [],
           },
           startedAt: resultsRun.startedAtMs,
@@ -1746,23 +1726,28 @@ export function ServerCodexInspectionPage() {
     const renderOperation = (item: CodexInspectionResultItem) => {
       const source = resultByKey.get(item.key);
       if (!source) {
-        return (
-          <span className={styles.primaryReason}>{t('monitoring.codex_inspection_no_action')}</span>
-        );
+        return null;
       }
 
       const actionStatus = normalizeServerCodexInspectionActionStatus(source);
-      const detailText = formatServerResultStateDetail(source, t);
-      const showDetail =
-        detailText &&
-        detailText !== '--' &&
-        !source.actionError &&
-        !source.errorDetail &&
-        !source.error;
+      const terminalStatusLabel = formatServerTerminalActionStatusLabel(source, t);
+      const needsReview = actionStatus === 'needs_review' || mixedActionIds.has(source.id);
+      const hasFileLevelAction = isActionableServerCodexInspectionResult(source);
+      const pendingReauth = isPendingServerReauthResult(source);
+      const hasOperation =
+        Boolean(terminalStatusLabel) ||
+        canonicalExecutableIds.has(source.id) ||
+        needsReview ||
+        hasFileLevelAction ||
+        pendingReauth;
+
+      if (!hasOperation) return null;
 
       return (
         <div className={styles.serverResultOperation}>
-          {showDetail ? <span className={styles.primaryReason}>{detailText}</span> : null}
+          {terminalStatusLabel ? (
+            <span className={styles.primaryReason}>{terminalStatusLabel}</span>
+          ) : null}
           {canonicalExecutableIds.has(source.id) ? (
             <Button
               size="xs"
@@ -1778,15 +1763,15 @@ export function ServerCodexInspectionPage() {
               })()}
               {resolveActionLabel(source.action, t)}
             </Button>
-          ) : actionStatus === 'needs_review' || mixedActionIds.has(source.id) ? (
+          ) : needsReview ? (
             <span className={styles.primaryReason}>
               {t('monitoring.server_codex_inspection_action_needs_review_hint')}
             </span>
-          ) : isActionableServerCodexInspectionResult(source) ? (
+          ) : hasFileLevelAction ? (
             <span className={styles.primaryReason}>
               {t('monitoring.server_codex_inspection_file_level_action_hint')}
             </span>
-          ) : isPendingServerReauthResult(source) ? (
+          ) : pendingReauth ? (
             <div className={styles.resultsHeaderActions}>
               <Button
                 size="xs"
@@ -1810,10 +1795,6 @@ export function ServerCodexInspectionPage() {
                 {t('monitoring.codex_inspection_action_delete')}
               </Button>
             </div>
-          ) : source.action === 'keep' ? (
-            <span className={styles.primaryReason}>
-              {t('monitoring.codex_inspection_no_action')}
-            </span>
           ) : null}
         </div>
       );
@@ -1823,7 +1804,6 @@ export function ServerCodexInspectionPage() {
       <CodexInspectionResultsPanel
         result={panelResult}
         filteredResults={resultPagination.pageItems}
-        suggestedResults={resultItems.filter((item) => item.action !== 'keep')}
         pendingActionCount={executableResults.length}
         manualActionCount={reauthResults.length}
         reauthActionCount={reauthResults.length}
@@ -1838,8 +1818,7 @@ export function ServerCodexInspectionPage() {
         isInspectionInFlight={Boolean(hasRunningRun)}
         t={t}
         title={t('monitoring.codex_inspection_results_title')}
-        subtitle={formatResultsDescription(resultsRun, i18n.language, t)}
-        stateHeaderLabel={formatResultStateHeader(resultsRun, t)}
+        xaiInferenceEnabled={resultsConfig.xaiInferenceEnabled}
         onActionFilterChange={setActionFilter}
         onHandlingFilterChange={setHandlingFilter}
         onPageChange={setResultPage}
@@ -1913,7 +1892,6 @@ export function ServerCodexInspectionPage() {
     return (
       <Panel
         title={t('monitoring.codex_inspection_logs_title')}
-        subtitle={t('monitoring.server_codex_inspection_logs_desc')}
         extra={
           <div className={styles.logToolbar}>
             {logs.length > 0 ? (

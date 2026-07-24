@@ -151,7 +151,7 @@ func TestCodexInspectionAutoRecoverySchema(t *testing.T) {
 		}
 	}
 	cooldownColumns := migrationTableColumns(t, db, "quota_cooldowns")
-	for _, column := range []string{"reason_code", "window_kind"} {
+	for _, column := range []string{"reason_code", "window_kind", "evidence_json"} {
 		if !cooldownColumns[column] {
 			t.Fatalf("quota cooldown columns = %#v, missing %s", cooldownColumns, column)
 		}
@@ -187,7 +187,7 @@ func TestEnsureAutomationColumnsAddsDecisionMetadata(t *testing.T) {
 			t.Fatalf("missing account action column %s", column)
 		}
 	}
-	for _, column := range []string{"reason_code", "window_kind"} {
+	for _, column := range []string{"reason_code", "window_kind", "evidence_json"} {
 		if !migrationTableColumns(t, db, "quota_cooldowns")[column] {
 			t.Fatalf("missing quota cooldown column %s", column)
 		}
